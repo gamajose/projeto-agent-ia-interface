@@ -12,6 +12,14 @@ from google import genai
 from google.genai import types
 
 from app.core.settings import Settings, get_settings
+from app.services.provider_registry import (
+    ProviderSpec,
+    provider_configured,
+    provider_label,
+    provider_secret,
+    provider_spec,
+    provider_specs,
+)
 from app.services.secrets import get_secret
 
 
@@ -109,6 +117,7 @@ class GatewayRoute:
 PROVIDER_LABELS = {
     "gemini": "Google Gemini",
     "groq": "Groq (Llama)",
+    "deepseek": "DeepSeek",
     "openrouter": "OpenRouter",
     "ollama": "Ollama local",
     "omniroute": "OmniRoute",
@@ -148,48 +157,42 @@ def _secret(settings: Settings, name: str, attribute: str) -> str | None:
 
 def direct_provider_status(settings: Settings | None = None) -> list[dict[str, Any]]:
     settings = settings or get_settings()
-    return [
-        {
-            "kind": "provider",
-            "source": "direct",
-            "name": "gemini",
-            "label": PROVIDER_LABELS["gemini"],
-            "model": settings.gemini_model,
-            "configured": bool(_secret(settings, "GEMINI_API_KEY", "gemini_api_key")),
-        },
-        {
-            "kind": "provider",
-            "source": "direct",
-            "name": "groq",
-            "label": PROVIDER_LABELS["groq"],
-            "model": settings.groq_model,
-            "configured": bool(_secret(settings, "GROQ_API_KEY", "groq_api_key")),
-        },
-        {
-            "kind": "provider",
-            "source": "direct",
-            "name": "openrouter",
-            "label": PROVIDER_LABELS["openrouter"],
-            "model": settings.openrouter_model,
-            "configured": bool(_secret(settings, "OPENROUTER_API_KEY", "openrouter_api_key")),
-        },
-    ]
+    rows: list[dict[str, Any]] = []
+    for spec in provider_specs(settings):
+        if spec.source != "direct":
+            continue
+        rows.append(
+            {
+                "kind": "provider",
+                "source": spec.source,
+                "name": spec.id,
+                "label": spec.label,
+                "model": spec.default_model,
+                "configured": provider_configured(spec, settings),
+                "tier": spec.tier,
+                "builtin": spec.builtin,
+            }
+        )
+    return rows
 
 
 def local_provider_status(settings: Settings | None = None) -> dict[str, Any]:
     settings = settings or get_settings()
+    spec = provider_spec("ollama", settings)
     return {
         "kind": "provider",
         "source": "local",
         "name": "ollama",
-        "label": PROVIDER_LABELS["ollama"],
-        "model": settings.ollama_model,
+        "label": provider_label("ollama", settings),
+        "model": spec.default_model if spec else settings.ollama_model,
         "configured": True,
+        "tier": "local",
+        "builtin": True,
     }
 
 
 def provider_status(settings: Settings | None = None) -> list[dict[str, Any]]:
-    """Lista apenas provedores/modelos reais; gateways são consultados separadamente."""
+    """Lista provedores/modelos reais; gateways são consultados separadamente."""
     settings = settings or get_settings()
     return [*direct_provider_status(settings), local_provider_status(settings)]
 
@@ -230,16 +233,24 @@ def omniroute_route_options(settings: Settings | None = None) -> list[GatewayRou
 
 def gateway_status(settings: Settings | None = None) -> dict[str, Any]:
     settings = settings or get_settings()
+    spec = provider_spec("omniroute", settings)
     return {
         "kind": "gateway",
         "source": "gateway",
         "name": "omniroute",
         "label": "OmniRoute — gateway centralizado",
-        "configured": bool(_secret(settings, "OMNIROUTE_API_KEY", "omniroute_api_key")),
+        "configured": bool(spec and provider_configured(spec, settings)),
         "base_url": settings.omniroute_base_url,
         "default_route": _default_omniroute_route(settings),
         "routes": omniroute_route_options(settings),
     }
+
+
+def _headers_for_spec(spec: ProviderSpec, settings: Settings) -> dict[str, str]:
+    headers = dict(spec.headers)
+    if spec.id == "openrouter" and settings.openrouter_site_url:
+        headers["HTTP-Referer"] = settings.openrouter_site_url
+    return headers
 
 
 def get_provider(
@@ -250,45 +261,36 @@ def get_provider(
     settings = settings or get_settings()
     selected = (name or current_provider_override() or settings.ai_provider or "gemini").strip().lower()
     selected_model = (model_name or current_model_override() or "").strip()
-    gemini_key = _secret(settings, "GEMINI_API_KEY", "gemini_api_key")
-    groq_key = _secret(settings, "GROQ_API_KEY", "groq_api_key")
-    openrouter_key = _secret(settings, "OPENROUTER_API_KEY", "openrouter_api_key")
-    omniroute_key = _secret(settings, "OMNIROUTE_API_KEY", "omniroute_api_key")
+    spec = provider_spec(selected, settings)
+    if not spec or not spec.enabled:
+        raise ProviderError(f"Provedor desconhecido ou desabilitado: {selected}.")
 
-    if selected == "gemini" and gemini_key:
-        return GeminiProvider(gemini_key, selected_model or settings.gemini_model)
-    if selected == "groq" and groq_key:
-        return OpenAICompatibleProvider(
-            "groq", groq_key, selected_model or settings.groq_model, settings.groq_base_url
-        )
-    if selected == "openrouter" and openrouter_key:
-        headers = {"X-Title": settings.openrouter_app_name}
-        if settings.openrouter_site_url:
-            headers["HTTP-Referer"] = settings.openrouter_site_url
-        return OpenAICompatibleProvider(
-            "openrouter",
-            openrouter_key,
-            selected_model or settings.openrouter_model,
-            settings.openrouter_base_url,
-            headers,
-        )
-    if selected == "ollama":
-        return OllamaProvider(selected_model or settings.ollama_model, settings.ollama_base_url)
+    if spec.kind == "gemini":
+        api_key = provider_secret(spec, settings)
+        if not api_key:
+            raise ProviderError("GEMINI_API_KEY não configurada.")
+        return GeminiProvider(api_key, selected_model or spec.default_model)
 
-    if selected == "omniroute" and omniroute_key:
-        route = selected_model or _default_omniroute_route(settings)
-        if not route:
-            raise ProviderError(
-                "Selecione uma rota/modelo do OmniRoute no menu ou configure OMNIROUTE_DEFAULT_ROUTE."
-            )
+    if spec.kind == "ollama":
+        return OllamaProvider(selected_model or spec.default_model, spec.base_url)
+
+    if spec.kind in {"openai-compatible", "gateway"}:
+        api_key = provider_secret(spec, settings)
+        if not api_key:
+            raise ProviderError(f"{spec.credential_env or selected.upper() + '_API_KEY'} não configurada.")
+        model = selected_model or spec.default_model
+        if not model:
+            if spec.id == "omniroute":
+                raise ProviderError(
+                    "Selecione uma rota/modelo do OmniRoute no menu ou configure OMNIROUTE_DEFAULT_ROUTE."
+                )
+            raise ProviderError(f"Modelo padrão não configurado para {spec.label}.")
         return OpenAICompatibleProvider(
-            "omniroute",
-            omniroute_key,
-            route,
-            settings.omniroute_base_url,
+            spec.id,
+            api_key,
+            model,
+            spec.base_url,
+            _headers_for_spec(spec, settings),
         )
-    if selected not in PROVIDER_LABELS:
-        raise ProviderError(f"Provedor desconhecido: {selected}.")
-    if selected == "omniroute":
-        raise ProviderError("OMNIROUTE_API_KEY não configurada.")
-    raise ProviderError(f"{selected.upper()}_API_KEY não configurada.")
+
+    raise ProviderError(f"Tipo de provedor não suportado: {spec.kind}.")
