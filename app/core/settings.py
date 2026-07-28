@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     agent_default_mode: str = "propose"
     agent_autopilot_enabled: bool = True
     agent_autopilot_default: bool = True
+    agent_runtime_discovery_enabled: bool = True
+    agent_adaptive_tools_enabled: bool = True
+    agent_tool_recommendation_limit: int = Field(default=10, ge=3, le=30)
     agent_max_rounds: int = 5
     agent_max_commands: int = 20
     agent_min_confidence: int = 70
