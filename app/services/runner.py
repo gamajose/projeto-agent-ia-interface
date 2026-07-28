@@ -11,6 +11,7 @@ from app.services.dynamic_agent import run_dynamic_investigation
 from app.services.persistence import resolve_saved_target
 from app.services.playbooks import selected_playbook_ssh_port, use_playbook
 from app.services.provider_preflight import require_selected_provider
+from app.services.provider_router import ProviderResolution, resolve_automatic_provider
 from app.services.secrets import get_secret
 from app.services.ssh import SSHExecutor
 
@@ -113,6 +114,96 @@ def build_executor(target: ResolvedTarget, *, settings: Settings | None = None) 
     )
 
 
+def _explicit_provider_resolution(
+    provider_name: str | None,
+    model_name: str | None,
+    settings: Settings,
+) -> ProviderResolution:
+    with use_provider(provider_name, model_name):
+        preflight = require_selected_provider(settings)
+    provider = str(
+        getattr(preflight, "provider", None)
+        or provider_name
+        or getattr(settings, "ai_provider", "gemini")
+        or "gemini"
+    )
+    model = str(getattr(preflight, "model", None) or model_name or "")
+    return ProviderResolution(
+        provider=provider,
+        model=model,
+        label=str(getattr(preflight, "label", provider)),
+        detail=str(getattr(preflight, "detail", "Provedor validado.")),
+        automatic=False,
+        attempts=(
+            {
+                "phase": "full_preflight",
+                "provider": provider,
+                "model": model,
+                "state": str(getattr(getattr(preflight, "state", None), "value", "available")),
+                "selectable": bool(getattr(preflight, "selectable", True)),
+                "detail": str(getattr(preflight, "detail", "Provedor validado.")),
+                "latency_ms": getattr(preflight, "latency_ms", None),
+            },
+        ),
+    )
+
+
+def _automation_summary(
+    *,
+    selection: ProviderResolution,
+    target: ResolvedTarget,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    classification = result.get("environment_classification") or {}
+    environment = str(classification.get("environment") or target.environment.value)
+    playbook = result.get("playbook") or {}
+    evidence_count = len(result.get("evidence") or [])
+    proposed_actions = list((result.get("analysis") or {}).get("proposed_actions") or [])
+    approval_token = result.get("approval_token")
+    return {
+        "mode": "safe_autopilot" if selection.automatic else "guided",
+        "status": "completed",
+        "provider": selection.as_dict(),
+        "connection": {
+            "target": target.reference,
+            "resolved_host": target.host,
+            "port": target.port,
+            "through_bastion": bool(get_settings().ssh_bastion_host),
+        },
+        "environment": environment,
+        "playbook": {
+            "id": playbook.get("id"),
+            "title": playbook.get("title"),
+            "selection": "automatic" if selection.automatic else "configured",
+        },
+        "evidence_count": evidence_count,
+        "proposal_count": len(proposed_actions),
+        "human_approval_available": bool(approval_token),
+        "phases": [
+            {"name": "provider_selection", "status": "completed", "detail": selection.detail},
+            {"name": "target_resolution", "status": "completed", "detail": f"{target.host}:{target.port}"},
+            {"name": "ssh_access", "status": "completed", "detail": "Acesso autenticado e chave de host validada."},
+            {"name": "environment_classification", "status": "completed", "detail": environment},
+            {"name": "playbook_selection", "status": "completed", "detail": playbook.get("title") or "Sem playbook inicial"},
+            {"name": "evidence_collection", "status": "completed", "detail": f"{evidence_count} evidência(s) coletada(s)."},
+            {"name": "solution_proposal", "status": "completed", "detail": f"{len(proposed_actions)} ação(ões) proposta(s)."},
+            {
+                "name": "corrective_execution",
+                "status": "approval_required" if approval_token else "not_executed",
+                "detail": "Nenhuma correção é executada pelo autopilot sem aprovação humana separada.",
+            },
+        ],
+        "safety": {
+            "production_changes": "blocked",
+            "standby_changes": "blocked",
+            "reboot_shutdown": "blocked",
+            "customer_databases": "blocked",
+            "container_lifecycle": "blocked",
+            "corrections": "human_approval_and_second_ai_required",
+        },
+    }
+
+
 def run_target(
     reference: str,
     objective: str,
@@ -127,51 +218,58 @@ def run_target(
     playbook_id: str | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Executa uma investigação reutilizando o mesmo motor do CLI e da interface.
-
-    As seleções de IA e playbook vivem em ContextVars somente durante esta
-    operação. O preflight pode resolver automaticamente um modelo disponível,
-    mas a conexão SSH só começa depois que provedor, modelo e resposta JSON
-    tiverem sido validados.
-    """
+    """Executa investigação guiada ou autopilot seguro no mesmo motor operacional."""
     settings = settings or get_settings()
-    with use_provider(provider_name, model_name), use_playbook(playbook_mode, playbook_id):
-        preflight = require_selected_provider(settings)
-        resolved_provider = str(
-            getattr(preflight, "provider", None)
-            or provider_name
-            or getattr(settings, "ai_provider", "gemini")
-            or "gemini"
-        )
-        resolved_model = str(
-            getattr(preflight, "model", None)
-            or model_name
-            or ""
-        ) or None
+    requested_provider = str(provider_name or settings.ai_provider or "gemini").strip().lower()
+    automatic = requested_provider == "auto"
 
-        # O modelo efetivo pode ser diferente do valor do .env quando o Gemini
-        # seleciona um free tier disponível ou o Ollama usa um modelo instalado.
-        with use_provider(resolved_provider, resolved_model):
-            playbook_ssh_port, _ = selected_playbook_ssh_port(
-                objective.strip() or "validar a saúde geral do servidor"
+    if automatic:
+        selection = resolve_automatic_provider(settings)
+        effective_mode = "propose"
+        effective_approve = False
+        effective_playbook_mode = "auto"
+        effective_playbook_id = None
+    else:
+        selection = _explicit_provider_resolution(provider_name, model_name, settings)
+        effective_mode = mode
+        effective_approve = approve
+        effective_playbook_mode = playbook_mode
+        effective_playbook_id = playbook_id
+
+    with use_provider(selection.provider, selection.model), use_playbook(
+        effective_playbook_mode,
+        effective_playbook_id,
+    ):
+        playbook_ssh_port, _ = selected_playbook_ssh_port(
+            objective.strip() or "validar a saúde geral do servidor"
+        )
+        target = resolve_target(
+            reference,
+            environment,
+            ssh_port,
+            playbook_ssh_port=playbook_ssh_port,
+            settings=settings,
+        )
+        executor = build_executor(target, settings=settings)
+        try:
+            executor.connect()
+            result = run_dynamic_investigation(
+                executor=executor,
+                target=reference,
+                context=objective,
+                environment=target.environment,
+                mode=effective_mode,
+                approve=effective_approve,
             )
-            target = resolve_target(
-                reference,
-                environment,
-                ssh_port,
-                playbook_ssh_port=playbook_ssh_port,
-                settings=settings,
-            )
-            executor = build_executor(target, settings=settings)
-            try:
-                executor.connect()
-                return run_dynamic_investigation(
-                    executor=executor,
-                    target=reference,
-                    context=objective,
-                    environment=target.environment,
-                    mode=mode,
-                    approve=approve,
-                )
-            finally:
-                executor.close()
+        finally:
+            executor.close()
+
+    result["provider_selection"] = selection.as_dict()
+    result["selected_provider"] = selection.provider
+    result["selected_model"] = selection.model
+    result["automation"] = _automation_summary(
+        selection=selection,
+        target=target,
+        result=result,
+    )
+    return result
