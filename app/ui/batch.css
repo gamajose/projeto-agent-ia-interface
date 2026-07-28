@@ -50,7 +50,7 @@
 .batch-result-item small { color: var(--bad); }
 .batch-result-item .ghost-button { white-space: nowrap; }
 
-#target { min-height: 92px; resize: vertical; }
+#target { min-height: 42px; height: 42px; resize: none; }
 
 @media (max-width: 720px) {
   .batch-import-header,
