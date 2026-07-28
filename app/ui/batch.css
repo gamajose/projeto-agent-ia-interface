@@ -1,0 +1,59 @@
+.batch-import-block {
+  margin: 0 0 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .02);
+}
+
+.batch-import-header,
+.batch-file-actions,
+.batch-result-item,
+.batch-result-item > div:last-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.batch-import-header strong { font-size: .82rem; }
+.batch-import-header span,
+.batch-import-block > small { color: var(--muted); font-size: .68rem; }
+.batch-file-actions { justify-content: flex-start; margin-top: 12px; flex-wrap: wrap; }
+.batch-file-actions input[type="file"] { width: min(100%, 430px); }
+.batch-import-summary { margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--border); }
+.batch-import-summary > strong { display: block; font-size: .76rem; }
+.batch-import-summary ul { margin: 10px 0 0; padding: 0; display: grid; gap: 7px; list-style: none; }
+.batch-import-summary li { display: grid; gap: 2px; }
+.batch-import-summary li strong { font-size: .72rem; }
+.batch-import-summary li span,
+.batch-import-summary p { margin: 0; color: var(--muted); font-size: .66rem; line-height: 1.45; }
+.batch-import-summary p { margin-top: 8px; }
+
+.batch-overview { margin-bottom: 14px; }
+.batch-result-list { display: grid; gap: 10px; }
+.batch-result-item {
+  padding: 14px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .02);
+}
+.batch-result-item[data-state="completed"] { border-color: rgba(85, 214, 158, .28); }
+.batch-result-item[data-state="failed"] { border-color: rgba(255, 117, 137, .32); }
+.batch-result-item[data-state="running"],
+.batch-result-item[data-state="queued"] { border-color: rgba(77, 216, 255, .28); }
+.batch-result-item > div:first-child { display: grid; gap: 3px; min-width: 0; }
+.batch-result-item strong { font-size: .78rem; overflow-wrap: anywhere; }
+.batch-result-item span,
+.batch-result-item small { color: var(--muted); font-size: .66rem; overflow-wrap: anywhere; }
+.batch-result-item small { color: var(--bad); }
+.batch-result-item .ghost-button { white-space: nowrap; }
+
+#target { min-height: 92px; resize: vertical; }
+
+@media (max-width: 720px) {
+  .batch-import-header,
+  .batch-result-item { align-items: flex-start; flex-direction: column; }
+  .batch-result-item > div:last-child { width: 100%; }
+}
