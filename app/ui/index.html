@@ -5,11 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>Agent IA Infra</title>
-  <link rel="stylesheet" href="/ui/assets/styles.css?v=1.12.0">
-  <link rel="stylesheet" href="/ui/assets/enhancements.css?v=1.12.0">
-  <link rel="stylesheet" href="/ui/assets/batch.css?v=1.12.0">
-  <link rel="stylesheet" href="/ui/assets/workspace.css?v=1.12.0">
-  <link rel="stylesheet" href="/ui/assets/tools.css?v=1.12.0">
+  <link rel="stylesheet" href="/ui/assets/styles.css?v=1.13.0">
+  <link rel="stylesheet" href="/ui/assets/enhancements.css?v=1.13.0">
+  <link rel="stylesheet" href="/ui/assets/batch.css?v=1.13.0">
+  <link rel="stylesheet" href="/ui/assets/workspace.css?v=1.13.0">
+  <link rel="stylesheet" href="/ui/assets/tools.css?v=1.13.0">
+  <link rel="stylesheet" href="/ui/assets/settings.css?v=1.13.0">
 </head>
 <body>
   <div class="app-shell">
@@ -21,6 +22,7 @@
         <button class="nav-item" data-view="inventory"><span class="nav-icon">▦</span><span>Inventário</span></button>
         <button class="nav-item" data-view="playbooks"><span class="nav-icon">◇</span><span>Playbooks</span></button>
         <button class="nav-item" data-view="opencode"><span class="nav-icon">⌘</span><span>OpenCode</span></button>
+        <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span><span>Configurações</span></button>
         <button class="nav-item" data-view="health"><span class="nav-icon">♥</span><span>Saúde</span></button>
       </nav>
       <div class="sidebar-safety"><span class="pulse-dot"></span><div><strong>Políticas ativas</strong><p>Produção e standby permanecem protegidos contra alterações.</p></div></div>
@@ -45,6 +47,35 @@
       <section class="view" id="view-inventory"><article class="panel"><div class="panel-header stacked-mobile"><div><p class="eyebrow">ALVOS CONHECIDOS</p><h3>Inventário aprendido</h3></div><div class="filters"><input id="inventory-search" placeholder="IP, hostname, site ou container"><select id="inventory-environment"><option value="">Todos os ambientes</option><option value="production">Produção</option><option value="standby">Standby</option><option value="monitoring">Monitoramento</option><option value="training">Treinamento</option><option value="unknown">Desconhecido</option></select><button class="secondary-button" id="filter-inventory">Filtrar</button></div></div><div class="inventory-grid" id="inventory-grid"><div class="empty-state">Abra esta seção para carregar o inventário.</div></div></article></section>
       <section class="view" id="view-playbooks"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AUTOMAÇÃO CONTROLADA</p><h3>Catálogo de playbooks</h3></div><span class="mode-badge">seleção automática, manual ou nenhuma</span></div><div class="playbook-grid" id="playbook-grid"><div class="empty-state">Abra esta seção para carregar os playbooks.</div></div></article></section>
       <section class="view" id="view-opencode"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AGENTE DE DESENVOLVIMENTO</p><h3>OpenCode integrado ao Agent IA</h3></div><button class="secondary-button" id="refresh-opencode">Atualizar workspace</button></div><div class="opencode-workspace" id="opencode-workspace"><div class="empty-state">Abra esta seção para usar o OpenCode.</div></div></article></section>
+
+      <section class="view" id="view-settings">
+        <article class="panel">
+          <div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO DINÂMICA</p><h3>Provedores e chaves de IA</h3></div><div class="filters"><button class="secondary-button" id="provider-deepseek">Configurar DeepSeek</button><button class="secondary-button" id="provider-new">Adicionar API</button><button class="ghost-button" id="refresh-ai-settings">Atualizar</button></div></div>
+          <div class="ai-settings-workspace">
+            <section class="ai-settings-summary"><div><p class="eyebrow">AUTOPILOT</p><h3>Ordem de seleção automática</h3><p id="ai-settings-note">As chaves são armazenadas somente no servidor e nunca retornam ao navegador.</p></div><div class="ai-settings-order"><label><span>Prioridade</span><input id="ai-provider-order" placeholder="groq,omniroute,deepseek,gemini,ollama,openrouter"></label><button class="primary-button" type="button" id="provider-save-order">Salvar ordem</button></div></section>
+            <div class="provider-config-grid" id="provider-config-grid"><div class="settings-empty">Abra esta seção para carregar os provedores.</div></div>
+            <section class="provider-editor" id="provider-editor">
+              <div class="panel-header"><div><p class="eyebrow">CADASTRO</p><h3 id="provider-editor-title">Adicionar API OpenAI-compatible</h3></div></div>
+              <form id="provider-editor-form">
+                <div class="provider-editor-grid">
+                  <label><span>Identificador</span><input id="provider-id" placeholder="ex.: mistral-interno" required></label>
+                  <label><span>Nome exibido</span><input id="provider-label" placeholder="Nome da IA"></label>
+                  <label><span>Tipo de uso</span><select id="provider-tier"><option value="free">Gratuito</option><option value="paid">Pago/créditos</option><option value="local">Local</option><option value="gateway">Gateway</option><option value="custom" selected>Personalizado</option></select></label>
+                  <label><span>Prioridade</span><input id="provider-priority" type="number" min="1" max="999" value="100"></label>
+                  <label class="wide"><span>Base URL</span><input id="provider-base-url" placeholder="https://api.exemplo.com/v1"></label>
+                  <label class="wide"><span>Modelo padrão</span><input id="provider-default-model" placeholder="modelo-principal"></label>
+                  <label class="full"><span>Modelos disponíveis</span><textarea id="provider-models" placeholder="um modelo por linha ou separado por vírgula"></textarea></label>
+                  <label class="wide"><span>API key</span><input id="provider-api-key" type="password" autocomplete="new-password" placeholder="Deixe vazio para preservar a chave atual"><small class="settings-secret-hint">A chave não será exibida novamente após salvar.</small></label>
+                  <label><span>Estado</span><span><input id="provider-enabled" type="checkbox" checked> Habilitado</span></label>
+                </div>
+                <div class="provider-editor-note">Provedores personalizados devem oferecer uma API compatível com <code>/chat/completions</code>. DeepSeek, Groq, OpenRouter, Gemini, Ollama e OmniRoute permanecem como integrações nativas.</div>
+                <div class="provider-editor-actions"><button type="button" class="ghost-button" id="provider-delete" hidden>Excluir personalizado</button><button type="submit" class="primary-button" id="provider-save">Salvar provedor</button></div>
+              </form>
+            </section>
+          </div>
+        </article>
+      </section>
+
       <section class="view" id="view-health"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AUTODIAGNÓSTICO</p><h3>Saúde da aplicação</h3></div><button class="secondary-button" id="refresh-health">Atualizar diagnóstico</button></div><div class="health-summary" id="health-summary"><div class="empty-state">Abra esta seção para validar a aplicação.</div></div><div class="health-grid" id="health-grid"></div><div class="provider-health-list" id="provider-health-list"></div></article></section>
     </main>
   </div>
@@ -52,42 +83,18 @@
   <aside class="analysis-modal" id="analysis-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="analysis-modal-title">
     <div class="analysis-modal-backdrop" data-close-analysis></div>
     <div class="analysis-modal-panel">
-      <header class="analysis-modal-header">
-        <div><p class="eyebrow">NOVA INVESTIGAÇÃO</p><h2 id="analysis-modal-title">Analisar ambiente</h2></div>
-        <div class="analysis-modal-header-actions"><span class="mode-badge" id="execution-mode-badge">modo inline</span><button class="icon-button" type="button" data-close-analysis aria-label="Fechar investigação">×</button></div>
-      </header>
-
+      <header class="analysis-modal-header"><div><p class="eyebrow">NOVA INVESTIGAÇÃO</p><h2 id="analysis-modal-title">Analisar ambiente</h2></div><div class="analysis-modal-header-actions"><span class="mode-badge" id="execution-mode-badge">modo inline</span><button class="icon-button" type="button" data-close-analysis aria-label="Fechar investigação">×</button></div></header>
       <form id="analysis-form" class="compact-analysis-form">
-        <div class="target-entry-row">
-          <label class="target-field"><span>IP, hostname, site ou lista</span><textarea id="target" name="target" rows="1" placeholder="172.27.232.203; 172.27.232.204; servidor:2222" required autocomplete="off"></textarea></label>
-          <div class="attach-field"><span>Arquivo</span><button type="button" class="attach-button" id="attach-batch-file" title="Anexar arquivo de alvos" aria-label="Anexar arquivo de alvos"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 12.5 13.9 6.1a3.2 3.2 0 0 1 4.5 4.5l-8 8a5 5 0 0 1-7.1-7.1l8.2-8.2"/></svg><span>Anexar</span></button><input id="batch-file" type="file" hidden accept=".txt,.csv,.json,.yaml,.yml,text/plain,text/csv,application/json,application/yaml"></div>
-          <label class="port-field"><span>Porta SSH</span><input id="ssh-port" name="ssh_port" type="number" min="1" max="65535" placeholder="Auto"></label>
-        </div>
-
+        <div class="target-entry-row"><label class="target-field"><span>IP, hostname, site ou lista</span><textarea id="target" name="target" rows="1" placeholder="172.27.232.203; 172.27.232.204; servidor:2222" required autocomplete="off"></textarea></label><div class="attach-field"><span>Arquivo</span><button type="button" class="attach-button" id="attach-batch-file" title="Anexar arquivo de alvos" aria-label="Anexar arquivo de alvos"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 12.5 13.9 6.1a3.2 3.2 0 0 1 4.5 4.5l-8 8a5 5 0 0 1-7.1-7.1l8.2-8.2"/></svg><span>Anexar</span></button><input id="batch-file" type="file" hidden accept=".txt,.csv,.json,.yaml,.yml,text/plain,text/csv,application/json,application/yaml"></div><label class="port-field"><span>Porta SSH</span><input id="ssh-port" name="ssh_port" type="number" min="1" max="65535" placeholder="Auto"></label></div>
         <div class="batch-import-summary" id="batch-import-summary" hidden></div>
         <div class="batch-inline-actions" id="batch-import-block"><small>TXT, CSV, JSON ou YAML podem definir porta, ambiente, objetivo, modelo e playbook por alvo.</small><button type="button" class="ghost-button" id="clear-batch-file" hidden>Remover anexo</button></div>
-
-        <div class="compact-settings-grid">
-          <label><span>Ambiente</span><select id="environment" name="environment"><option value="unknown">Não informado</option><option value="production">Produção</option><option value="standby">Standby</option><option value="monitoring">Monitoramento</option><option value="training">Treinamento</option></select></label>
-          <label><span>Modo operacional</span><select id="mode" name="mode"><option value="propose">Investigar e propor</option><option value="investigate">Somente investigar</option><option value="correct">Corrigir após revisão</option></select></label>
-          <label><span>Origem da IA</span><select id="provider" name="provider"><option value="">Carregando provedores...</option></select></label>
-          <label><span>Rota ou modelo</span><select id="model" name="model" disabled><option value="">Modelo padrão</option></select></label>
-        </div>
+        <div class="compact-settings-grid"><label><span>Ambiente</span><select id="environment" name="environment"><option value="unknown">Não informado</option><option value="production">Produção</option><option value="standby">Standby</option><option value="monitoring">Monitoramento</option><option value="training">Treinamento</option></select></label><label><span>Modo operacional</span><select id="mode" name="mode"><option value="propose">Investigar e propor</option><option value="investigate">Somente investigar</option><option value="correct">Corrigir após revisão</option></select></label><label><span>Origem da IA</span><select id="provider" name="provider"><option value="">Carregando provedores...</option></select></label><label><span>Rota ou modelo</span><select id="model" name="model" disabled><option value="">Modelo padrão</option></select></label></div>
         <small class="mode-help-inline" id="mode-help">A correção nunca é executada na abertura.</small>
-
         <div class="provider-status compact-provider-status" id="provider-status" data-state="loading"><span class="provider-status-dot"></span><div><strong>Validando provedores</strong><p>Consultando credencial, endpoint e modelo.</p></div></div>
-
-        <div class="compact-playbook-grid">
-          <label><span>Seleção de playbook</span><select id="playbook-mode" name="playbook_mode"><option value="auto">Automático + memória</option><option value="manual">Manual</option><option value="none">Sem playbook inicial</option></select></label>
-          <label><span>Playbook manual</span><select id="playbook-id" name="playbook_id" disabled><option value="">Selecione um playbook</option></select></label>
-        </div>
-
+        <div class="compact-playbook-grid"><label><span>Seleção de playbook</span><select id="playbook-mode" name="playbook_mode"><option value="auto">Automático + memória</option><option value="manual">Manual</option><option value="none">Sem playbook inicial</option></select></label><label><span>Playbook manual</span><select id="playbook-id" name="playbook_id" disabled><option value="">Selecione um playbook</option></select></label></div>
         <label class="objective-field"><span>Objetivo da análise</span><textarea id="objective" name="objective" rows="4" placeholder="Descreva o alerta, o comportamento observado e o que precisa ser validado. Pode ficar vazio quando todos os alvos importados já possuem objetivo."></textarea></label>
-
         <div class="preset-block compact-presets"><span>Atalhos</span><div class="preset-list"><button type="button" class="preset" data-preset="Validar alerta de Systemd Socket Summary CRITICAL no Checkmk e identificar a causa raiz.">Socket Checkmk</button><button type="button" class="preset" data-preset="Investigar agente Checkmk sem comunicação na porta 6556 e confirmar onde ocorre a falha.">Porta 6556</button><button type="button" class="preset" data-preset="Investigar utilização elevada de filesystem e inodes, identificar a origem do consumo e avaliar risco operacional.">Disco / inodes</button><button type="button" class="preset" data-preset="Investigar utilização elevada de memória RAM e SWAP, correlacionar processos e validar impacto no ambiente.">Memória / swap</button><button type="button" class="preset" data-preset="Investigar timeout SNMP entre o monitoramento e o equipamento, validando serviço, porta, rota e resposta.">SNMP</button><button type="button" class="preset" data-preset="Investigar container unhealthy, coletar healthcheck e logs relacionados sem reiniciar ou alterar o ciclo de vida do container.">Container</button></div></div>
-
         <div class="modal-safety-strip"><span>✓</span><p>Cada alvo gera investigação própria pela mesma ponte SSH/VPN. Produção e standby continuam somente com investigação e proposta.</p></div>
-
         <footer class="analysis-modal-footer"><button type="button" class="secondary-button" id="clear-form">Limpar</button><button type="button" class="ghost-button" data-close-analysis>Cancelar</button><button type="submit" class="primary-button" id="submit-analysis"><span class="button-label">Executar análise</span><span class="button-spinner" aria-hidden="true"></span></button></footer>
       </form>
     </div>
@@ -95,9 +102,10 @@
 
   <aside class="result-drawer" id="result-drawer" aria-hidden="true"><div class="drawer-backdrop" data-close-drawer></div><div class="drawer-panel"><div class="drawer-header"><div><p class="eyebrow">RESULTADO DA IA</p><h2 id="result-title">Investigação</h2></div><button class="icon-button" data-close-drawer aria-label="Fechar">×</button></div><div class="drawer-content" id="result-content"></div></div></aside>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="/ui/assets/app.js?v=1.12.0" defer></script>
-  <script src="/ui/assets/batch.js?v=1.12.0" defer></script>
-  <script src="/ui/assets/workspace.js?v=1.12.0" defer></script>
-  <script src="/ui/assets/tools.js?v=1.12.0" defer></script>
+  <script src="/ui/assets/app.js?v=1.13.0" defer></script>
+  <script src="/ui/assets/batch.js?v=1.13.0" defer></script>
+  <script src="/ui/assets/workspace.js?v=1.13.0" defer></script>
+  <script src="/ui/assets/tools.js?v=1.13.0" defer></script>
+  <script src="/ui/assets/settings.js?v=1.13.0" defer></script>
 </body>
 </html>

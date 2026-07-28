@@ -5,11 +5,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.settings import Settings, get_settings
-from app.services.ai_providers import PROVIDER_LABELS, ProviderError
+from app.services.ai_providers import ProviderError
 from app.services.provider_preflight import ProviderPreflight, preflight_all, preflight_provider
-
-
-KNOWN_PROVIDERS = tuple(PROVIDER_LABELS)
+from app.services.provider_registry import provider_ids, provider_label
 
 
 @dataclass(frozen=True)
@@ -34,20 +32,21 @@ class ProviderResolution:
 
 def automatic_provider_order(settings: Settings | None = None) -> tuple[str, ...]:
     settings = settings or get_settings()
+    known = provider_ids(settings)
     raw = str(
         getattr(
             settings,
             "ai_auto_provider_order",
-            "groq,omniroute,gemini,ollama,openrouter",
+            "groq,omniroute,deepseek,gemini,ollama,openrouter",
         )
         or ""
     )
     ordered: list[str] = []
     for value in re.split(r"[,\n]", raw):
         provider = value.strip().lower()
-        if provider in KNOWN_PROVIDERS and provider not in ordered:
+        if provider in known and provider not in ordered:
             ordered.append(provider)
-    for provider in KNOWN_PROVIDERS:
+    for provider in known:
         if provider not in ordered:
             ordered.append(provider)
     return tuple(ordered)
@@ -66,12 +65,7 @@ def _attempt(result: ProviderPreflight, phase: str) -> dict[str, Any]:
 
 
 def resolve_automatic_provider(settings: Settings | None = None) -> ProviderResolution:
-    """Seleciona e valida integralmente a primeira IA saudável da ordem configurada.
-
-    A listagem rápida evita aquecer modelos locais. Antes do SSH, cada candidato
-    é validado com geração JSON real. Se o primeiro falhar, o Agent tenta o
-    próximo provedor sem exigir intervenção do operador.
-    """
+    """Seleciona e valida integralmente a primeira IA saudável da ordem configurada."""
     settings = settings or get_settings()
     if not bool(getattr(settings, "agent_autopilot_enabled", True)):
         raise ProviderError("O autopilot está desabilitado por AGENT_AUTOPILOT_ENABLED.")
@@ -100,7 +94,7 @@ def resolve_automatic_provider(settings: Settings | None = None) -> ProviderReso
         return ProviderResolution(
             provider=validated.provider,
             model=validated.model,
-            label=validated.label,
+            label=validated.label or provider_label(validated.provider, settings),
             detail=detail,
             automatic=True,
             attempts=tuple(attempts),
@@ -111,7 +105,7 @@ def resolve_automatic_provider(settings: Settings | None = None) -> ProviderReso
         for item in attempts
         if not item.get("selectable")
     ]
-    summary = " | ".join(reasons[-5:]) or "nenhum provedor foi detectado"
+    summary = " | ".join(reasons[-8:]) or "nenhum provedor foi detectado"
     raise ProviderError(
         "Nenhuma IA passou na validação automática antes do SSH. "
         f"Diagnóstico: {summary}. Execute 'agent doctor ai'."

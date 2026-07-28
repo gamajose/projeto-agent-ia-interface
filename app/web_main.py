@@ -7,9 +7,11 @@ import uvicorn
 from app.main import app
 from app.web import register_ui
 from app.web_batch import router as batch_router
+from app.web_settings import enable_dynamic_provider_payload, router as settings_router
 from app.web_tools import router as tools_router
 
 
+enable_dynamic_provider_payload()
 register_ui(app)
 if not getattr(app.state, "agent_ui_batch_registered", False):
     app.include_router(batch_router)
@@ -17,6 +19,9 @@ if not getattr(app.state, "agent_ui_batch_registered", False):
 if not getattr(app.state, "agent_ui_tools_registered", False):
     app.include_router(tools_router)
     app.state.agent_ui_tools_registered = True
+if not getattr(app.state, "agent_ui_settings_registered", False):
+    app.include_router(settings_router)
+    app.state.agent_ui_settings_registered = True
 
 
 def main() -> None:

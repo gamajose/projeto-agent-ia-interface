@@ -13,14 +13,19 @@ from pydantic import BaseModel, Field
 
 from app.core.settings import Settings, get_settings
 from app.services.ai_providers import (
-    PROVIDER_LABELS,
     ProviderError,
     _default_omniroute_route,
-    _secret,
     current_model_override,
     current_provider_override,
     omniroute_route_options,
     parse_json,
+)
+from app.services.provider_registry import (
+    ProviderSpec,
+    provider_ids,
+    provider_label,
+    provider_secret,
+    provider_spec,
 )
 
 
@@ -93,10 +98,11 @@ def _result(
     selectable: bool | None = None,
     valid_routes: tuple[str, ...] = (),
     invalid_routes: tuple[str, ...] = (),
+    settings: Settings | None = None,
 ) -> ProviderPreflight:
     return ProviderPreflight(
         provider=provider,
-        label=PROVIDER_LABELS[provider],
+        label=provider_label(provider, settings),
         state=state,
         model=model,
         detail=detail,
@@ -108,7 +114,6 @@ def _result(
 
 
 def _safe_http_message(response: httpx.Response) -> str:
-    """Extrai apenas a mensagem pública da API, sem cabeçalhos ou credenciais."""
     try:
         payload = response.json()
     except Exception:
@@ -122,11 +127,16 @@ def _safe_http_message(response: httpx.Response) -> str:
             message = str(error)
         if not message:
             message = str(payload.get("message") or "")
-    message = " ".join(message.split())
-    return message[:300]
+    return " ".join(message.split())[:300]
 
 
-def _http_failure(provider: str, model: str, exc: Exception, started: float) -> ProviderPreflight:
+def _http_failure(
+    provider: str,
+    model: str,
+    exc: Exception,
+    started: float,
+    settings: Settings | None = None,
+) -> ProviderPreflight:
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         message = _safe_http_message(exc.response)
@@ -138,6 +148,7 @@ def _http_failure(provider: str, model: str, exc: Exception, started: float) -> 
                 model=model,
                 detail=f"A API recusou a configuração (HTTP {status}).{suffix}",
                 started=started,
+                settings=settings,
             )
         return _result(
             provider,
@@ -145,6 +156,7 @@ def _http_failure(provider: str, model: str, exc: Exception, started: float) -> 
             model=model,
             detail=f"O serviço respondeu com erro HTTP {status}.{suffix}",
             started=started,
+            settings=settings,
         )
     if isinstance(exc, httpx.TimeoutException):
         return _result(
@@ -153,6 +165,7 @@ def _http_failure(provider: str, model: str, exc: Exception, started: float) -> 
             model=model,
             detail="Tempo limite excedido ao consultar o serviço.",
             started=started,
+            settings=settings,
         )
     if isinstance(exc, httpx.RequestError):
         return _result(
@@ -161,6 +174,7 @@ def _http_failure(provider: str, model: str, exc: Exception, started: float) -> 
             model=model,
             detail="Não foi possível conectar ao endpoint configurado.",
             started=started,
+            settings=settings,
         )
     if isinstance(exc, (json.JSONDecodeError, KeyError, TypeError, ValueError)):
         return _result(
@@ -169,6 +183,7 @@ def _http_failure(provider: str, model: str, exc: Exception, started: float) -> 
             model=model,
             detail="O serviço respondeu, mas não retornou JSON válido no formato esperado.",
             started=started,
+            settings=settings,
         )
     return _result(
         provider,
@@ -176,16 +191,17 @@ def _http_failure(provider: str, model: str, exc: Exception, started: float) -> 
         model=model,
         detail=f"Falha inesperada durante o diagnóstico ({type(exc).__name__}).",
         started=started,
+        settings=settings,
     )
 
 
 def _ollama_models(settings: Settings) -> tuple[str, ...]:
-    tags = httpx.get(
+    response = httpx.get(
         f"{settings.ollama_base_url.rstrip('/')}/api/tags",
         timeout=_timeout(settings),
     )
-    tags.raise_for_status()
-    payload = tags.json()
+    response.raise_for_status()
+    payload = response.json()
     models = {
         str(value).strip()
         for item in payload.get("models", [])
@@ -193,7 +209,7 @@ def _ollama_models(settings: Settings) -> tuple[str, ...]:
         for value in (item.get("name"), item.get("model"))
         if value
     }
-    return tuple(sorted(model for model in models if model))
+    return tuple(sorted(item for item in models if item))
 
 
 def _select_ollama_model(
@@ -203,28 +219,16 @@ def _select_ollama_model(
 ) -> tuple[str, str | None]:
     requested = (model_name or "").strip()
     configured = (settings.ollama_model or "").strip()
-    explicit = model_name is not None and bool(requested)
-
-    if explicit:
+    if model_name is not None and requested:
         return requested, None
-
     if configured and configured.casefold() not in _AUTO_MODEL_VALUES and configured in installed:
         return configured, None
-
-    if not getattr(settings, "ollama_auto_fallback", True):
+    if not settings.ollama_auto_fallback:
         return configured, None
-
-    preferences = _csv_values(getattr(settings, "ollama_preferred_models", ""))
-    selected = next((candidate for candidate in preferences if candidate in installed), "")
-    if not selected and installed:
-        selected = installed[0]
-
-    fallback_from = (
-        configured
-        if configured and configured.casefold() not in _AUTO_MODEL_VALUES and configured != selected
-        else None
-    )
-    return selected, fallback_from
+    preferred = _csv_values(settings.ollama_preferred_models)
+    selected = next((item for item in preferred if item in installed), installed[0] if installed else "")
+    fallback = configured if configured and configured != selected else None
+    return selected, fallback
 
 
 def _probe_ollama(
@@ -244,9 +248,9 @@ def _probe_ollama(
                 model=configured,
                 detail="O serviço Ollama respondeu, mas não possui nenhum modelo instalado.",
                 started=started,
+                settings=settings,
             )
-
-        model, fallback_from = _select_ollama_model(settings, installed, model_name)
+        model, fallback = _select_ollama_model(settings, installed, model_name)
         if not model or model not in installed:
             return _result(
                 "ollama",
@@ -259,22 +263,23 @@ def _probe_ollama(
                 started=started,
                 valid_routes=installed,
                 invalid_routes=((model or configured),) if (model or configured) else (),
+                settings=settings,
             )
-
         if quick:
-            if fallback_from:
+            if fallback:
                 return _result(
                     "ollama",
                     state=ProviderState.DEGRADED,
                     model=model,
                     detail=(
-                        f"O modelo configurado '{fallback_from}' não está instalado; "
+                        f"O modelo configurado '{fallback}' não está instalado; "
                         f"o modelo local '{model}' foi detectado e será validado ao iniciar a investigação."
                     ),
                     started=started,
                     selectable=True,
                     valid_routes=installed,
-                    invalid_routes=(fallback_from,),
+                    invalid_routes=(fallback,),
+                    settings=settings,
                 )
             return _result(
                 "ollama",
@@ -286,17 +291,12 @@ def _probe_ollama(
                 ),
                 started=started,
                 valid_routes=installed,
+                settings=settings,
             )
-
         try:
             response = httpx.post(
                 f"{settings.ollama_base_url.rstrip('/')}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": _PROBE_PROMPT,
-                    "stream": False,
-                    "format": "json",
-                },
+                json={"model": model, "prompt": _PROBE_PROMPT, "stream": False, "format": "json"},
                 timeout=_ollama_timeout(settings),
             )
             response.raise_for_status()
@@ -313,26 +313,25 @@ def _probe_ollama(
                 ),
                 started=started,
                 valid_routes=installed,
+                settings=settings,
             )
-
-        generated = response.json()
-        parsed = parse_json(str(generated.get("response") or ""))
+        parsed = parse_json(str(response.json().get("response") or ""))
         if parsed.get("preflight") is not True:
             raise ValueError("resposta de preflight sem confirmação")
-
-        if fallback_from:
+        if fallback:
             return _result(
                 "ollama",
                 state=ProviderState.DEGRADED,
                 model=model,
                 detail=(
-                    f"O modelo configurado '{fallback_from}' não está instalado; "
+                    f"O modelo configurado '{fallback}' não está instalado; "
                     f"o Agent selecionou automaticamente '{model}'. API e resposta JSON validadas."
                 ),
                 started=started,
                 selectable=True,
                 valid_routes=installed,
-                invalid_routes=(fallback_from,),
+                invalid_routes=(fallback,),
+                settings=settings,
             )
         return _result(
             "ollama",
@@ -341,9 +340,10 @@ def _probe_ollama(
             detail="API, modelo e resposta JSON validados.",
             started=started,
             valid_routes=installed,
+            settings=settings,
         )
     except Exception as exc:
-        return _http_failure("ollama", configured, exc, started)
+        return _http_failure("ollama", configured, exc, started, settings)
 
 
 def _configured_omniroute_routes(settings: Settings) -> tuple[str, ...]:
@@ -351,23 +351,26 @@ def _configured_omniroute_routes(settings: Settings) -> tuple[str, ...]:
 
 
 def _probe_omniroute(settings: Settings, model_name: str | None = None) -> ProviderPreflight:
+    spec = provider_spec("omniroute", settings)
+    selected_model = (model_name or _default_omniroute_route(settings)).strip()
+    configured_routes = _configured_omniroute_routes(settings)
     try:
-        token = _secret(settings, "OMNIROUTE_API_KEY", "omniroute_api_key")
+        token = provider_secret(spec, settings) if spec else None
     except Exception:
         return _result(
             "omniroute",
             state=ProviderState.UNAVAILABLE,
-            model=(model_name or _default_omniroute_route(settings)),
+            model=selected_model,
             detail="Não foi possível consultar o backend de segredos do OmniRoute.",
+            settings=settings,
         )
-    selected_model = (model_name or _default_omniroute_route(settings)).strip()
-    configured_routes = _configured_omniroute_routes(settings)
     if not token:
         return _result(
             "omniroute",
             state=ProviderState.NOT_CONFIGURED,
             model=selected_model,
             detail="Falta o token local do endpoint (OMNIROUTE_API_KEY).",
+            settings=settings,
         )
     if not selected_model and not configured_routes:
         return _result(
@@ -375,8 +378,8 @@ def _probe_omniroute(settings: Settings, model_name: str | None = None) -> Provi
             state=ProviderState.MISCONFIGURED,
             model="",
             detail="Configure OMNIROUTE_DEFAULT_ROUTE ou ao menos uma rota em OMNIROUTE_ROUTES.",
+            settings=settings,
         )
-
     started = time.monotonic()
     try:
         response = httpx.get(
@@ -386,18 +389,17 @@ def _probe_omniroute(settings: Settings, model_name: str | None = None) -> Provi
         )
         response.raise_for_status()
         payload = response.json()
-        available_models = {
+        available = {
             str(item.get("id") or "").strip()
             for item in payload.get("data", [])
             if isinstance(item, dict) and item.get("id")
         }
-        candidates = (selected_model,) if model_name and selected_model else configured_routes
+        candidates = configured_routes
         if selected_model and selected_model not in candidates:
             candidates = (selected_model, *candidates)
-        valid = tuple(route for route in candidates if route in available_models)
-        invalid = tuple(route for route in candidates if route not in available_models)
-
-        if selected_model and selected_model not in available_models:
+        valid = tuple(item for item in candidates if item in available)
+        invalid = tuple(item for item in candidates if item not in available)
+        if selected_model and selected_model not in available:
             return _result(
                 "omniroute",
                 state=ProviderState.MISCONFIGURED,
@@ -406,6 +408,7 @@ def _probe_omniroute(settings: Settings, model_name: str | None = None) -> Provi
                 started=started,
                 valid_routes=valid,
                 invalid_routes=invalid,
+                settings=settings,
             )
         if not valid:
             return _result(
@@ -416,6 +419,7 @@ def _probe_omniroute(settings: Settings, model_name: str | None = None) -> Provi
                 started=started,
                 valid_routes=valid,
                 invalid_routes=invalid,
+                settings=settings,
             )
         if invalid:
             return _result(
@@ -427,6 +431,7 @@ def _probe_omniroute(settings: Settings, model_name: str | None = None) -> Provi
                 selectable=True,
                 valid_routes=valid,
                 invalid_routes=invalid,
+                settings=settings,
             )
         return _result(
             "omniroute",
@@ -435,30 +440,22 @@ def _probe_omniroute(settings: Settings, model_name: str | None = None) -> Provi
             detail="Token, endpoint e rotas configuradas foram validados.",
             started=started,
             valid_routes=valid,
+            settings=settings,
         )
     except Exception as exc:
-        return _http_failure("omniroute", selected_model, exc, started)
+        return _http_failure("omniroute", selected_model, exc, started, settings)
 
 
 def _normalize_gemini_model(value: str | None) -> str:
-    model = (value or "").strip()
-    return model.removeprefix("models/")
+    return (value or "").strip().removeprefix("models/")
 
 
 def _gemini_free_candidates(settings: Settings) -> tuple[str, ...]:
-    configured = _csv_values(getattr(settings, "gemini_free_models", ""))
-    if configured:
-        return tuple(_normalize_gemini_model(item) for item in configured)
-    return (
-        "gemini-3.5-flash",
-        "gemini-3.1-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-    )
+    return tuple(_normalize_gemini_model(item) for item in _csv_values(settings.gemini_free_models))
 
 
 def _gemini_models(api_key: str, settings: Settings) -> tuple[str, ...]:
-    models: list[str] = []
+    output: list[str] = []
     page_token = ""
     while True:
         params: dict[str, Any] = {"pageSize": 1000}
@@ -479,12 +476,12 @@ def _gemini_models(api_key: str, settings: Settings) -> tuple[str, ...]:
             if "generateContent" not in methods:
                 continue
             name = _normalize_gemini_model(str(item.get("name") or ""))
-            if name and name not in models:
-                models.append(name)
+            if name and name not in output:
+                output.append(name)
         page_token = str(payload.get("nextPageToken") or "")
         if not page_token:
             break
-    return tuple(models)
+    return tuple(output)
 
 
 def _select_gemini_model(
@@ -494,24 +491,16 @@ def _select_gemini_model(
 ) -> tuple[str, str | None, tuple[str, ...], tuple[str, ...]]:
     requested = _normalize_gemini_model(model_name)
     configured = _normalize_gemini_model(settings.gemini_model)
-    free_candidates = _gemini_free_candidates(settings)
-    valid_free = tuple(candidate for candidate in free_candidates if candidate in available)
-    invalid_free = tuple(candidate for candidate in free_candidates if candidate not in available)
-
+    candidates = _gemini_free_candidates(settings)
+    valid = tuple(item for item in candidates if item in available)
+    invalid = tuple(item for item in candidates if item not in available)
     if model_name is not None and requested:
-        return requested, None, valid_free, invalid_free
-
-    configured_is_auto = configured.casefold() in _AUTO_MODEL_VALUES
-    if getattr(settings, "gemini_auto_free", True):
-        selected = valid_free[0] if valid_free else ""
-        fallback_from = (
-            configured
-            if configured and not configured_is_auto and configured != selected
-            else None
-        )
-        return selected or configured, fallback_from, valid_free, invalid_free
-
-    return configured, None, valid_free, invalid_free
+        return requested, None, valid, invalid
+    if settings.gemini_auto_free:
+        selected = valid[0] if valid else configured
+        fallback = configured if configured and configured != selected else None
+        return selected, fallback, valid, invalid
+    return configured, None, valid, invalid
 
 
 def _gemini_probe_candidates(
@@ -520,17 +509,10 @@ def _gemini_probe_candidates(
     valid_free: tuple[str, ...],
     model_name: str | None,
 ) -> tuple[str, ...]:
-    ordered: list[str] = []
-    if selected:
-        ordered.append(selected)
-
-    allow_fallback = bool(getattr(settings, "gemini_transient_fallback", True))
-    if allow_fallback:
-        for candidate in valid_free:
-            if candidate and candidate not in ordered:
-                ordered.append(candidate)
-
-    if model_name is not None and not allow_fallback:
+    ordered = [selected] if selected else []
+    if settings.gemini_transient_fallback:
+        ordered.extend(item for item in valid_free if item and item not in ordered)
+    if model_name is not None and not settings.gemini_transient_fallback:
         return tuple(ordered[:1])
     return tuple(ordered)
 
@@ -541,33 +523,30 @@ def _probe_gemini(
     *,
     quick: bool = False,
 ) -> ProviderPreflight:
+    spec = provider_spec("gemini", settings)
+    configured = _normalize_gemini_model(model_name or settings.gemini_model)
     try:
-        api_key = _secret(settings, "GEMINI_API_KEY", "gemini_api_key")
+        api_key = provider_secret(spec, settings) if spec else None
     except Exception:
         return _result(
             "gemini",
             state=ProviderState.UNAVAILABLE,
-            model=_normalize_gemini_model(model_name or settings.gemini_model),
+            model=configured,
             detail="Não foi possível consultar o backend de segredos do Gemini.",
+            settings=settings,
         )
-
-    configured = _normalize_gemini_model(model_name or settings.gemini_model)
     if not api_key:
         return _result(
             "gemini",
             state=ProviderState.NOT_CONFIGURED,
             model=configured,
             detail="Falta a credencial GEMINI_API_KEY.",
+            settings=settings,
         )
-
     started = time.monotonic()
     try:
         available = _gemini_models(api_key, settings)
-        model, fallback_from, valid_free, invalid_free = _select_gemini_model(
-            settings,
-            available,
-            model_name,
-        )
+        model, fallback, valid_free, invalid_free = _select_gemini_model(settings, available, model_name)
         if not model or model not in available:
             detected = ", ".join(valid_free) or "nenhum modelo gratuito conhecido"
             return _result(
@@ -581,12 +560,12 @@ def _probe_gemini(
                 started=started,
                 valid_routes=valid_free,
                 invalid_routes=invalid_free,
+                settings=settings,
             )
-
         if quick:
-            if fallback_from:
+            if fallback:
                 detail = (
-                    f"O modelo configurado '{fallback_from}' não aparece para esta chave; "
+                    f"O modelo configurado '{fallback}' não aparece para esta chave; "
                     f"o modelo gratuito '{model}' foi detectado e será validado ao iniciar."
                 )
                 state = ProviderState.DEGRADED
@@ -605,9 +584,10 @@ def _probe_gemini(
                 selectable=True,
                 valid_routes=valid_free or (model,),
                 invalid_routes=invalid_free,
+                settings=settings,
             )
 
-        transient_failures: list[tuple[str, int, str]] = []
+        failures: list[tuple[str, int, str]] = []
         candidates = _gemini_probe_candidates(settings, model, valid_free, model_name)
         for candidate in candidates:
             try:
@@ -621,39 +601,31 @@ def _probe_gemini(
                     timeout=_timeout(settings),
                 )
                 response.raise_for_status()
-                payload = response.json()
-                text = payload["candidates"][0]["content"]["parts"][0]["text"]
-                parsed = parse_json(str(text or ""))
-                if parsed.get("preflight") is not True:
+                text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+                if parse_json(str(text or "")).get("preflight") is not True:
                     raise ValueError("resposta de preflight sem confirmação")
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
                 if status in _TRANSIENT_GEMINI_STATUSES and len(candidates) > 1:
-                    transient_failures.append(
-                        (candidate, status, _safe_http_message(exc.response))
-                    )
+                    failures.append((candidate, status, _safe_http_message(exc.response)))
                     continue
                 raise
 
-            if transient_failures:
-                failed_summary = ", ".join(
-                    f"{failed_model} (HTTP {status})"
-                    for failed_model, status, _ in transient_failures
-                )
+            if failures:
+                failed_summary = ", ".join(f"{item} (HTTP {status})" for item, status, _ in failures)
                 detail = (
                     f"{failed_summary} apresentou indisponibilidade temporária; "
                     f"fallback automático para o modelo gratuito '{candidate}' validado."
                 )
-            elif fallback_from:
+            elif fallback:
                 detail = (
-                    f"O modelo configurado '{fallback_from}' não está disponível para esta chave; "
+                    f"O modelo configurado '{fallback}' não está disponível para esta chave; "
                     f"o Agent selecionou automaticamente o modelo gratuito '{candidate}'."
                 )
             elif configured.casefold() in _AUTO_MODEL_VALUES:
                 detail = f"Modelo gratuito selecionado automaticamente: '{candidate}'."
             else:
                 detail = "Credencial, modelo gratuito e resposta JSON validados."
-
             return _result(
                 "gemini",
                 state=ProviderState.AVAILABLE,
@@ -662,16 +634,11 @@ def _probe_gemini(
                 started=started,
                 valid_routes=valid_free or (candidate,),
                 invalid_routes=invalid_free,
+                settings=settings,
             )
 
-        failures = ", ".join(
-            f"{failed_model} (HTTP {status})"
-            for failed_model, status, _ in transient_failures
-        )
-        public_message = next(
-            (message for _, _, message in reversed(transient_failures) if message),
-            "",
-        )
+        failure_summary = ", ".join(f"{item} (HTTP {status})" for item, status, _ in failures)
+        public_message = next((message for _, _, message in reversed(failures) if message), "")
         suffix = f" {public_message}" if public_message else ""
         return _result(
             "gemini",
@@ -679,64 +646,54 @@ def _probe_gemini(
             model=model,
             detail=(
                 "Todos os modelos gratuitos disponíveis responderam com "
-                f"indisponibilidade temporária: {failures}.{suffix}"
+                f"indisponibilidade temporária: {failure_summary}.{suffix}"
             ),
             started=started,
             valid_routes=valid_free,
             invalid_routes=invalid_free,
+            settings=settings,
         )
     except Exception as exc:
-        return _http_failure("gemini", configured, exc, started)
+        return _http_failure("gemini", configured, exc, started, settings)
 
 
-def _direct_configuration(settings: Settings, provider: str) -> tuple[str | None, str, str]:
-    if provider == "groq":
-        return _secret(settings, "GROQ_API_KEY", "groq_api_key"), settings.groq_model, settings.groq_base_url
-    if provider == "openrouter":
-        return (
-            _secret(settings, "OPENROUTER_API_KEY", "openrouter_api_key"),
-            settings.openrouter_model,
-            settings.openrouter_base_url,
-        )
-    raise ProviderError(f"Provedor direto desconhecido: {provider}.")
-
-
-def _probe_direct(settings: Settings, provider: str, model_name: str | None = None) -> ProviderPreflight:
+def _probe_direct(
+    settings: Settings,
+    spec: ProviderSpec,
+    model_name: str | None = None,
+) -> ProviderPreflight:
+    model = (model_name or spec.default_model or "").strip()
     try:
-        api_key, configured_model, base_url = _direct_configuration(settings, provider)
+        api_key = provider_secret(spec, settings)
     except Exception:
         return _result(
-            provider,
+            spec.id,
             state=ProviderState.UNAVAILABLE,
-            model=model_name or "",
+            model=model,
             detail="Não foi possível consultar o backend de segredos do provedor.",
+            settings=settings,
         )
-    model = (model_name or configured_model or "").strip()
     if not api_key:
         return _result(
-            provider,
+            spec.id,
             state=ProviderState.NOT_CONFIGURED,
             model=model,
-            detail=f"Falta a credencial {provider.upper()}_API_KEY.",
+            detail=f"Falta a credencial {spec.credential_env or spec.id.upper() + '_API_KEY'}.",
+            settings=settings,
         )
     if not model:
         return _result(
-            provider,
+            spec.id,
             state=ProviderState.MISCONFIGURED,
             model="",
             detail="O modelo do provedor não está configurado.",
+            settings=settings,
         )
-
     started = time.monotonic()
     try:
-        headers = {"Authorization": f"Bearer {api_key}"}
-        if provider == "openrouter":
-            headers["X-Title"] = settings.openrouter_app_name
-            if settings.openrouter_site_url:
-                headers["HTTP-Referer"] = settings.openrouter_site_url
         response = httpx.post(
-            f"{base_url.rstrip('/')}/chat/completions",
-            headers=headers,
+            f"{spec.base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", **spec.headers},
             json={
                 "model": model,
                 "messages": [{"role": "user", "content": _PROBE_PROMPT}],
@@ -747,20 +704,20 @@ def _probe_direct(settings: Settings, provider: str, model_name: str | None = No
             timeout=_timeout(settings),
         )
         response.raise_for_status()
-        payload = response.json()
-        text = payload["choices"][0]["message"]["content"]
-        parsed = parse_json(str(text or ""))
-        if parsed.get("preflight") is not True:
+        text = response.json()["choices"][0]["message"]["content"]
+        if parse_json(str(text or "")).get("preflight") is not True:
             raise ValueError("resposta de preflight sem confirmação")
         return _result(
-            provider,
+            spec.id,
             state=ProviderState.AVAILABLE,
             model=model,
             detail="Credencial, modelo e resposta JSON validados.",
             started=started,
+            valid_routes=spec.models or (model,),
+            settings=settings,
         )
     except Exception as exc:
-        return _http_failure(provider, model, exc, started)
+        return _http_failure(spec.id, model, exc, started, settings)
 
 
 def preflight_provider(
@@ -772,15 +729,18 @@ def preflight_provider(
 ) -> ProviderPreflight:
     settings = settings or get_settings()
     normalized = provider.strip().lower()
-    if normalized == "gemini":
+    spec = provider_spec(normalized, settings)
+    if not spec or not spec.enabled:
+        raise ProviderError(f"Provedor desconhecido ou desabilitado: {normalized}.")
+    if spec.kind == "gemini":
         return _probe_gemini(settings, model_name, quick=quick)
-    if normalized == "ollama":
+    if spec.kind == "ollama":
         return _probe_ollama(settings, model_name, quick=quick)
-    if normalized == "omniroute":
+    if spec.kind == "gateway":
         return _probe_omniroute(settings, model_name)
-    if normalized in {"groq", "openrouter"}:
-        return _probe_direct(settings, normalized, model_name)
-    raise ProviderError(f"Provedor desconhecido: {normalized}.")
+    if spec.kind == "openai-compatible":
+        return _probe_direct(settings, spec, model_name)
+    raise ProviderError(f"Tipo de provedor desconhecido: {spec.kind}.")
 
 
 def preflight_all(
@@ -788,21 +748,13 @@ def preflight_all(
     *,
     quick: bool = True,
 ) -> list[ProviderPreflight]:
-    """Lista provedores sem aquecer modelos locais por padrão.
-
-    A interface, o menu e o painel de saúde usam a validação rápida. Toda
-    investigação repete o preflight completo antes de abrir qualquer SSH.
-    """
+    """Lista provedores habilitados; modelos locais não são aquecidos no catálogo rápido."""
     settings = settings or get_settings()
-    providers = ("gemini", "groq", "openrouter", "ollama", "omniroute")
-    with ThreadPoolExecutor(max_workers=len(providers), thread_name_prefix="ai-preflight") as pool:
+    providers = provider_ids(settings)
+    with ThreadPoolExecutor(max_workers=max(1, min(len(providers), 12)), thread_name_prefix="ai-preflight") as pool:
         return list(
             pool.map(
-                lambda provider: preflight_provider(
-                    provider,
-                    settings,
-                    quick=quick,
-                ),
+                lambda item: preflight_provider(item, settings, quick=quick),
                 providers,
             )
         )
@@ -811,8 +763,7 @@ def preflight_all(
 def selected_provider_preflight(settings: Settings | None = None) -> ProviderPreflight:
     settings = settings or get_settings()
     provider = (current_provider_override() or settings.ai_provider or "gemini").strip().lower()
-    model = current_model_override()
-    return preflight_provider(provider, settings, model, quick=False)
+    return preflight_provider(provider, settings, current_model_override(), quick=False)
 
 
 def require_selected_provider(settings: Settings | None = None) -> ProviderPreflight:
