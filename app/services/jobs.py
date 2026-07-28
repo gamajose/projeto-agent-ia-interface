@@ -39,6 +39,10 @@ def _store(client: Redis, settings: Settings, job_id: str, payload: dict[str, An
     )
 
 
+def _default_provider(settings: Settings) -> str:
+    return str(getattr(settings, "ai_provider", "gemini") or "gemini").strip().lower()
+
+
 def enqueue_investigation(
     reference: str,
     objective: str,
@@ -56,11 +60,12 @@ def enqueue_investigation(
 ) -> dict[str, Any]:
     settings = settings or get_settings()
     if mode == "correct" and approve:
-        # O webhook distribuído nunca transforma fila em autorização implícita.
+        # Uma fila distribuída nunca transforma intenção em autorização implícita.
         approve = False
+        mode = "propose"
     job_id = str(uuid.uuid4())
     selection = {
-        "provider": (provider_name or settings.ai_provider or "gemini").strip().lower(),
+        "provider": (provider_name or _default_provider(settings)).strip().lower(),
         "model": (model_name or "").strip(),
         "playbook_mode": (playbook_mode or "auto").strip().lower(),
         "playbook_id": (playbook_id or "").strip() or None,
@@ -107,7 +112,7 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
     client = _redis(settings)
     worker = f"{settings.agent_worker_name}@{socket.gethostname()}"
     selection = {
-        "provider": str(job.get("provider") or settings.ai_provider or "gemini"),
+        "provider": str(job.get("provider") or _default_provider(settings)),
         "model": str(job.get("model") or ""),
         "playbook_mode": str(job.get("playbook_mode") or "auto"),
         "playbook_id": job.get("playbook_id"),
