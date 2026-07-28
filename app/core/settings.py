@@ -170,9 +170,9 @@ class Settings(BaseSettings):
     codex_workdir: str | None = None
     codex_home: str | None = None
 
-    # OpenCode é uma ferramenta de desenvolvimento separada. Ele usa o mesmo
-    # endpoint OmniRoute, mas não herda automaticamente SSH nem permissões do
-    # motor de troubleshooting. A interface web fica somente em localhost.
+    # OpenCode usa OmniRoute, mas permanece separado do motor de troubleshooting.
+    # A interface integrada executa `opencode run` no diretório configurado e
+    # nunca recebe automaticamente SSH, bastion ou credenciais de servidores.
     opencode_enabled: bool = True
     opencode_cli_path: str | None = None
     opencode_workdir: str | None = None
@@ -188,6 +188,12 @@ class Settings(BaseSettings):
     opencode_tunnel_host: str | None = None
     opencode_tunnel_ssh_port: int = Field(default=22, ge=1, le=65535)
     opencode_tunnel_user: str | None = None
+    opencode_interface_enabled: bool = True
+    opencode_interface_allow_build: bool = True
+    opencode_run_timeout_seconds: int = Field(default=900, ge=30, le=3600)
+    opencode_run_max_prompt_chars: int = Field(default=12000, ge=100, le=50000)
+    opencode_run_max_output_chars: int = Field(default=250000, ge=10000, le=2_000_000)
+    opencode_run_concurrency: int = Field(default=1, ge=1, le=4)
 
     recurrence_warning_count: int = 2
     recurrence_warning_days: int = 7

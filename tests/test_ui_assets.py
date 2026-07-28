@@ -26,6 +26,7 @@ def test_interface_references_compact_modal_batch_result_and_tool_assets() -> No
     assert "/ui/assets/batch.js" in html
     assert "/ui/assets/workspace.js" in html
     assert "/ui/assets/tools.js" in html
+    assert "v=1.12.0" in html
     assert 'id="analysis-modal"' in html
     assert 'id="attach-batch-file"' in html
     assert 'id="provider"' in html
@@ -33,18 +34,25 @@ def test_interface_references_compact_modal_batch_result_and_tool_assets() -> No
     assert 'id="batch-file"' in html
     assert 'id="view-opencode"' in html
     assert 'data-view="opencode"' in html
+    assert "OpenCode integrado ao Agent IA" in html
     assert 'id="view-health"' in html
     assert 'data-view="analysis"' not in html
     assert "/ui/api/ai/providers" in script
     assert "/ui/api/health" in script
     assert "/ui/api/batches/parse" in batch_script
-    assert "/ui/api/tools/opencode" in tools_script
+    assert "/ui/api/tools/opencode/runs" in tools_script
+    assert "submitOpenCodePrompt" in tools_script
+    assert "pollOpenCodeRun" in tools_script
+    assert "opencode-prompt" in tools_script
+    assert "opencode-agent" in tools_script
     assert "terminal-card" in workspace_script
     assert "confidence-ring" in workspace_script
     assert "renderApprovedExecution" in workspace_script
     assert ".analysis-modal" in workspace_css
     assert ".terminal-screen" in workspace_css
     assert ".opencode-workspace" in tools_css
+    assert ".opencode-chat-panel" in tools_css
+    assert ".opencode-composer" in tools_css
     assert "API_KEY" not in html
 
 
