@@ -186,8 +186,13 @@ def direct_provider_status(settings: Settings | None = None) -> list[dict[str, A
         return _legacy_direct_status(settings)
 
     active_ids = set(provider_ids(settings))
+    display_rank = {"gemini": 0, "groq": 1, "deepseek": 2, "openrouter": 3}
+    specs = sorted(
+        provider_specs(settings),
+        key=lambda spec: (display_rank.get(spec.id, 100), spec.priority, spec.label.casefold()),
+    )
     rows: list[dict[str, Any]] = []
-    for spec in provider_specs(settings):
+    for spec in specs:
         if spec.source != "direct" or spec.id not in active_ids:
             continue
         rows.append(
@@ -305,10 +310,7 @@ def _legacy_get_provider(selected: str, selected_model: str, settings: Any) -> A
         if not key:
             raise ProviderError("GROQ_API_KEY não configurada.")
         return OpenAICompatibleProvider(
-            "groq",
-            key,
-            selected_model or getattr(settings, "groq_model", ""),
-            getattr(settings, "groq_base_url", ""),
+            "groq", key, selected_model or getattr(settings, "groq_model", ""), getattr(settings, "groq_base_url", "")
         )
     if selected == "openrouter":
         key = getattr(settings, "openrouter_api_key", None)
@@ -318,17 +320,10 @@ def _legacy_get_provider(selected: str, selected_model: str, settings: Any) -> A
         if getattr(settings, "openrouter_site_url", None):
             headers["HTTP-Referer"] = settings.openrouter_site_url
         return OpenAICompatibleProvider(
-            "openrouter",
-            key,
-            selected_model or getattr(settings, "openrouter_model", ""),
-            getattr(settings, "openrouter_base_url", ""),
-            headers,
+            "openrouter", key, selected_model or getattr(settings, "openrouter_model", ""), getattr(settings, "openrouter_base_url", ""), headers
         )
     if selected == "ollama":
-        return OllamaProvider(
-            selected_model or getattr(settings, "ollama_model", ""),
-            getattr(settings, "ollama_base_url", ""),
-        )
+        return OllamaProvider(selected_model or getattr(settings, "ollama_model", ""), getattr(settings, "ollama_base_url", ""))
     if selected == "omniroute":
         key = getattr(settings, "omniroute_api_key", None)
         if not key:
@@ -336,12 +331,7 @@ def _legacy_get_provider(selected: str, selected_model: str, settings: Any) -> A
         model = selected_model or _default_omniroute_route(settings)
         if not model:
             raise ProviderError("Selecione uma rota/modelo do OmniRoute.")
-        return OpenAICompatibleProvider(
-            "omniroute",
-            key,
-            model,
-            getattr(settings, "omniroute_base_url", ""),
-        )
+        return OpenAICompatibleProvider("omniroute", key, model, getattr(settings, "omniroute_base_url", ""))
     raise ProviderError(f"Provedor desconhecido: {selected}.")
 
 
@@ -374,15 +364,7 @@ def get_provider(
         model = selected_model or spec.default_model
         if not model:
             if spec.id == "omniroute":
-                raise ProviderError(
-                    "Selecione uma rota/modelo do OmniRoute no menu ou configure OMNIROUTE_DEFAULT_ROUTE."
-                )
+                raise ProviderError("Selecione uma rota/modelo do OmniRoute no menu ou configure OMNIROUTE_DEFAULT_ROUTE.")
             raise ProviderError(f"Modelo padrão não configurado para {spec.label}.")
-        return OpenAICompatibleProvider(
-            spec.id,
-            api_key,
-            model,
-            spec.base_url,
-            _headers_for_spec(spec, settings),
-        )
+        return OpenAICompatibleProvider(spec.id, api_key, model, spec.base_url, _headers_for_spec(spec, settings))
     raise ProviderError(f"Tipo de provedor não suportado: {spec.kind}.")
