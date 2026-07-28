@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     agent_job_ttl_seconds: int = 86400
     agent_queue_block_seconds: int = 5
 
+    # Execução em lote usa a mesma API e o mesmo motor por alvo. A concorrência
+    # limita quantas investigações a interface mantém simultaneamente.
+    agent_batch_enabled: bool = True
+    agent_batch_max_targets: int = Field(default=50, ge=1, le=500)
+    agent_batch_concurrency: int = Field(default=2, ge=1, le=10)
+    agent_batch_max_file_bytes: int = Field(default=1_000_000, ge=1024, le=10_000_000)
+
     checkmk_api_user: str | None = None
     checkmk_api_secret: str | None = None
     checkmk_webhook_token: str | None = None
