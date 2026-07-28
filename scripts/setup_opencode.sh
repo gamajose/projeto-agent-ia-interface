@@ -38,6 +38,12 @@ if [[ -z "${CURRENT_OPENCODE}" || ! -x "${CURRENT_OPENCODE}" ]]; then
   exit 1
 fi
 
+OPENCODE_BIN_DIR="$(dirname "${CURRENT_OPENCODE}")"
+if [[ ! -x "${OPENCODE_BIN_DIR}/node" ]] && ! command -v node >/dev/null 2>&1; then
+  echo "Node.js não foi localizado para executar o OpenCode." >&2
+  exit 1
+fi
+
 DETECTED_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
 DETECTED_HOST="${DETECTED_HOST:-IP_DA_VM}"
 TUNNEL_HOST="${OPENCODE_TUNNEL_HOST:-${DETECTED_HOST}}"
@@ -118,6 +124,7 @@ User=${TARGET_USER}
 Group=$(id -gn "${TARGET_USER}")
 WorkingDirectory=${ROOT_DIR}
 Environment=HOME=${TARGET_HOME}
+Environment=PATH=${OPENCODE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=${SERVICE_BIN}
 Restart=on-failure
 RestartSec=5
