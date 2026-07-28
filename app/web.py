@@ -21,13 +21,14 @@ from app.services.jobs import enqueue_investigation, get_job
 from app.services.persistence import get_investigation, operational_metrics
 from app.services.playbooks import list_playbooks
 from app.services.provider_preflight import ProviderPreflight, preflight_all, preflight_provider
+from app.services.provider_router import automatic_provider_order
 from app.services.runner import run_target
 from app.services.ui_queries import list_hosts, list_investigations
 
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 router = APIRouter(tags=["interface"])
-ProviderName = Literal["gemini", "groq", "openrouter", "ollama", "omniroute"]
+ProviderName = Literal["auto", "gemini", "groq", "openrouter", "ollama", "omniroute"]
 
 
 class InvestigationPayload(BaseModel):
@@ -117,6 +118,10 @@ def _compact_result(result: dict[str, Any]) -> dict[str, Any]:
         "history": result.get("history") or [],
         "similar_history": result.get("similar_history") or [],
         "ai_diagnostics": result.get("ai_diagnostics") or analysis.get("ai_diagnostics") or [],
+        "selected_provider": result.get("selected_provider"),
+        "selected_model": result.get("selected_model"),
+        "provider_selection": result.get("provider_selection"),
+        "automation": result.get("automation"),
     }
 
 
@@ -141,13 +146,31 @@ def _provider_options(result: ProviderPreflight, settings: Settings) -> list[dic
     return []
 
 
+def _default_provider(settings: Settings) -> str:
+    if settings.agent_autopilot_enabled and settings.agent_autopilot_default:
+        return "auto"
+    return str(settings.ai_provider or "gemini").strip().lower()
+
+
 def _validate_selection(payload: InvestigationPayload, settings: Settings) -> tuple[str, str | None, str]:
     if payload.playbook_mode == "manual" and not (payload.playbook_id or "").strip():
         raise HTTPException(status_code=422, detail="selecione um playbook no modo manual")
 
-    provider = (payload.provider or settings.ai_provider or "gemini").strip().lower()
+    provider = (payload.provider or _default_provider(settings)).strip().lower()
     model = (payload.model or "").strip() or None
-    result = preflight_provider(provider, settings, model)
+
+    if provider == "auto":
+        if not settings.agent_autopilot_enabled:
+            raise HTTPException(status_code=422, detail="autopilot desabilitado na configuração")
+        quick_rows = preflight_all(settings, quick=True)
+        if not any(item.selectable for item in quick_rows):
+            raise HTTPException(
+                status_code=422,
+                detail="nenhuma IA está disponível para seleção automática; consulte o painel Saúde",
+            )
+        return "auto", None, "propose"
+
+    result = preflight_provider(provider, settings, model, quick=False)
     if not result.selectable:
         raise HTTPException(
             status_code=422,
@@ -175,7 +198,9 @@ def ui_session(request: Request) -> dict[str, Any]:
         "operator": _operator_name(),
         "execution_mode": settings.agent_execution_mode,
         "default_mode": settings.agent_default_mode,
-        "default_provider": settings.ai_provider,
+        "default_provider": _default_provider(settings),
+        "autopilot_enabled": settings.agent_autopilot_enabled,
+        "autopilot_default": settings.agent_autopilot_default,
         "reviewer_provider": settings.ai_reviewer_provider,
         "review_required": settings.ai_reviewer_required_for_corrections,
         "safe_rules": [
@@ -190,17 +215,45 @@ def ui_session(request: Request) -> dict[str, Any]:
 def ai_providers(request: Request) -> dict[str, Any]:
     _require_access(request)
     settings = get_settings()
-    items = []
-    for result in preflight_all(settings):
+    diagnostics = preflight_all(settings, quick=True)
+    items: list[dict[str, Any]] = []
+
+    selectable = [item for item in diagnostics if item.selectable]
+    if settings.agent_autopilot_enabled:
+        order = automatic_provider_order(settings)
+        items.append(
+            {
+                "provider": "auto",
+                "label": "Automático — melhor IA disponível",
+                "state": "available" if selectable else "unavailable",
+                "state_label": "disponível" if selectable else "indisponível",
+                "model": "",
+                "detail": (
+                    "Valida e seleciona automaticamente a primeira IA saudável. "
+                    f"Prioridade: {', '.join(order)}."
+                    if selectable
+                    else "Nenhuma IA passou no catálogo rápido."
+                ),
+                "latency_ms": None,
+                "selectable": bool(selectable),
+                "valid_routes": [],
+                "invalid_routes": [],
+                "options": [],
+                "automatic": True,
+            }
+        )
+
+    for result in diagnostics:
         items.append(
             {
                 **result.model_dump(mode="json"),
                 "state_label": result.state_label,
                 "options": _provider_options(result, settings),
+                "automatic": False,
             }
         )
     return {
-        "default_provider": settings.ai_provider,
+        "default_provider": _default_provider(settings),
         "reviewer_provider": settings.ai_reviewer_provider,
         "items": items,
     }
@@ -259,8 +312,8 @@ def create_investigation(payload: InvestigationPayload, request: Request) -> dic
         "ssh_port": payload.ssh_port,
         "provider_name": provider,
         "model_name": model,
-        "playbook_mode": payload.playbook_mode,
-        "playbook_id": (payload.playbook_id or "").strip() or None,
+        "playbook_mode": "auto" if provider == "auto" else payload.playbook_mode,
+        "playbook_id": None if provider == "auto" else (payload.playbook_id or "").strip() or None,
         "settings": settings,
     }
 
@@ -273,6 +326,7 @@ def create_investigation(payload: InvestigationPayload, request: Request) -> dic
                     "source": "web_ui",
                     "operator": _operator_name(),
                     "requested_mode": payload.mode,
+                    "autopilot": provider == "auto",
                 },
                 **common,
             )
@@ -291,8 +345,9 @@ def create_investigation(payload: InvestigationPayload, request: Request) -> dic
         raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
     compact = _compact_result(result)
     compact["requested_mode"] = payload.mode
-    compact["selected_provider"] = provider
-    compact["selected_model"] = model
+    compact["requested_provider"] = provider
+    compact["selected_provider"] = result.get("selected_provider") or provider
+    compact["selected_model"] = result.get("selected_model") or model
     return compact
 
 
