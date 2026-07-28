@@ -4,12 +4,37 @@ set -Eeuo pipefail
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_NAME="$(basename "$PROJECT_DIR")"
 ENV_FILE="${AGENT_ENV_FILE:-$PROJECT_DIR/.env}"
+BOOTSTRAP_VENV_DIR="${AGENT_VENV_DIR:-$HOME/.venvs/$PROJECT_NAME}"
+BOOTSTRAP_PYTHON="$BOOTSTRAP_VENV_DIR/bin/python"
 
 if [[ -f "$ENV_FILE" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
-    set +a
+    if [[ ! -x "$BOOTSTRAP_PYTHON" ]]; then
+        printf '[ERRO] Ambiente ainda não preparado: %s\n' "$BOOTSTRAP_VENV_DIR" >&2
+        printf 'Execute primeiro: bash "%s/scripts/setup_wsl.sh"\n' "$PROJECT_DIR" >&2
+        exit 1
+    fi
+
+    while IFS= read -r -d '' assignment; do
+        export "$assignment"
+    done < <(
+        "$BOOTSTRAP_PYTHON" - "$ENV_FILE" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import sys
+
+from dotenv import dotenv_values
+
+path = sys.argv[1]
+valid_name = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+for key, value in dotenv_values(path).items():
+    if value is None or not valid_name.fullmatch(key):
+        continue
+    os.write(1, f"{key}={value}".encode("utf-8") + b"\0")
+PY
+    )
 fi
 
 VENV_DIR="${AGENT_VENV_DIR:-$HOME/.venvs/$PROJECT_NAME}"
