@@ -92,10 +92,11 @@ class Settings(BaseSettings):
 
     # O Gemini consulta a lista de modelos visível para a própria chave. Quando
     # o modelo configurado não existir, usa o primeiro modelo desta lista que
-    # esteja disponível. A lista contém apenas modelos estáveis com free tier.
+    # esteja disponível. Em 429/5xx tenta o próximo modelo da lista.
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.5-flash"
     gemini_auto_free: bool = True
+    gemini_transient_fallback: bool = True
     gemini_free_models: str = (
         "gemini-3.5-flash,gemini-3.1-flash-lite,"
         "gemini-2.5-flash,gemini-2.5-flash-lite"
@@ -111,11 +112,13 @@ class Settings(BaseSettings):
     openrouter_site_url: str | None = None
 
     # O modelo do projeto anterior era gemma3:4b. Se ele não estiver disponível,
-    # o Agent pode selecionar outro modelo já instalado no Ollama.
+    # o Agent pode selecionar outro modelo já instalado no Ollama. A listagem
+    # usa um probe rápido; a geração real pode aguardar mais no primeiro load.
     ollama_model: str = "gemma3:4b"
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_auto_fallback: bool = True
     ollama_preferred_models: str = "gemma3:4b,llama3.2"
+    ollama_preflight_timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
 
     # OmniRoute é um gateway: o Agent precisa apenas do token e da URL.
     # A rota/modelo é selecionada no menu, por OMNIROUTE_DEFAULT_ROUTE ou
