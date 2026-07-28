@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.core.settings import Settings
 from app.services.ai_providers import OpenAICompatibleProvider, get_provider
 from app.services.provider_preflight import ProviderState, preflight_provider
 from app.services.provider_registry import (
-    provider_spec,
     public_registry,
     save_custom_provider,
     update_env_values,
@@ -102,10 +102,14 @@ def test_env_update_preserves_existing_values_and_permissions(tmp_path):
 
 
 def test_dynamic_provider_ids_are_accepted_by_web_payload():
-    enable_dynamic_provider_payload()
-    payload = InvestigationPayload(
-        target="192.0.2.10",
-        objective="validar serviço",
-        provider="provedor-interno",
-    )
+    with patch(
+        "app.web_settings.provider_spec",
+        return_value=SimpleNamespace(enabled=True),
+    ):
+        enable_dynamic_provider_payload()
+        payload = InvestigationPayload(
+            target="192.0.2.10",
+            objective="validar serviço",
+            provider="provedor-interno",
+        )
     assert payload.provider == "provedor-interno"
