@@ -89,8 +89,18 @@ class Settings(BaseSettings):
 
     ai_provider: str = "gemini"
     ai_preflight_timeout_seconds: float = Field(default=8.0, ge=1.0, le=60.0)
+
+    # O Gemini consulta a lista de modelos visível para a própria chave. Quando
+    # o modelo configurado não existir, usa o primeiro modelo desta lista que
+    # esteja disponível. A lista contém apenas modelos estáveis com free tier.
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.5-flash"
+    gemini_auto_free: bool = True
+    gemini_free_models: str = (
+        "gemini-3.5-flash,gemini-3.1-flash-lite,"
+        "gemini-2.5-flash,gemini-2.5-flash-lite"
+    )
+
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
     groq_base_url: str = "https://api.groq.com/openai/v1"
@@ -99,8 +109,13 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_app_name: str = "Agent IA Infra"
     openrouter_site_url: str | None = None
-    ollama_model: str = "llama3.2"
+
+    # O modelo do projeto anterior era gemma3:4b. Se ele não estiver disponível,
+    # o Agent pode selecionar outro modelo já instalado no Ollama.
+    ollama_model: str = "gemma3:4b"
     ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_auto_fallback: bool = True
+    ollama_preferred_models: str = "gemma3:4b,llama3.2"
 
     # OmniRoute é um gateway: o Agent precisa apenas do token e da URL.
     # A rota/modelo é selecionada no menu, por OMNIROUTE_DEFAULT_ROUTE ou
