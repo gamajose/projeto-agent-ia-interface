@@ -137,10 +137,21 @@ def run_target(
     settings = settings or get_settings()
     with use_provider(provider_name, model_name), use_playbook(playbook_mode, playbook_id):
         preflight = require_selected_provider(settings)
+        resolved_provider = str(
+            getattr(preflight, "provider", None)
+            or provider_name
+            or getattr(settings, "ai_provider", "gemini")
+            or "gemini"
+        )
+        resolved_model = str(
+            getattr(preflight, "model", None)
+            or model_name
+            or ""
+        ) or None
 
         # O modelo efetivo pode ser diferente do valor do .env quando o Gemini
         # seleciona um free tier disponível ou o Ollama usa um modelo instalado.
-        with use_provider(preflight.provider, preflight.model):
+        with use_provider(resolved_provider, resolved_model):
             playbook_ssh_port, _ = selected_playbook_ssh_port(
                 objective.strip() or "validar a saúde geral do servidor"
             )
