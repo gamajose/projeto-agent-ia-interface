@@ -29,4 +29,4 @@ def test_setup_script_uses_linux_filesystem_for_virtualenv() -> None:
 
     assert "$HOME/.venvs/$PROJECT_NAME" in content
     assert "--break-system-packages" not in content
-    assert "pip install -e" in content
+    assert '"$PIP" install -e "$PROJECT_DIR"' in content
