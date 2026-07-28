@@ -30,7 +30,7 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "/ui/assets/workspace.js" in html
     assert "/ui/assets/tools.js" in html
     assert "/ui/assets/settings.js" in html
-    assert "v=1.14.0" in html
+    assert "v=1.15.0" in html
     assert 'id="analysis-modal"' in html
     assert 'id="attach-batch-file"' in html
     assert 'id="provider"' in html
@@ -43,9 +43,13 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert 'data-view="settings"' in html
     assert 'id="provider-new"' in html
     assert ">Adicionar IA<" in html
+    assert 'class="provider-priority-actions"' in html
+    assert html.index('id="provider-new"') > html.index('class="provider-priority-section"')
     assert 'id="provider-modal"' in html
     assert 'id="provider-api-key"' in html
     assert 'id="provider-order-status"' in html
+    assert "Provedores e chaves de IA" not in html
+    assert "ai-settings-header" not in html
     assert 'id="provider-deepseek"' not in html
     assert 'id="refresh-ai-settings"' not in html
     assert 'id="ai-provider-order"' not in html
@@ -65,8 +69,11 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "saveProvider" in settings_script
     assert "openProviderModal" in settings_script
     assert "persistCardOrder" in settings_script
+    assert "reorderCardAroundPointer" in settings_script
     assert 'addEventListener("dragstart"' in settings_script
-    assert 'addEventListener("drop"' in settings_script
+    assert 'addEventListener("pointerdown"' in settings_script
+    assert 'addEventListener("pointermove"' in settings_script
+    assert "document.elementFromPoint" in settings_script
     assert "/ui/api/settings/ai/order" in settings_script
     assert "applyDeepSeekPreset" not in settings_script
     assert "terminal-card" in workspace_script
@@ -80,7 +87,10 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert ".provider-config-grid" in settings_css
     assert ".provider-modal" in settings_css
     assert ".is-dragging" in settings_css
-    assert "overflow-x:auto" in settings_css
+    assert "grid-template-columns:repeat(auto-fit" in settings_css
+    assert "touch-action:none" in settings_css
+    assert "overflow-x:auto" not in settings_css
+    assert "::-webkit-scrollbar" not in settings_css
     assert "DEEPSEEK_API_KEY" not in html
     assert "OMNIROUTE_API_KEY" not in html
 
