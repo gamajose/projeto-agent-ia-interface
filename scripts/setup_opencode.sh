@@ -92,6 +92,12 @@ values = {
     "OPENCODE_TUNNEL_HOST": os.environ["TUNNEL_HOST"],
     "OPENCODE_TUNNEL_SSH_PORT": os.environ["TUNNEL_SSH_PORT"],
     "OPENCODE_TUNNEL_USER": os.environ["TUNNEL_USER"],
+    "OPENCODE_INTERFACE_ENABLED": "true",
+    "OPENCODE_INTERFACE_ALLOW_BUILD": "true",
+    "OPENCODE_RUN_TIMEOUT_SECONDS": "900",
+    "OPENCODE_RUN_MAX_PROMPT_CHARS": "12000",
+    "OPENCODE_RUN_MAX_OUTPUT_CHARS": "250000",
+    "OPENCODE_RUN_CONCURRENCY": "1",
 }
 
 append: list[str] = []
@@ -149,7 +155,8 @@ sudo systemctl enable --now opencode-web.service
 
 echo
 echo "OpenCode instalado: ${CURRENT_OPENCODE}"
-echo "Interface: http://127.0.0.1:4096"
+echo "Workspace integrado: disponível no menu OpenCode do Agent IA"
+echo "Interface original: http://127.0.0.1:4096"
 echo "Usuário: opencode"
 if grep -q "^OPENCODE_SERVER_PASSWORD=${GENERATED_PASSWORD}$" "${ENV_FILE}"; then
   echo "Senha inicial: ${GENERATED_PASSWORD}"
