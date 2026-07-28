@@ -6,9 +6,13 @@ import uvicorn
 
 from app.main import app
 from app.web import register_ui
+from app.web_batch import router as batch_router
 
 
 register_ui(app)
+if not getattr(app.state, "agent_ui_batch_registered", False):
+    app.include_router(batch_router)
+    app.state.agent_ui_batch_registered = True
 
 
 def main() -> None:
