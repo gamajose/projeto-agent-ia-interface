@@ -6,8 +6,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app import web as web_module
 from app.core.settings import Settings, get_settings
-from app.services.provider_preflight import preflight_all, preflight_provider
+from app.services.ai_providers import omniroute_route_options
+from app.services.provider_preflight import ProviderPreflight, preflight_all, preflight_provider
 from app.services.provider_registry import (
     builtin_env_updates,
     delete_custom_provider,
@@ -40,16 +42,54 @@ class ProviderOrderPayload(BaseModel):
     providers: list[str] = Field(min_length=1, max_length=100)
 
 
-def enable_dynamic_provider_payload() -> None:
-    """Permite IDs cadastrados sem duplicar todos os nomes no schema Pydantic.
+def _dynamic_provider_options(result: ProviderPreflight, settings: Settings) -> list[dict[str, Any]]:
+    if result.provider == "omniroute":
+        configured = omniroute_route_options(settings)
+        valid = set(result.valid_routes)
+        rows = [
+            {
+                "value": route.model,
+                "label": route.label,
+                "default": route.is_default,
+                "available": not valid or route.model in valid,
+            }
+            for route in configured
+        ]
+        if result.model and result.model not in {item["value"] for item in rows}:
+            rows.insert(
+                0,
+                {
+                    "value": result.model,
+                    "label": result.model,
+                    "default": True,
+                    "available": result.selectable,
+                },
+            )
+        return rows
 
-    O modelo continua limitando tamanho e o backend valida o ID contra o registro
-    antes de qualquer chamada de IA ou abertura de SSH.
-    """
+    spec = provider_spec(result.provider, settings)
+    models = list(spec.models if spec else ())
+    if result.model and result.model not in models:
+        models.insert(0, result.model)
+    return [
+        {
+            "value": model,
+            "label": model,
+            "default": model == result.model or bool(spec and model == spec.default_model),
+            "available": not result.valid_routes or model in set(result.valid_routes),
+        }
+        for model in models
+        if model
+    ]
+
+
+def enable_dynamic_provider_payload() -> None:
+    """Permite IDs cadastrados e modelos dinâmicos no fluxo existente."""
     InvestigationPayload.__annotations__["provider"] = str | None
     InvestigationPayload.model_fields["provider"].annotation = str | None
     InvestigationPayload.model_fields["provider"].metadata = []
     InvestigationPayload.model_rebuild(force=True)
+    web_module._provider_options = _dynamic_provider_options
 
 
 def _fresh_settings() -> Settings:
@@ -88,9 +128,10 @@ def ai_settings(request: Request) -> dict[str, Any]:
     _settings_enabled(settings)
     registry = public_registry(settings)
     diagnostics = _public_diagnostics(settings)
-    providers = []
-    for item in registry["providers"]:
-        providers.append({**item, "diagnostic": diagnostics.get(item["id"])})
+    providers = [
+        {**item, "diagnostic": diagnostics.get(item["id"])}
+        for item in registry["providers"]
+    ]
     return {
         "enabled": True,
         "allow_secret_write": settings.ai_settings_allow_secret_write,
@@ -177,7 +218,10 @@ def save_provider_configuration(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"não foi possível salvar o provedor: {type(exc).__name__}") from exc
+        raise HTTPException(
+            status_code=500,
+            detail=f"não foi possível salvar o provedor: {type(exc).__name__}",
+        ) from exc
 
     refreshed = _fresh_settings()
     spec = provider_spec(normalized, refreshed)
@@ -208,7 +252,11 @@ def save_provider_order(payload: ProviderOrderPayload, request: Request) -> dict
     _require_mutation(request)
     settings = _fresh_settings()
     _settings_enabled(settings)
-    registered = {item["id"] for item in public_registry(settings)["providers"] if item.get("enabled", True)}
+    registered = {
+        item["id"]
+        for item in public_registry(settings)["providers"]
+        if item.get("enabled", True)
+    }
     ordered: list[str] = []
     for raw in payload.providers:
         item = raw.strip().lower()
@@ -231,7 +279,10 @@ def test_provider_configuration(provider_id: str, request: Request) -> dict[str,
     try:
         result = preflight_provider(normalized, settings, quick=False)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"falha ao testar provedor: {type(exc).__name__}: {exc}") from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"falha ao testar provedor: {type(exc).__name__}: {exc}",
+        ) from exc
     return {
         **result.model_dump(mode="json"),
         "state_label": result.state_label,
