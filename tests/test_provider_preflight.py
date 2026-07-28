@@ -238,10 +238,10 @@ def test_gemini_quick_probe_lists_provider_without_generation():
     ) as generation:
         result = preflight_provider("gemini", _settings(), quick=True)
 
-    assert result.state == ProviderState.DEGRADED
+    assert result.state == ProviderState.AVAILABLE
     assert result.selectable is True
     assert result.model == "gemini-2.5-flash"
-    assert "validado ao iniciar" in result.detail
+    assert "geração será validada antes de abrir o SSH" in result.detail
     generation.assert_not_called()
 
 
