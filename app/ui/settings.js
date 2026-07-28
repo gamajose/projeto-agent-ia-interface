@@ -2,9 +2,12 @@
   const baseShowView = showView;
   state.aiSettingsLoaded = false;
   state.aiSettingsData = null;
-  viewMeta.settings = ["CONFIGURAÇÃO DINÂMICA", "Configurações de IA"];
+  viewMeta.settings = ["CONFIGURAÇÕES", "Configurações de IA"];
 
   let draggedProviderId = null;
+  let nativeOrderChanged = false;
+  let touchDraggedCard = null;
+  let touchOrderChanged = false;
   let editingProviderPriority = 100;
 
   showView = function showViewWithAISettings(name) {
@@ -37,6 +40,22 @@
     });
   }
 
+  function reorderCardAroundPointer(container, dragging, target, clientX, clientY) {
+    if (!dragging || !target || dragging === target) return false;
+    const bounds = target.getBoundingClientRect();
+    const centerX = bounds.left + bounds.width / 2;
+    const centerY = bounds.top + bounds.height / 2;
+    const verticalDistance = clientY - centerY;
+    const sameVisualRow = Math.abs(verticalDistance) <= Math.min(48, bounds.height * 0.25);
+    const insertBefore = sameVisualRow ? clientX < centerX : clientY < centerY;
+    const reference = insertBefore ? target : target.nextSibling;
+
+    if (reference === dragging || dragging.nextSibling === reference) return false;
+    container.insertBefore(dragging, reference);
+    updateOrderNumbers();
+    return true;
+  }
+
   async function persistCardOrder() {
     const providers = $$("#provider-config-grid .provider-config-card").map((card) => card.dataset.providerId).filter(Boolean);
     const status = $("#provider-order-status");
@@ -58,10 +77,35 @@
     }
   }
 
+  function finishTouchSorting(card, handle, event) {
+    if (touchDraggedCard !== card) return;
+    if (handle.hasPointerCapture?.(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    card.classList.remove("is-dragging");
+    card.setAttribute("aria-grabbed", "false");
+    touchDraggedCard = null;
+    draggedProviderId = null;
+    const changed = touchOrderChanged;
+    touchOrderChanged = false;
+    if (changed) void persistCardOrder();
+  }
+
   function bindCardSorting(container) {
+    container.ondragover = (event) => {
+      event.preventDefault();
+      const dragging = container.querySelector(".is-dragging");
+      const target = event.target.closest(".provider-config-card");
+      nativeOrderChanged = reorderCardAroundPointer(container, dragging, target, event.clientX, event.clientY) || nativeOrderChanged;
+    };
+    container.ondrop = (event) => event.preventDefault();
+
     $$("#provider-config-grid .provider-config-card").forEach((card) => {
       card.addEventListener("dragstart", (event) => {
+        if (event.target.closest("button,input,select,textarea,a")) {
+          event.preventDefault();
+          return;
+        }
         draggedProviderId = card.dataset.providerId;
+        nativeOrderChanged = false;
         card.classList.add("is-dragging");
         card.setAttribute("aria-grabbed", "true");
         event.dataTransfer.effectAllowed = "move";
@@ -71,22 +115,30 @@
         card.classList.remove("is-dragging");
         card.setAttribute("aria-grabbed", "false");
         draggedProviderId = null;
-        $$("#provider-config-grid .provider-config-card").forEach((item) => item.classList.remove("drag-over"));
+        const changed = nativeOrderChanged;
+        nativeOrderChanged = false;
+        if (changed) void persistCardOrder();
       });
-      card.addEventListener("dragover", (event) => {
+
+      const handle = card.querySelector(".provider-drag-handle");
+      handle?.addEventListener("pointerdown", (event) => {
+        if (event.pointerType === "mouse") return;
         event.preventDefault();
-        const dragging = container.querySelector(".is-dragging");
-        if (!dragging || dragging === card) return;
-        const bounds = card.getBoundingClientRect();
-        const insertBefore = event.clientX < bounds.left + bounds.width / 2;
-        container.insertBefore(dragging, insertBefore ? card : card.nextSibling);
-        updateOrderNumbers();
+        draggedProviderId = card.dataset.providerId;
+        touchDraggedCard = card;
+        touchOrderChanged = false;
+        card.classList.add("is-dragging");
+        card.setAttribute("aria-grabbed", "true");
+        handle.setPointerCapture?.(event.pointerId);
       });
-      card.addEventListener("drop", async (event) => {
+      handle?.addEventListener("pointermove", (event) => {
+        if (touchDraggedCard !== card) return;
         event.preventDefault();
-        if (!draggedProviderId) return;
-        await persistCardOrder();
+        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest(".provider-config-card");
+        touchOrderChanged = reorderCardAroundPointer(container, card, target, event.clientX, event.clientY) || touchOrderChanged;
       });
+      handle?.addEventListener("pointerup", (event) => finishTouchSorting(card, handle, event));
+      handle?.addEventListener("pointercancel", (event) => finishTouchSorting(card, handle, event));
     });
   }
 
