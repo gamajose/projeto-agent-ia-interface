@@ -87,7 +87,11 @@ def build_executor(target: ResolvedTarget, *, settings: Settings | None = None) 
         get_secret("SSH_DEFAULT_PASSWORD", settings.ssh_default_password, settings=settings),
         settings.ssh_connect_timeout,
         private_key_path=settings.ssh_private_key_path,
-        private_key_passphrase=get_secret("SSH_PRIVATE_KEY_PASSPHRASE", settings.ssh_private_key_passphrase, settings=settings),
+        private_key_passphrase=get_secret(
+            "SSH_PRIVATE_KEY_PASSPHRASE",
+            settings.ssh_private_key_passphrase,
+            settings=settings,
+        ),
         allow_agent=settings.ssh_allow_agent,
         look_for_keys=settings.ssh_look_for_keys,
         strict_host_key_checking=settings.ssh_strict_host_key_checking,
@@ -95,7 +99,11 @@ def build_executor(target: ResolvedTarget, *, settings: Settings | None = None) 
         bastion_host=settings.ssh_bastion_host,
         bastion_port=settings.ssh_bastion_port,
         bastion_user=settings.ssh_bastion_user,
-        bastion_password=get_secret("SSH_BASTION_PASSWORD", settings.ssh_bastion_password, settings=settings),
+        bastion_password=get_secret(
+            "SSH_BASTION_PASSWORD",
+            settings.ssh_bastion_password,
+            settings=settings,
+        ),
         bastion_private_key_path=settings.ssh_bastion_private_key_path,
         bastion_private_key_passphrase=get_secret(
             "SSH_BASTION_PRIVATE_KEY_PASSPHRASE",
@@ -122,32 +130,48 @@ def run_target(
     """Executa uma investigação reutilizando o mesmo motor do CLI e da interface.
 
     As seleções de IA e playbook vivem em ContextVars somente durante esta
-    operação. Isso evita alterar configuração global, funciona com workers e
-    preserva o comportamento das chamadas existentes que não informam opções.
+    operação. O preflight pode resolver automaticamente um modelo disponível,
+    mas a conexão SSH só começa depois que provedor, modelo e resposta JSON
+    tiverem sido validados.
     """
     settings = settings or get_settings()
     with use_provider(provider_name, model_name), use_playbook(playbook_mode, playbook_id):
-        require_selected_provider(settings)
-        playbook_ssh_port, _ = selected_playbook_ssh_port(
-            objective.strip() or "validar a saúde geral do servidor"
+        preflight = require_selected_provider(settings)
+        resolved_provider = str(
+            getattr(preflight, "provider", None)
+            or provider_name
+            or getattr(settings, "ai_provider", "gemini")
+            or "gemini"
         )
-        target = resolve_target(
-            reference,
-            environment,
-            ssh_port,
-            playbook_ssh_port=playbook_ssh_port,
-            settings=settings,
-        )
-        executor = build_executor(target, settings=settings)
-        try:
-            executor.connect()
-            return run_dynamic_investigation(
-                executor=executor,
-                target=reference,
-                context=objective,
-                environment=target.environment,
-                mode=mode,
-                approve=approve,
+        resolved_model = str(
+            getattr(preflight, "model", None)
+            or model_name
+            or ""
+        ) or None
+
+        # O modelo efetivo pode ser diferente do valor do .env quando o Gemini
+        # seleciona um free tier disponível ou o Ollama usa um modelo instalado.
+        with use_provider(resolved_provider, resolved_model):
+            playbook_ssh_port, _ = selected_playbook_ssh_port(
+                objective.strip() or "validar a saúde geral do servidor"
             )
-        finally:
-            executor.close()
+            target = resolve_target(
+                reference,
+                environment,
+                ssh_port,
+                playbook_ssh_port=playbook_ssh_port,
+                settings=settings,
+            )
+            executor = build_executor(target, settings=settings)
+            try:
+                executor.connect()
+                return run_dynamic_investigation(
+                    executor=executor,
+                    target=reference,
+                    context=objective,
+                    environment=target.environment,
+                    mode=mode,
+                    approve=approve,
+                )
+            finally:
+                executor.close()
