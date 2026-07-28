@@ -6,7 +6,11 @@ import os
 import shutil
 import socket
 import subprocess
+import threading
+import time
+import uuid
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,12 +34,26 @@ class OpenCodeStatus:
     config_path: str
     provider: str
     model: str
+    models: tuple[dict[str, str], ...]
     base_url: str
     web_host: str
     web_port: int
     web_url: str
     web_reachable: bool
     tunnel_command: str
+    interface_enabled: bool
+    allow_build: bool
+    active_runs: int
+
+
+_RUNS: dict[str, dict[str, Any]] = {}
+_RUN_LOCK = threading.RLock()
+_TERMINAL_STATES = {"completed", "failed", "timeout"}
+_SECRET_KEYS = {"authorization", "api_key", "apikey", "token", "password", "secret"}
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 def _is_executable(path: Path) -> bool:
@@ -233,6 +251,11 @@ def _tunnel_command(settings: Settings) -> str:
     )
 
 
+def _active_run_count() -> int:
+    with _RUN_LOCK:
+        return sum(1 for item in _RUNS.values() if item.get("status") not in _TERMINAL_STATES)
+
+
 def opencode_status(settings: Settings | None = None) -> OpenCodeStatus:
     settings = settings or get_settings()
     command = resolve_opencode_command(settings.opencode_cli_path)
@@ -259,6 +282,10 @@ def opencode_status(settings: Settings | None = None) -> OpenCodeStatus:
     except Exception:
         token_configured = False
 
+    models = tuple(
+        {"value": model, "label": label}
+        for model, label in _route_rows(settings)
+    )
     return OpenCodeStatus(
         enabled=settings.opencode_enabled,
         available=bool(command),
@@ -269,13 +296,328 @@ def opencode_status(settings: Settings | None = None) -> OpenCodeStatus:
         config_path=str(path),
         provider="OmniRoute",
         model=selected_opencode_model(settings),
+        models=models,
         base_url=settings.omniroute_base_url,
         web_host=settings.opencode_web_host,
         web_port=settings.opencode_web_port,
         web_url=settings.opencode_web_url,
         web_reachable=_web_reachable(settings.opencode_web_host, settings.opencode_web_port),
         tunnel_command=_tunnel_command(settings),
+        interface_enabled=settings.opencode_interface_enabled,
+        allow_build=settings.opencode_interface_allow_build,
+        active_runs=_active_run_count(),
     )
+
+
+def _sanitize(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            lowered = str(key).casefold()
+            if any(secret in lowered for secret in _SECRET_KEYS):
+                continue
+            sanitized[str(key)] = _sanitize(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize(item) for item in value)
+    return value
+
+
+def _extract_session_id(value: Any) -> str | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).casefold().replace("_", "") in {"sessionid", "session"}:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+                if isinstance(item, dict):
+                    nested = item.get("id")
+                    if isinstance(nested, str) and nested.strip():
+                        return nested.strip()
+            found = _extract_session_id(item)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _extract_session_id(item)
+            if found:
+                return found
+    return None
+
+
+def _extract_event_text(value: Any) -> list[str]:
+    rows: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            lowered = str(key).casefold()
+            if lowered in {"text", "content", "message", "output", "reason"} and isinstance(item, str):
+                text = item.strip()
+                if text:
+                    rows.append(text)
+            elif isinstance(item, (dict, list)):
+                rows.extend(_extract_event_text(item))
+    elif isinstance(value, list):
+        for item in value:
+            rows.extend(_extract_event_text(item))
+    return rows
+
+
+def _parse_run_output(raw: str, max_output_chars: int) -> tuple[list[dict[str, Any]], str, str | None]:
+    events: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    session_id: str | None = None
+    plain_lines: list[str] = []
+
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            plain_lines.append(line)
+            continue
+        if not isinstance(payload, dict):
+            plain_lines.append(line)
+            continue
+        sanitized = _sanitize(payload)
+        events.append(sanitized)
+        session_id = session_id or _extract_session_id(sanitized)
+        text_parts.extend(_extract_event_text(sanitized))
+
+    combined_rows: list[str] = []
+    seen: set[str] = set()
+    for item in [*text_parts, *plain_lines]:
+        normalized = item.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        combined_rows.append(normalized)
+    output = "\n\n".join(combined_rows).strip()
+    if not output and raw.strip():
+        output = raw.strip()
+    if len(output) > max_output_chars:
+        output = output[:max_output_chars] + "\n\n[saída reduzida pelo limite da interface]"
+    return events[-300:], output, session_id
+
+
+def _build_run_command(
+    *,
+    status: OpenCodeStatus,
+    prompt: str,
+    agent: str,
+    model: str,
+    session_id: str | None,
+    auto_approve: bool,
+) -> list[str]:
+    if not status.command:
+        raise OpenCodeError("OpenCode não está instalado")
+    title = " ".join(prompt.split())[:80] or "OpenCode pela interface"
+    command = [
+        status.command,
+        "run",
+        "--format",
+        "json",
+        "--agent",
+        agent,
+        "--model",
+        f"omniroute/{model}",
+        "--title",
+        title,
+    ]
+    if status.web_reachable:
+        command.extend(["--attach", status.web_url, "--dir", status.workdir])
+    if session_id:
+        command.extend(["--session", session_id])
+    if auto_approve:
+        command.append("--auto")
+    command.append(prompt)
+    return command
+
+
+def _public_run(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": record["id"],
+        "status": record["status"],
+        "agent": record["agent"],
+        "model": record["model"],
+        "prompt": record["prompt"],
+        "session_id": record.get("session_id"),
+        "output": record.get("output", ""),
+        "events": record.get("events", []),
+        "error": record.get("error"),
+        "returncode": record.get("returncode"),
+        "created_at": record["created_at"],
+        "started_at": record.get("started_at"),
+        "finished_at": record.get("finished_at"),
+        "duration_ms": record.get("duration_ms"),
+        "auto_approve": bool(record.get("auto_approve")),
+    }
+
+
+def _run_worker(
+    job_id: str,
+    prompt: str,
+    agent: str,
+    model: str,
+    session_id: str | None,
+    auto_approve: bool,
+    settings: Settings,
+) -> None:
+    started_monotonic = time.monotonic()
+    with _RUN_LOCK:
+        record = _RUNS[job_id]
+        record["status"] = "running"
+        record["started_at"] = _now()
+
+    try:
+        status = opencode_status(settings)
+        command = _build_run_command(
+            status=status,
+            prompt=prompt,
+            agent=agent,
+            model=model,
+            session_id=session_id,
+            auto_approve=auto_approve,
+        )
+        ensure_opencode_config(settings)
+        completed = subprocess.run(
+            command,
+            cwd=status.workdir,
+            env=opencode_environment(settings),
+            capture_output=True,
+            text=True,
+            timeout=settings.opencode_run_timeout_seconds,
+            check=False,
+        )
+        raw = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+        events, output, discovered_session = _parse_run_output(
+            raw,
+            settings.opencode_run_max_output_chars,
+        )
+        with _RUN_LOCK:
+            record = _RUNS[job_id]
+            record["returncode"] = int(completed.returncode)
+            record["events"] = events
+            record["output"] = output
+            record["session_id"] = discovered_session or session_id
+            record["status"] = "completed" if completed.returncode == 0 else "failed"
+            if completed.returncode != 0:
+                record["error"] = output or f"OpenCode encerrou com código {completed.returncode}"
+    except subprocess.TimeoutExpired:
+        with _RUN_LOCK:
+            record = _RUNS[job_id]
+            record["status"] = "timeout"
+            record["error"] = (
+                f"O OpenCode excedeu o limite de {settings.opencode_run_timeout_seconds} segundos."
+            )
+    except Exception as exc:
+        with _RUN_LOCK:
+            record = _RUNS[job_id]
+            record["status"] = "failed"
+            record["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        with _RUN_LOCK:
+            record = _RUNS[job_id]
+            record["finished_at"] = _now()
+            record["duration_ms"] = max(0, int((time.monotonic() - started_monotonic) * 1000))
+
+
+def submit_opencode_run(
+    prompt: str,
+    *,
+    agent: str = "plan",
+    model: str | None = None,
+    session_id: str | None = None,
+    auto_approve: bool = False,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    settings = settings or get_settings()
+    cleaned_prompt = prompt.strip()
+    normalized_agent = agent.strip().casefold()
+    selected_model = (model or selected_opencode_model(settings)).strip()
+
+    if not settings.opencode_enabled or not settings.opencode_interface_enabled:
+        raise OpenCodeError("OpenCode integrado está desabilitado")
+    if len(cleaned_prompt) < 3:
+        raise OpenCodeError("descreva a tarefa para o OpenCode")
+    if len(cleaned_prompt) > settings.opencode_run_max_prompt_chars:
+        raise OpenCodeError(
+            f"a solicitação excede {settings.opencode_run_max_prompt_chars} caracteres"
+        )
+    if normalized_agent not in {"plan", "build"}:
+        raise OpenCodeError("agente inválido; use plan ou build")
+    if normalized_agent == "build" and not settings.opencode_interface_allow_build:
+        raise OpenCodeError("o modo aplicar está desabilitado na configuração")
+    valid_models = {item[0] for item in _route_rows(settings)}
+    if selected_model not in valid_models:
+        raise OpenCodeError("a rota selecionada não está configurada no OmniRoute")
+
+    status = opencode_status(settings)
+    if not status.available or not status.configured:
+        raise OpenCodeError(
+            "OpenCode não está pronto; execute scripts/setup_opencode.sh e valide o OmniRoute"
+        )
+    if _active_run_count() >= settings.opencode_run_concurrency:
+        raise OpenCodeError(
+            f"já existem {settings.opencode_run_concurrency} execução(ões) ativa(s); aguarde a conclusão"
+        )
+
+    job_id = str(uuid.uuid4())
+    record = {
+        "id": job_id,
+        "status": "queued",
+        "agent": normalized_agent,
+        "model": selected_model,
+        "prompt": cleaned_prompt,
+        "session_id": session_id.strip() if session_id else None,
+        "auto_approve": bool(auto_approve),
+        "output": "",
+        "events": [],
+        "error": None,
+        "returncode": None,
+        "created_at": _now(),
+        "started_at": None,
+        "finished_at": None,
+        "duration_ms": None,
+    }
+    with _RUN_LOCK:
+        _RUNS[job_id] = record
+
+    thread = threading.Thread(
+        target=_run_worker,
+        args=(
+            job_id,
+            cleaned_prompt,
+            normalized_agent,
+            selected_model,
+            record["session_id"],
+            bool(auto_approve),
+            settings,
+        ),
+        name=f"opencode-run-{job_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return _public_run(record)
+
+
+def get_opencode_run(job_id: str) -> dict[str, Any] | None:
+    with _RUN_LOCK:
+        record = _RUNS.get(job_id)
+        return _public_run(record) if record else None
+
+
+def list_opencode_runs(limit: int = 20) -> list[dict[str, Any]]:
+    resolved_limit = max(1, min(int(limit), 100))
+    with _RUN_LOCK:
+        ordered = sorted(
+            _RUNS.values(),
+            key=lambda item: str(item.get("created_at") or ""),
+            reverse=True,
+        )
+        return [_public_run(item) for item in ordered[:resolved_limit]]
 
 
 def launch_opencode(settings: Settings | None = None) -> int:
