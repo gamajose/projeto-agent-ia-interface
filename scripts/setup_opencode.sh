@@ -64,14 +64,17 @@ import os
 from pathlib import Path
 
 path = Path(os.environ["ENV_FILE"])
-text = path.read_text(encoding="utf-8")
-existing = {}
-for raw in text.splitlines():
+lines = path.read_text(encoding="utf-8").splitlines()
+positions: dict[str, int] = {}
+existing: dict[str, str] = {}
+for index, raw in enumerate(lines):
     line = raw.strip()
     if not line or line.startswith("#") or "=" not in line:
         continue
     key, value = line.split("=", 1)
-    existing[key.strip()] = value.strip()
+    key = key.strip()
+    positions[key] = index
+    existing[key] = value.strip()
 
 values = {
     "OPENCODE_ENABLED": "true",
@@ -91,15 +94,21 @@ values = {
     "OPENCODE_TUNNEL_USER": os.environ["TUNNEL_USER"],
 }
 
-append = []
+append: list[str] = []
 for key, value in values.items():
-    if key not in existing:
+    if key not in positions:
         append.append(f"{key}={value}")
+        continue
+    if not existing.get(key):
+        lines[positions[key]] = f"{key}={value}"
 
 if append:
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write("\n# OpenCode via OmniRoute\n")
-        handle.write("\n".join(append) + "\n")
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append("# OpenCode via OmniRoute")
+    lines.extend(append)
+
+path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 PY
 
 chmod 600 "${ENV_FILE}"
