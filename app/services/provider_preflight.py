@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum
@@ -57,6 +58,8 @@ class ProviderPreflight(BaseModel):
 
 
 _PROBE_PROMPT = 'Responda somente com o objeto JSON {"preflight":true}.'
+_GEMINI_API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
+_AUTO_MODEL_VALUES = {"", "auto", "auto-free", "latest-free"}
 
 
 def _elapsed_ms(started: float) -> int:
@@ -65,6 +68,14 @@ def _elapsed_ms(started: float) -> int:
 
 def _timeout(settings: Settings) -> float:
     return float(getattr(settings, "ai_preflight_timeout_seconds", 8.0))
+
+
+def _csv_values(value: str | None) -> tuple[str, ...]:
+    return tuple(
+        item
+        for item in (part.strip() for part in re.split(r"[,\n]", value or ""))
+        if item
+    )
 
 
 def _result(
@@ -91,22 +102,43 @@ def _result(
     )
 
 
+def _safe_http_message(response: httpx.Response) -> str:
+    """Extrai apenas a mensagem pública da API, sem cabeçalhos ou credenciais."""
+    try:
+        payload = response.json()
+    except Exception:
+        return ""
+    message = ""
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "")
+        elif error:
+            message = str(error)
+        if not message:
+            message = str(payload.get("message") or "")
+    message = " ".join(message.split())
+    return message[:300]
+
+
 def _http_failure(provider: str, model: str, exc: Exception, started: float) -> ProviderPreflight:
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
+        message = _safe_http_message(exc.response)
+        suffix = f" {message}" if message else ""
         if status in {400, 401, 403, 404, 422}:
             return _result(
                 provider,
                 state=ProviderState.MISCONFIGURED,
                 model=model,
-                detail=f"A API recusou a configuração (HTTP {status}).",
+                detail=f"A API recusou a configuração (HTTP {status}).{suffix}",
                 started=started,
             )
         return _result(
             provider,
             state=ProviderState.UNAVAILABLE,
             model=model,
-            detail=f"O serviço respondeu com erro HTTP {status}.",
+            detail=f"O serviço respondeu com erro HTTP {status}.{suffix}",
             started=started,
         )
     if isinstance(exc, httpx.TimeoutException):
@@ -142,38 +174,81 @@ def _http_failure(provider: str, model: str, exc: Exception, started: float) -> 
     )
 
 
-def _probe_ollama(settings: Settings, model_name: str | None = None) -> ProviderPreflight:
-    model = (model_name or settings.ollama_model or "").strip()
-    if not model:
-        return _result(
-            "ollama",
-            state=ProviderState.MISCONFIGURED,
-            model="",
-            detail="OLLAMA_MODEL não está configurado.",
-        )
+def _ollama_models(settings: Settings) -> tuple[str, ...]:
+    tags = httpx.get(
+        f"{settings.ollama_base_url.rstrip('/')}/api/tags",
+        timeout=_timeout(settings),
+    )
+    tags.raise_for_status()
+    payload = tags.json()
+    models = {
+        str(value).strip()
+        for item in payload.get("models", [])
+        if isinstance(item, dict)
+        for value in (item.get("name"), item.get("model"))
+        if value
+    }
+    return tuple(sorted(model for model in models if model))
 
+
+def _select_ollama_model(
+    settings: Settings,
+    installed: tuple[str, ...],
+    model_name: str | None,
+) -> tuple[str, str | None]:
+    requested = (model_name or "").strip()
+    configured = (settings.ollama_model or "").strip()
+    explicit = model_name is not None and bool(requested)
+
+    if explicit:
+        return requested, None
+
+    if configured and configured.casefold() not in _AUTO_MODEL_VALUES and configured in installed:
+        return configured, None
+
+    if not getattr(settings, "ollama_auto_fallback", True):
+        return configured, None
+
+    preferences = _csv_values(getattr(settings, "ollama_preferred_models", ""))
+    selected = next((candidate for candidate in preferences if candidate in installed), "")
+    if not selected and installed:
+        selected = installed[0]
+
+    fallback_from = (
+        configured
+        if configured and configured.casefold() not in _AUTO_MODEL_VALUES and configured != selected
+        else None
+    )
+    return selected, fallback_from
+
+
+def _probe_ollama(settings: Settings, model_name: str | None = None) -> ProviderPreflight:
+    configured = (model_name or settings.ollama_model or "").strip()
     started = time.monotonic()
     try:
-        tags = httpx.get(
-            f"{settings.ollama_base_url.rstrip('/')}/api/tags",
-            timeout=_timeout(settings),
-        )
-        tags.raise_for_status()
-        payload = tags.json()
-        models = {
-            str(value).strip()
-            for item in payload.get("models", [])
-            if isinstance(item, dict)
-            for value in (item.get("name"), item.get("model"))
-            if value
-        }
-        if model not in models:
+        installed = _ollama_models(settings)
+        if not installed:
             return _result(
                 "ollama",
                 state=ProviderState.MISCONFIGURED,
-                model=model,
-                detail=f"O serviço respondeu, mas o modelo exato '{model}' não está instalado.",
+                model=configured,
+                detail="O serviço Ollama respondeu, mas não possui nenhum modelo instalado.",
                 started=started,
+            )
+
+        model, fallback_from = _select_ollama_model(settings, installed, model_name)
+        if not model or model not in installed:
+            return _result(
+                "ollama",
+                state=ProviderState.MISCONFIGURED,
+                model=model or configured,
+                detail=(
+                    f"O serviço respondeu, mas o modelo exato '{model or configured}' não está instalado. "
+                    f"Modelos detectados: {', '.join(installed)}."
+                ),
+                started=started,
+                valid_routes=installed,
+                invalid_routes=((model or configured),) if (model or configured) else (),
             )
 
         response = httpx.post(
@@ -191,15 +266,31 @@ def _probe_ollama(settings: Settings, model_name: str | None = None) -> Provider
         parsed = parse_json(str(generated.get("response") or ""))
         if parsed.get("preflight") is not True:
             raise ValueError("resposta de preflight sem confirmação")
+
+        if fallback_from:
+            return _result(
+                "ollama",
+                state=ProviderState.DEGRADED,
+                model=model,
+                detail=(
+                    f"O modelo configurado '{fallback_from}' não está instalado; "
+                    f"o Agent selecionou automaticamente '{model}'. API e resposta JSON validadas."
+                ),
+                started=started,
+                selectable=True,
+                valid_routes=installed,
+                invalid_routes=(fallback_from,),
+            )
         return _result(
             "ollama",
             state=ProviderState.AVAILABLE,
             model=model,
             detail="API, modelo e resposta JSON validados.",
             started=started,
+            valid_routes=installed,
         )
     except Exception as exc:
-        return _http_failure("ollama", model, exc, started)
+        return _http_failure("ollama", configured, exc, started)
 
 
 def _configured_omniroute_routes(settings: Settings) -> tuple[str, ...]:
@@ -296,9 +387,162 @@ def _probe_omniroute(settings: Settings, model_name: str | None = None) -> Provi
         return _http_failure("omniroute", selected_model, exc, started)
 
 
+def _normalize_gemini_model(value: str | None) -> str:
+    model = (value or "").strip()
+    return model.removeprefix("models/")
+
+
+def _gemini_free_candidates(settings: Settings) -> tuple[str, ...]:
+    configured = _csv_values(getattr(settings, "gemini_free_models", ""))
+    if configured:
+        return tuple(_normalize_gemini_model(item) for item in configured)
+    return (
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    )
+
+
+def _gemini_models(api_key: str, settings: Settings) -> tuple[str, ...]:
+    models: list[str] = []
+    page_token = ""
+    while True:
+        params: dict[str, Any] = {"pageSize": 1000}
+        if page_token:
+            params["pageToken"] = page_token
+        response = httpx.get(
+            f"{_GEMINI_API_ROOT}/models",
+            headers={"x-goog-api-key": api_key},
+            params=params,
+            timeout=_timeout(settings),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        for item in payload.get("models", []):
+            if not isinstance(item, dict):
+                continue
+            methods = {str(value) for value in item.get("supportedGenerationMethods", [])}
+            if "generateContent" not in methods:
+                continue
+            name = _normalize_gemini_model(str(item.get("name") or ""))
+            if name and name not in models:
+                models.append(name)
+        page_token = str(payload.get("nextPageToken") or "")
+        if not page_token:
+            break
+    return tuple(models)
+
+
+def _select_gemini_model(
+    settings: Settings,
+    available: tuple[str, ...],
+    model_name: str | None,
+) -> tuple[str, str | None, tuple[str, ...], tuple[str, ...]]:
+    requested = _normalize_gemini_model(model_name)
+    configured = _normalize_gemini_model(settings.gemini_model)
+    free_candidates = _gemini_free_candidates(settings)
+    valid_free = tuple(candidate for candidate in free_candidates if candidate in available)
+    invalid_free = tuple(candidate for candidate in free_candidates if candidate not in available)
+
+    if model_name is not None and requested:
+        return requested, None, valid_free, invalid_free
+
+    configured_is_auto = configured.casefold() in _AUTO_MODEL_VALUES
+    if getattr(settings, "gemini_auto_free", True):
+        selected = valid_free[0] if valid_free else ""
+        fallback_from = (
+            configured
+            if configured and not configured_is_auto and configured != selected
+            else None
+        )
+        return selected or configured, fallback_from, valid_free, invalid_free
+
+    return configured, None, valid_free, invalid_free
+
+
+def _probe_gemini(settings: Settings, model_name: str | None = None) -> ProviderPreflight:
+    try:
+        api_key = _secret(settings, "GEMINI_API_KEY", "gemini_api_key")
+    except Exception:
+        return _result(
+            "gemini",
+            state=ProviderState.UNAVAILABLE,
+            model=_normalize_gemini_model(model_name or settings.gemini_model),
+            detail="Não foi possível consultar o backend de segredos do Gemini.",
+        )
+
+    configured = _normalize_gemini_model(model_name or settings.gemini_model)
+    if not api_key:
+        return _result(
+            "gemini",
+            state=ProviderState.NOT_CONFIGURED,
+            model=configured,
+            detail="Falta a credencial GEMINI_API_KEY.",
+        )
+
+    started = time.monotonic()
+    try:
+        available = _gemini_models(api_key, settings)
+        model, fallback_from, valid_free, invalid_free = _select_gemini_model(
+            settings,
+            available,
+            model_name,
+        )
+        if not model or model not in available:
+            detected = ", ".join(valid_free) or "nenhum modelo gratuito conhecido"
+            return _result(
+                "gemini",
+                state=ProviderState.MISCONFIGURED,
+                model=model or configured,
+                detail=(
+                    f"O modelo '{model or configured}' não aparece para esta chave na API Gemini. "
+                    f"Modelos gratuitos compatíveis detectados: {detected}."
+                ),
+                started=started,
+                valid_routes=valid_free,
+                invalid_routes=invalid_free,
+            )
+
+        response = httpx.post(
+            f"{_GEMINI_API_ROOT}/models/{quote(model, safe='')}:generateContent",
+            headers={"x-goog-api-key": api_key},
+            json={
+                "contents": [{"parts": [{"text": _PROBE_PROMPT}]}],
+                "generationConfig": {"responseMimeType": "application/json"},
+            },
+            timeout=_timeout(settings),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        text = payload["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = parse_json(str(text or ""))
+        if parsed.get("preflight") is not True:
+            raise ValueError("resposta de preflight sem confirmação")
+
+        if fallback_from:
+            detail = (
+                f"O modelo configurado '{fallback_from}' não está disponível para esta chave; "
+                f"o Agent selecionou automaticamente o modelo gratuito '{model}'."
+            )
+        elif configured.casefold() in _AUTO_MODEL_VALUES:
+            detail = f"Modelo gratuito selecionado automaticamente: '{model}'."
+        else:
+            detail = "Credencial, modelo gratuito e resposta JSON validados."
+        return _result(
+            "gemini",
+            state=ProviderState.AVAILABLE,
+            model=model,
+            detail=detail,
+            started=started,
+            valid_routes=valid_free or (model,),
+            invalid_routes=invalid_free,
+        )
+    except Exception as exc:
+        return _http_failure("gemini", configured, exc, started)
+
+
 def _direct_configuration(settings: Settings, provider: str) -> tuple[str | None, str, str]:
-    if provider == "gemini":
-        return _secret(settings, "GEMINI_API_KEY", "gemini_api_key"), settings.gemini_model, ""
     if provider == "groq":
         return _secret(settings, "GROQ_API_KEY", "groq_api_key"), settings.groq_model, settings.groq_base_url
     if provider == "openrouter":
@@ -338,44 +582,26 @@ def _probe_direct(settings: Settings, provider: str, model_name: str | None = No
 
     started = time.monotonic()
     try:
-        if provider == "gemini":
-            response = httpx.post(
-                "https://generativelanguage.googleapis.com/v1beta/"
-                f"models/{quote(model, safe='')}:generateContent",
-                headers={"x-goog-api-key": api_key},
-                json={
-                    "contents": [{"parts": [{"text": _PROBE_PROMPT}]}],
-                    "generationConfig": {
-                        "responseMimeType": "application/json",
-                        "temperature": 0,
-                    },
-                },
-                timeout=_timeout(settings),
-            )
-            response.raise_for_status()
-            payload = response.json()
-            text = payload["candidates"][0]["content"]["parts"][0]["text"]
-        else:
-            headers = {"Authorization": f"Bearer {api_key}"}
-            if provider == "openrouter":
-                headers["X-Title"] = settings.openrouter_app_name
-                if settings.openrouter_site_url:
-                    headers["HTTP-Referer"] = settings.openrouter_site_url
-            response = httpx.post(
-                f"{base_url.rstrip('/')}/chat/completions",
-                headers=headers,
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": _PROBE_PROMPT}],
-                    "temperature": 0,
-                    "stream": False,
-                    "response_format": {"type": "json_object"},
-                },
-                timeout=_timeout(settings),
-            )
-            response.raise_for_status()
-            payload = response.json()
-            text = payload["choices"][0]["message"]["content"]
+        headers = {"Authorization": f"Bearer {api_key}"}
+        if provider == "openrouter":
+            headers["X-Title"] = settings.openrouter_app_name
+            if settings.openrouter_site_url:
+                headers["HTTP-Referer"] = settings.openrouter_site_url
+        response = httpx.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers=headers,
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": _PROBE_PROMPT}],
+                "temperature": 0,
+                "stream": False,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=_timeout(settings),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        text = payload["choices"][0]["message"]["content"]
         parsed = parse_json(str(text or ""))
         if parsed.get("preflight") is not True:
             raise ValueError("resposta de preflight sem confirmação")
@@ -397,11 +623,13 @@ def preflight_provider(
 ) -> ProviderPreflight:
     settings = settings or get_settings()
     normalized = provider.strip().lower()
+    if normalized == "gemini":
+        return _probe_gemini(settings, model_name)
     if normalized == "ollama":
         return _probe_ollama(settings, model_name)
     if normalized == "omniroute":
         return _probe_omniroute(settings, model_name)
-    if normalized in {"gemini", "groq", "openrouter"}:
+    if normalized in {"groq", "openrouter"}:
         return _probe_direct(settings, normalized, model_name)
     raise ProviderError(f"Provedor desconhecido: {normalized}.")
 
