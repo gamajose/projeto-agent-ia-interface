@@ -81,6 +81,8 @@ class Settings(BaseSettings):
 
     agent_api_token: str | None = None
     agent_default_mode: str = "propose"
+    agent_autopilot_enabled: bool = True
+    agent_autopilot_default: bool = True
     agent_max_rounds: int = 5
     agent_max_commands: int = 20
     agent_min_confidence: int = 70
@@ -88,6 +90,7 @@ class Settings(BaseSettings):
     agent_allow_legacy_read_commands: bool = True
 
     ai_provider: str = "gemini"
+    ai_auto_provider_order: str = "groq,omniroute,gemini,ollama,openrouter"
     ai_preflight_timeout_seconds: float = Field(default=8.0, ge=1.0, le=60.0)
 
     # O Gemini consulta a lista de modelos visível para a própria chave. Quando
