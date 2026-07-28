@@ -13,6 +13,7 @@ requires-python = ">=3.11"
 agent = "app.cli.entrypoint:main"
 agent-worker = "app.worker:main"
 agent-web = "app.web_main:main"
+agent-opencode = "app.services.opencode_cli:main"
 agent-opencode-web = "app.services.opencode_cli:web_main"
 
 [tool.setuptools.packages.find]
