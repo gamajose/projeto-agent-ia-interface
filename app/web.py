@@ -12,26 +12,34 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.core.policies import EnvironmentType
-from app.core.settings import get_settings
+from app.core.settings import Settings, get_settings
 from app.db.base import ensure_database_schema
+from app.services.ai_providers import omniroute_route_options
+from app.services.application_health import application_health
 from app.services.approved_execution import execute_approved_investigation
 from app.services.jobs import enqueue_investigation, get_job
 from app.services.persistence import get_investigation, operational_metrics
 from app.services.playbooks import list_playbooks
+from app.services.provider_preflight import ProviderPreflight, preflight_all, preflight_provider
 from app.services.runner import run_target
 from app.services.ui_queries import list_hosts, list_investigations
 
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 router = APIRouter(tags=["interface"])
+ProviderName = Literal["gemini", "groq", "openrouter", "ollama", "omniroute"]
 
 
 class InvestigationPayload(BaseModel):
     target: str = Field(min_length=1, max_length=255)
     objective: str = Field(min_length=3, max_length=12000)
     environment: EnvironmentType = EnvironmentType.UNKNOWN
-    mode: Literal["investigate", "propose"] = "propose"
+    mode: Literal["investigate", "propose", "correct"] = "propose"
     ssh_port: int | None = Field(default=None, ge=1, le=65535)
+    provider: ProviderName | None = None
+    model: str | None = Field(default=None, max_length=255)
+    playbook_mode: Literal["auto", "manual", "none"] = "auto"
+    playbook_id: str | None = Field(default=None, max_length=255)
 
 
 class ApprovalPayload(BaseModel):
@@ -108,7 +116,48 @@ def _compact_result(result: dict[str, Any]) -> dict[str, Any]:
         "evidence_count": len(result.get("evidence") or []),
         "history": result.get("history") or [],
         "similar_history": result.get("similar_history") or [],
+        "ai_diagnostics": result.get("ai_diagnostics") or analysis.get("ai_diagnostics") or [],
     }
+
+
+def _provider_options(result: ProviderPreflight, settings: Settings) -> list[dict[str, Any]]:
+    if result.provider == "omniroute":
+        configured = omniroute_route_options(settings)
+        valid = set(result.valid_routes)
+        rows = [
+            {
+                "value": route.model,
+                "label": route.label,
+                "default": route.is_default,
+                "available": not valid or route.model in valid,
+            }
+            for route in configured
+        ]
+        if result.model and result.model not in {item["value"] for item in rows}:
+            rows.insert(0, {"value": result.model, "label": result.model, "default": True, "available": result.selectable})
+        return rows
+    if result.model:
+        return [{"value": result.model, "label": result.model, "default": True, "available": result.selectable}]
+    return []
+
+
+def _validate_selection(payload: InvestigationPayload, settings: Settings) -> tuple[str, str | None, str]:
+    if payload.playbook_mode == "manual" and not (payload.playbook_id or "").strip():
+        raise HTTPException(status_code=422, detail="selecione um playbook no modo manual")
+
+    provider = (payload.provider or settings.ai_provider or "gemini").strip().lower()
+    model = (payload.model or "").strip() or None
+    result = preflight_provider(provider, settings, model)
+    if not result.selectable:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{result.label} não pode iniciar a investigação: {result.detail}",
+        )
+
+    # O modo corrigir continua sendo uma proposta revisada, seguida da aprovação
+    # humana separada. A abertura da investigação nunca executa alterações.
+    effective_mode = "propose" if payload.mode == "correct" else payload.mode
+    return provider, model or result.model or None, effective_mode
 
 
 @router.get("/ui", include_in_schema=False)
@@ -126,6 +175,8 @@ def ui_session(request: Request) -> dict[str, Any]:
         "operator": _operator_name(),
         "execution_mode": settings.agent_execution_mode,
         "default_mode": settings.agent_default_mode,
+        "default_provider": settings.ai_provider,
+        "reviewer_provider": settings.ai_reviewer_provider,
         "review_required": settings.ai_reviewer_required_for_corrections,
         "safe_rules": [
             "Produção e standby recebem investigação e proposta, nunca correção automática.",
@@ -133,6 +184,32 @@ def ui_session(request: Request) -> dict[str, Any]:
             "Toda ação corretiva exige playbook permitido, segunda IA e aprovação humana.",
         ],
     }
+
+
+@router.get("/ui/api/ai/providers")
+def ai_providers(request: Request) -> dict[str, Any]:
+    _require_access(request)
+    settings = get_settings()
+    items = []
+    for result in preflight_all(settings):
+        items.append(
+            {
+                **result.model_dump(mode="json"),
+                "state_label": result.state_label,
+                "options": _provider_options(result, settings),
+            }
+        )
+    return {
+        "default_provider": settings.ai_provider,
+        "reviewer_provider": settings.ai_reviewer_provider,
+        "items": items,
+    }
+
+
+@router.get("/ui/api/health")
+def health(request: Request) -> dict[str, Any]:
+    _require_access(request)
+    return application_health(get_settings())
 
 
 @router.get("/ui/api/dashboard")
@@ -173,18 +250,31 @@ def create_investigation(payload: InvestigationPayload, request: Request) -> dic
     _require_mutation(request)
     settings = get_settings()
     ensure_database_schema()
+    provider, model, effective_mode = _validate_selection(payload, settings)
+
+    common = {
+        "environment": payload.environment,
+        "mode": effective_mode,
+        "approve": False,
+        "ssh_port": payload.ssh_port,
+        "provider_name": provider,
+        "model_name": model,
+        "playbook_mode": payload.playbook_mode,
+        "playbook_id": (payload.playbook_id or "").strip() or None,
+        "settings": settings,
+    }
 
     if settings.agent_execution_mode.strip().casefold() == "queue":
         try:
             return enqueue_investigation(
                 payload.target.strip(),
                 payload.objective.strip(),
-                environment=payload.environment,
-                mode=payload.mode,
-                approve=False,
-                ssh_port=payload.ssh_port,
-                metadata={"source": "web_ui", "operator": _operator_name()},
-                settings=settings,
+                metadata={
+                    "source": "web_ui",
+                    "operator": _operator_name(),
+                    "requested_mode": payload.mode,
+                },
+                **common,
             )
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f"fila indisponível: {type(exc).__name__}: {exc}") from exc
@@ -193,17 +283,17 @@ def create_investigation(payload: InvestigationPayload, request: Request) -> dic
         result = run_target(
             payload.target.strip(),
             payload.objective.strip(),
-            environment=payload.environment,
-            mode=payload.mode,
-            approve=False,
-            ssh_port=payload.ssh_port,
-            settings=settings,
+            **common,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
-    return _compact_result(result)
+    compact = _compact_result(result)
+    compact["requested_mode"] = payload.mode
+    compact["selected_provider"] = provider
+    compact["selected_model"] = model
+    return compact
 
 
 @router.get("/ui/api/jobs/{job_id}")
@@ -272,6 +362,7 @@ def playbooks(request: Request) -> dict[str, Any]:
                 "title": playbook.title,
                 "priority": playbook.priority,
                 "profiles": list(playbook.profiles),
+                "patterns": list(playbook.patterns),
                 "ssh_port": playbook.ssh_port,
                 "allowed_corrections": list(playbook.allowed_corrections),
                 "steps_count": len(playbook.steps),

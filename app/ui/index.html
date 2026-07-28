@@ -3,300 +3,68 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>Agent IA Infra</title>
   <link rel="stylesheet" href="/ui/assets/styles.css">
+  <link rel="stylesheet" href="/ui/assets/enhancements.css">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">AI</div>
-        <div>
-          <strong>Agent IA</strong>
-          <span>Infra Operations</span>
-        </div>
-      </div>
-
+      <div class="brand"><div class="brand-mark" aria-hidden="true">AI</div><div><strong>Agent IA</strong><span>Infra Operations</span></div></div>
       <nav class="nav" aria-label="Navegação principal">
-        <button class="nav-item active" data-view="dashboard">
-          <span class="nav-icon">⌂</span><span>Visão geral</span>
-        </button>
-        <button class="nav-item" data-view="analysis">
-          <span class="nav-icon">＋</span><span>Nova análise</span>
-        </button>
-        <button class="nav-item" data-view="investigations">
-          <span class="nav-icon">◎</span><span>Investigações</span>
-        </button>
-        <button class="nav-item" data-view="inventory">
-          <span class="nav-icon">▦</span><span>Inventário</span>
-        </button>
-        <button class="nav-item" data-view="playbooks">
-          <span class="nav-icon">◇</span><span>Playbooks</span>
-        </button>
+        <button class="nav-item active" data-view="dashboard"><span class="nav-icon">⌂</span><span>Visão geral</span></button>
+        <button class="nav-item" data-view="analysis"><span class="nav-icon">＋</span><span>Nova análise</span></button>
+        <button class="nav-item" data-view="investigations"><span class="nav-icon">◎</span><span>Investigações</span></button>
+        <button class="nav-item" data-view="inventory"><span class="nav-icon">▦</span><span>Inventário</span></button>
+        <button class="nav-item" data-view="playbooks"><span class="nav-icon">◇</span><span>Playbooks</span></button>
+        <button class="nav-item" data-view="health"><span class="nav-icon">♥</span><span>Saúde</span></button>
       </nav>
-
-      <div class="sidebar-safety">
-        <span class="pulse-dot"></span>
-        <div>
-          <strong>Políticas ativas</strong>
-          <p>Produção e standby permanecem protegidos contra alterações.</p>
-        </div>
-      </div>
+      <div class="sidebar-safety"><span class="pulse-dot"></span><div><strong>Políticas ativas</strong><p>Produção e standby permanecem protegidos contra alterações.</p></div></div>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <div>
-          <p class="eyebrow" id="page-eyebrow">CENTRAL OPERACIONAL</p>
-          <h1 id="page-title">Visão geral</h1>
-        </div>
-        <div class="operator-card">
-          <span class="operator-avatar" id="operator-avatar">OP</span>
-          <div>
-            <strong id="operator-name">Carregando...</strong>
-            <span><i class="online-dot"></i> sessão confiável</span>
-          </div>
-        </div>
+        <div><p class="eyebrow" id="page-eyebrow">CENTRAL OPERACIONAL</p><h1 id="page-title">Visão geral</h1></div>
+        <div class="topbar-actions"><button class="icon-button theme-toggle" id="theme-toggle" aria-label="Alternar tema">☼</button><div class="operator-card"><span class="operator-avatar" id="operator-avatar">OP</span><div><strong id="operator-name">Carregando...</strong><span><i class="online-dot"></i> sessão confiável</span></div></div></div>
       </header>
 
       <section class="view active" id="view-dashboard">
-        <div class="hero-panel">
-          <div>
-            <p class="eyebrow">ANÁLISE GUIADA POR EVIDÊNCIAS</p>
-            <h2>Investigue o ambiente sem perder o controle operacional.</h2>
-            <p>Informe o IP ou um alvo já conhecido. O agente consulta memória, escolhe o playbook, coleta evidências e entrega uma conclusão pronta para o ticket.</p>
-          </div>
-          <button class="primary-button" data-open-analysis>Iniciar investigação</button>
-        </div>
-
-        <div class="metrics-grid" id="metrics-grid">
-          <article class="metric-card skeleton"></article>
-          <article class="metric-card skeleton"></article>
-          <article class="metric-card skeleton"></article>
-          <article class="metric-card skeleton"></article>
-        </div>
-
+        <div class="hero-panel"><div><p class="eyebrow">ANÁLISE GUIADA POR EVIDÊNCIAS</p><h2>Investigue o ambiente sem perder o controle operacional.</h2><p>Escolha o provedor de IA, o playbook e o alvo. O mesmo motor do CLI consulta memória, coleta evidências e entrega uma conclusão pronta para o ticket.</p></div><button class="primary-button" data-open-analysis>Iniciar investigação</button></div>
+        <div class="metrics-grid" id="metrics-grid"><article class="metric-card skeleton"></article><article class="metric-card skeleton"></article><article class="metric-card skeleton"></article><article class="metric-card skeleton"></article></div>
         <div class="dashboard-grid">
-          <article class="panel wide-panel">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">ATIVIDADE</p>
-                <h3>Investigações recentes</h3>
-              </div>
-              <button class="ghost-button" data-view-link="investigations">Ver histórico</button>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr><th>Alvo</th><th>Ambiente</th><th>Status</th><th>Confiança</th><th>Quando</th></tr>
-                </thead>
-                <tbody id="recent-investigations">
-                  <tr><td colspan="5" class="empty-cell">Carregando investigações...</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </article>
-
-          <article class="panel safety-panel">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">GUARDRAILS</p>
-                <h3>Proteções do agente</h3>
-              </div>
-            </div>
-            <ul class="safety-list" id="safety-list"></ul>
-          </article>
+          <article class="panel wide-panel"><div class="panel-header"><div><p class="eyebrow">ATIVIDADE</p><h3>Investigações recentes</h3></div><button class="ghost-button" data-view-link="investigations">Ver histórico</button></div><div class="table-wrap"><table><thead><tr><th>Alvo</th><th>Ambiente</th><th>Status</th><th>Confiança</th><th>Quando</th></tr></thead><tbody id="recent-investigations"><tr><td colspan="5" class="empty-cell">Carregando investigações...</td></tr></tbody></table></div></article>
+          <article class="panel safety-panel"><div class="panel-header"><div><p class="eyebrow">GUARDRAILS</p><h3>Proteções do agente</h3></div></div><ul class="safety-list" id="safety-list"></ul></article>
         </div>
       </section>
 
       <section class="view" id="view-analysis">
         <div class="analysis-layout">
           <article class="panel form-panel">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">NOVA INVESTIGAÇÃO</p>
-                <h3>O que precisa ser analisado?</h3>
-              </div>
-              <span class="mode-badge" id="execution-mode-badge">modo inline</span>
-            </div>
-
+            <div class="panel-header"><div><p class="eyebrow">NOVA INVESTIGAÇÃO</p><h3>O que precisa ser analisado?</h3></div><span class="mode-badge" id="execution-mode-badge">modo inline</span></div>
             <form id="analysis-form">
-              <div class="form-row two-columns">
-                <label>
-                  <span>IP, hostname ou site</span>
-                  <input id="target" name="target" placeholder="Ex.: 172.27.232.203" required autocomplete="off">
-                  <small>Também aceita um alvo já salvo no inventário.</small>
-                </label>
-                <label>
-                  <span>Porta SSH</span>
-                  <input id="ssh-port" name="ssh_port" type="number" min="1" max="65535" placeholder="Automática">
-                  <small>Deixe em branco para usar playbook, inventário ou porta padrão.</small>
-                </label>
-              </div>
-
-              <div class="form-row two-columns">
-                <label>
-                  <span>Ambiente</span>
-                  <select id="environment" name="environment">
-                    <option value="unknown">Não informado</option>
-                    <option value="production">Produção</option>
-                    <option value="standby">Standby</option>
-                    <option value="monitoring">Monitoramento</option>
-                    <option value="training">Treinamento</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Modo operacional</span>
-                  <select id="mode" name="mode">
-                    <option value="propose">Investigar e propor</option>
-                    <option value="investigate">Somente investigar</option>
-                  </select>
-                </label>
-              </div>
-
-              <label>
-                <span>Objetivo da análise</span>
-                <textarea id="objective" name="objective" rows="7" placeholder="Descreva o alerta, o comportamento observado e o que precisa ser validado." required></textarea>
-              </label>
-
-              <div class="preset-block">
-                <span>Atalhos de objetivo</span>
-                <div class="preset-list">
-                  <button type="button" class="preset" data-preset="Validar alerta de Systemd Socket Summary CRITICAL no Checkmk e identificar a causa raiz.">Socket Checkmk</button>
-                  <button type="button" class="preset" data-preset="Investigar agente Checkmk sem comunicação na porta 6556 e confirmar onde ocorre a falha.">Porta 6556</button>
-                  <button type="button" class="preset" data-preset="Investigar utilização elevada de filesystem e inodes, identificar a origem do consumo e avaliar risco operacional.">Disco / inodes</button>
-                  <button type="button" class="preset" data-preset="Investigar utilização elevada de memória RAM e SWAP, correlacionar processos e validar impacto no ambiente.">Memória / swap</button>
-                  <button type="button" class="preset" data-preset="Investigar timeout SNMP entre o monitoramento e o equipamento, validando serviço, porta, rota e resposta.">SNMP timeout</button>
-                  <button type="button" class="preset" data-preset="Investigar container unhealthy, coletar healthcheck e logs relacionados sem reiniciar ou alterar o ciclo de vida do container.">Container unhealthy</button>
-                </div>
-              </div>
-
-              <div class="policy-notice">
-                <span>i</span>
-                <p>A interface nunca autoriza correção na abertura. Quando houver uma ação segura, ela será apresentada separadamente para revisão e aprovação humana.</p>
-              </div>
-
-              <div class="form-actions">
-                <button type="button" class="secondary-button" id="clear-form">Limpar</button>
-                <button type="submit" class="primary-button" id="submit-analysis">
-                  <span class="button-label">Executar análise</span>
-                  <span class="button-spinner" aria-hidden="true"></span>
-                </button>
-              </div>
+              <div class="form-row two-columns"><label><span>IP, hostname ou site</span><input id="target" name="target" placeholder="Ex.: 172.27.232.203" required autocomplete="off"><small>Também aceita um alvo já salvo no inventário.</small></label><label><span>Porta SSH</span><input id="ssh-port" name="ssh_port" type="number" min="1" max="65535" placeholder="Automática"><small>Usa playbook, inventário ou porta padrão quando vazio.</small></label></div>
+              <div class="form-row two-columns equal-columns"><label><span>Ambiente</span><select id="environment" name="environment"><option value="unknown">Não informado</option><option value="production">Produção</option><option value="standby">Standby</option><option value="monitoring">Monitoramento</option><option value="training">Treinamento</option></select></label><label><span>Modo operacional</span><select id="mode" name="mode"><option value="propose">Investigar e propor</option><option value="investigate">Somente investigar</option><option value="correct">Corrigir após revisão e aprovação</option></select><small id="mode-help">A correção nunca é executada na abertura.</small></label></div>
+              <div class="form-row two-columns equal-columns"><label><span>Origem da IA</span><select id="provider" name="provider"><option value="">Carregando provedores...</option></select><small>Somente provedores validados podem iniciar a investigação.</small></label><label><span>Rota ou modelo</span><select id="model" name="model" disabled><option value="">Modelo padrão</option></select><small>OmniRoute mostra apenas rotas configuradas; tokens nunca aparecem.</small></label></div>
+              <div class="provider-status" id="provider-status" data-state="loading"><span class="provider-status-dot"></span><div><strong>Validando provedores</strong><p>Consultando credencial, endpoint e modelo.</p></div></div>
+              <div class="form-row two-columns equal-columns"><label><span>Seleção de playbook</span><select id="playbook-mode" name="playbook_mode"><option value="auto">Automático + memória</option><option value="manual">Manual</option><option value="none">Sem playbook inicial</option></select><small>O banco reforça a escolha, mas nunca modifica o YAML.</small></label><label><span>Playbook manual</span><select id="playbook-id" name="playbook_id" disabled><option value="">Selecione um playbook</option></select><small>Habilitado somente quando a seleção manual estiver ativa.</small></label></div>
+              <label><span>Objetivo da análise</span><textarea id="objective" name="objective" rows="7" placeholder="Descreva o alerta, o comportamento observado e o que precisa ser validado." required></textarea></label>
+              <div class="preset-block"><span>Atalhos de objetivo</span><div class="preset-list"><button type="button" class="preset" data-preset="Validar alerta de Systemd Socket Summary CRITICAL no Checkmk e identificar a causa raiz.">Socket Checkmk</button><button type="button" class="preset" data-preset="Investigar agente Checkmk sem comunicação na porta 6556 e confirmar onde ocorre a falha.">Porta 6556</button><button type="button" class="preset" data-preset="Investigar utilização elevada de filesystem e inodes, identificar a origem do consumo e avaliar risco operacional.">Disco / inodes</button><button type="button" class="preset" data-preset="Investigar utilização elevada de memória RAM e SWAP, correlacionar processos e validar impacto no ambiente.">Memória / swap</button><button type="button" class="preset" data-preset="Investigar timeout SNMP entre o monitoramento e o equipamento, validando serviço, porta, rota e resposta.">SNMP timeout</button><button type="button" class="preset" data-preset="Investigar container unhealthy, coletar healthcheck e logs relacionados sem reiniciar ou alterar o ciclo de vida do container.">Container unhealthy</button></div></div>
+              <div class="policy-notice"><span>i</span><p>A interface nunca autoriza correção na abertura. Ações seguras são apresentadas separadamente e continuam exigindo ambiente permitido, playbook, segunda IA, aprovação humana e pós-validação.</p></div>
+              <div class="form-actions"><button type="button" class="secondary-button" id="clear-form">Limpar</button><button type="submit" class="primary-button" id="submit-analysis"><span class="button-label">Executar análise</span><span class="button-spinner" aria-hidden="true"></span></button></div>
             </form>
           </article>
-
-          <aside class="panel context-panel">
-            <p class="eyebrow">COMO FUNCIONA</p>
-            <ol class="flow-list">
-              <li><span>1</span><div><strong>Resolve o alvo</strong><p>Usa IP informado ou dados já salvos no PostgreSQL.</p></div></li>
-              <li><span>2</span><div><strong>Seleciona o playbook</strong><p>Combina regras YAML com a memória de casos anteriores.</p></div></li>
-              <li><span>3</span><div><strong>Coleta evidências</strong><p>Executa somente ferramentas estruturadas e autorizadas.</p></div></li>
-              <li><span>4</span><div><strong>Conclui e revisa</strong><p>Produz causa provável, relatório de ticket e, quando aplicável, proposta revisada por uma segunda IA.</p></div></li>
-            </ol>
-          </aside>
+          <aside class="panel context-panel"><p class="eyebrow">FLUXO OPERACIONAL</p><ol class="flow-list"><li><span>1</span><div><strong>Valida a IA</strong><p>Confere credencial, endpoint e rota antes de abrir SSH.</p></div></li><li><span>2</span><div><strong>Resolve o alvo</strong><p>Usa IP informado ou dados persistidos no PostgreSQL.</p></div></li><li><span>3</span><div><strong>Seleciona o playbook</strong><p>Combina YAML, escolha do operador e memória confiável.</p></div></li><li><span>4</span><div><strong>Coleta e conclui</strong><p>Executa ferramentas estruturadas, correlaciona evidências e produz o ticket.</p></div></li></ol></aside>
         </div>
       </section>
 
-      <section class="view" id="view-investigations">
-        <article class="panel">
-          <div class="panel-header stacked-mobile">
-            <div>
-              <p class="eyebrow">MEMÓRIA OPERACIONAL</p>
-              <h3>Histórico de investigações</h3>
-            </div>
-            <div class="filters">
-              <input id="investigation-search" placeholder="Buscar alvo ou objetivo">
-              <select id="investigation-environment">
-                <option value="">Todos os ambientes</option>
-                <option value="production">Produção</option>
-                <option value="standby">Standby</option>
-                <option value="monitoring">Monitoramento</option>
-                <option value="training">Treinamento</option>
-                <option value="unknown">Desconhecido</option>
-              </select>
-              <select id="investigation-status">
-                <option value="">Todos os status</option>
-                <option value="healthy">Saudável</option>
-                <option value="attention">Atenção</option>
-                <option value="critical">Crítico</option>
-                <option value="inconclusive">Inconclusivo</option>
-              </select>
-              <button class="secondary-button" id="filter-investigations">Filtrar</button>
-            </div>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>Alvo</th><th>Objetivo</th><th>Playbook</th><th>Ambiente</th><th>Status</th><th>Confiança</th><th>Data</th></tr>
-              </thead>
-              <tbody id="investigations-table">
-                <tr><td colspan="7" class="empty-cell">Abra esta seção para carregar o histórico.</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="table-footer"><span id="investigation-total">0 registros</span></div>
-        </article>
-      </section>
-
-      <section class="view" id="view-inventory">
-        <article class="panel">
-          <div class="panel-header stacked-mobile">
-            <div>
-              <p class="eyebrow">ALVOS CONHECIDOS</p>
-              <h3>Inventário aprendido</h3>
-            </div>
-            <div class="filters">
-              <input id="inventory-search" placeholder="IP, hostname, site ou container">
-              <select id="inventory-environment">
-                <option value="">Todos os ambientes</option>
-                <option value="production">Produção</option>
-                <option value="standby">Standby</option>
-                <option value="monitoring">Monitoramento</option>
-                <option value="training">Treinamento</option>
-                <option value="unknown">Desconhecido</option>
-              </select>
-              <button class="secondary-button" id="filter-inventory">Filtrar</button>
-            </div>
-          </div>
-          <div class="inventory-grid" id="inventory-grid">
-            <div class="empty-state">Abra esta seção para carregar o inventário.</div>
-          </div>
-        </article>
-      </section>
-
-      <section class="view" id="view-playbooks">
-        <article class="panel">
-          <div class="panel-header">
-            <div>
-              <p class="eyebrow">AUTOMAÇÃO CONTROLADA</p>
-              <h3>Catálogo de playbooks</h3>
-            </div>
-            <span class="mode-badge">seleção automática + memória</span>
-          </div>
-          <div class="playbook-grid" id="playbook-grid">
-            <div class="empty-state">Abra esta seção para carregar os playbooks.</div>
-          </div>
-        </article>
-      </section>
+      <section class="view" id="view-investigations"><article class="panel"><div class="panel-header stacked-mobile"><div><p class="eyebrow">MEMÓRIA OPERACIONAL</p><h3>Histórico de investigações</h3></div><div class="filters"><input id="investigation-search" placeholder="Buscar alvo ou objetivo"><select id="investigation-environment"><option value="">Todos os ambientes</option><option value="production">Produção</option><option value="standby">Standby</option><option value="monitoring">Monitoramento</option><option value="training">Treinamento</option><option value="unknown">Desconhecido</option></select><select id="investigation-status"><option value="">Todos os status</option><option value="healthy">Saudável</option><option value="attention">Atenção</option><option value="critical">Crítico</option><option value="inconclusive">Inconclusivo</option></select><button class="secondary-button" id="filter-investigations">Filtrar</button></div></div><div class="table-wrap"><table><thead><tr><th>Alvo</th><th>Objetivo</th><th>Playbook</th><th>Ambiente</th><th>Status</th><th>Confiança</th><th>Data</th></tr></thead><tbody id="investigations-table"><tr><td colspan="7" class="empty-cell">Abra esta seção para carregar o histórico.</td></tr></tbody></table></div><div class="table-footer"><span id="investigation-total">0 registros</span></div></article></section>
+      <section class="view" id="view-inventory"><article class="panel"><div class="panel-header stacked-mobile"><div><p class="eyebrow">ALVOS CONHECIDOS</p><h3>Inventário aprendido</h3></div><div class="filters"><input id="inventory-search" placeholder="IP, hostname, site ou container"><select id="inventory-environment"><option value="">Todos os ambientes</option><option value="production">Produção</option><option value="standby">Standby</option><option value="monitoring">Monitoramento</option><option value="training">Treinamento</option><option value="unknown">Desconhecido</option></select><button class="secondary-button" id="filter-inventory">Filtrar</button></div></div><div class="inventory-grid" id="inventory-grid"><div class="empty-state">Abra esta seção para carregar o inventário.</div></div></article></section>
+      <section class="view" id="view-playbooks"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AUTOMAÇÃO CONTROLADA</p><h3>Catálogo de playbooks</h3></div><span class="mode-badge">seleção automática, manual ou nenhuma</span></div><div class="playbook-grid" id="playbook-grid"><div class="empty-state">Abra esta seção para carregar os playbooks.</div></div></article></section>
+      <section class="view" id="view-health"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AUTODIAGNÓSTICO</p><h3>Saúde da aplicação</h3></div><button class="secondary-button" id="refresh-health">Atualizar diagnóstico</button></div><div class="health-summary" id="health-summary"><div class="empty-state">Abra esta seção para validar a aplicação.</div></div><div class="health-grid" id="health-grid"></div><div class="provider-health-list" id="provider-health-list"></div></article></section>
     </main>
   </div>
-
-  <aside class="result-drawer" id="result-drawer" aria-hidden="true">
-    <div class="drawer-backdrop" data-close-drawer></div>
-    <div class="drawer-panel">
-      <div class="drawer-header">
-        <div>
-          <p class="eyebrow">RESULTADO DA IA</p>
-          <h2 id="result-title">Investigação</h2>
-        </div>
-        <button class="icon-button" data-close-drawer aria-label="Fechar">×</button>
-      </div>
-      <div class="drawer-content" id="result-content"></div>
-    </div>
-  </aside>
-
+  <aside class="result-drawer" id="result-drawer" aria-hidden="true"><div class="drawer-backdrop" data-close-drawer></div><div class="drawer-panel"><div class="drawer-header"><div><p class="eyebrow">RESULTADO DA IA</p><h2 id="result-title">Investigação</h2></div><button class="icon-button" data-close-drawer aria-label="Fechar">×</button></div><div class="drawer-content" id="result-content"></div></div></aside>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script src="/ui/assets/app.js" defer></script>
 </body>
