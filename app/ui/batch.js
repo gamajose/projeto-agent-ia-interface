@@ -5,7 +5,7 @@ function parseTargetList(value) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) return;
     line.split(/[;,]/).forEach((rawToken) => {
-      let token = rawToken.trim();
+      const token = rawToken.trim();
       if (!token) return;
       let target = token;
       let sshPort = null;
@@ -31,10 +31,19 @@ function parseTargetList(value) {
       const key = `${target.toLowerCase()}|${sshPort || ""}`;
       if (seen.has(key)) return;
       seen.add(key);
-      rows.push({ target, ssh_port: sshPort });
+      const row = { target };
+      if (sshPort != null) row.ssh_port = sshPort;
+      rows.push(row);
     });
   });
   return rows;
+}
+
+function targetInputToken(item) {
+  if (!item.ssh_port) return item.target;
+  return String(item.target).includes(":")
+    ? `[${item.target}]:${item.ssh_port}`
+    : `${item.target}:${item.ssh_port}`;
 }
 
 function batchStatusLabel(status) {
@@ -137,7 +146,7 @@ async function importBatchFile(event) {
     state.batch.filename = parsed.filename || file.name;
     state.batch.warnings = parsed.warnings || [];
     state.batch.config = { ...state.batch.config, ...(parsed.limits || {}) };
-    $("#target").value = state.batch.importedItems.map((item) => item.target).join("\n");
+    $("#target").value = state.batch.importedItems.map(targetInputToken).join("\n");
     renderImportedBatch();
     toast(`${state.batch.importedItems.length} alvo(s) importado(s).`);
   } catch (error) {
@@ -258,7 +267,7 @@ async function executeBatch(payloads, sourceItems) {
       row.status = "running";
       renderBatchExecution();
       try {
-        let result = await api("/ui/api/investigations", { method: "POST", body: row.payload });
+        let result = await api("/ui/api/batches/investigations", { method: "POST", body: row.payload });
         if (result.job_id) {
           row.status = "queued";
           renderBatchExecution();
@@ -312,7 +321,7 @@ function interceptBatchSubmit(event) {
     const base = baseAnalysisPayload();
     const payloads = sourceItems.map((item) => buildTargetPayload(item, base));
     validateBatchPayloads(payloads);
-    executeBatch(payloads, sourceItems);
+    void executeBatch(payloads, sourceItems);
   } catch (error) {
     toast(error.message, "error");
   }
@@ -320,7 +329,7 @@ function interceptBatchSubmit(event) {
 
 function setupBatchExecution() {
   setupBatchState();
-  loadBatchConfig();
+  void loadBatchConfig();
   $("#batch-file")?.addEventListener("change", importBatchFile);
   $("#clear-batch-file")?.addEventListener("click", clearBatchFile);
   $("#analysis-form")?.addEventListener("submit", interceptBatchSubmit, true);
