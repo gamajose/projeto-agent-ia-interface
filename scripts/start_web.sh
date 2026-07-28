@@ -37,6 +37,13 @@ PY
     )
 fi
 
+# Instalações npm dentro do NVM usam /usr/bin/env node no executável. Ao
+# iniciar via systemd, inclua explicitamente a pasta do OpenCode no PATH.
+if [[ -n "${OPENCODE_CLI_PATH:-}" ]]; then
+    OPENCODE_BIN_DIR="$(dirname -- "$OPENCODE_CLI_PATH")"
+    export PATH="$OPENCODE_BIN_DIR:$PATH"
+fi
+
 VENV_DIR="${AGENT_VENV_DIR:-$HOME/.venvs/$PROJECT_NAME}"
 AGENT_WEB="$VENV_DIR/bin/agent-web"
 
