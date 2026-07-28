@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-ia-infra"
-version = "1.10.0"
+version = "1.11.0"
 description = "Agent IA para troubleshooting seguro de infraestrutura"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,6 +13,7 @@ requires-python = ">=3.11"
 agent = "app.cli.entrypoint:main"
 agent-worker = "app.worker:main"
 agent-web = "app.web_main:main"
+agent-opencode-web = "app.services.opencode_cli:web_main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
