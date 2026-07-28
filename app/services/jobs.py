@@ -47,6 +47,10 @@ def enqueue_investigation(
     mode: str = "propose",
     approve: bool = False,
     ssh_port: int | None = None,
+    provider_name: str | None = None,
+    model_name: str | None = None,
+    playbook_mode: str = "auto",
+    playbook_id: str | None = None,
     metadata: dict[str, Any] | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
@@ -54,8 +58,13 @@ def enqueue_investigation(
     if mode == "correct" and approve:
         # O webhook distribuído nunca transforma fila em autorização implícita.
         approve = False
-        mode = "propose"
     job_id = str(uuid.uuid4())
+    selection = {
+        "provider": (provider_name or settings.ai_provider or "gemini").strip().lower(),
+        "model": (model_name or "").strip(),
+        "playbook_mode": (playbook_mode or "auto").strip().lower(),
+        "playbook_id": (playbook_id or "").strip() or None,
+    }
     job = {
         "job_id": job_id,
         "reference": reference,
@@ -64,15 +73,21 @@ def enqueue_investigation(
         "mode": mode,
         "approve": approve,
         "ssh_port": ssh_port,
+        **selection,
         "metadata": redact_object(metadata or {}),
         "created_at": _now(),
     }
     client = _redis(settings)
-    _store(client, settings, job_id, {"job_id": job_id, "status": "queued", "created_at": job["created_at"]})
-    client.rpush(settings.agent_queue_name, json.dumps(job, ensure_ascii=False, default=str))
-    return {
+    queued = {
         "job_id": job_id,
         "status": "queued",
+        "created_at": job["created_at"],
+        **selection,
+    }
+    _store(client, settings, job_id, queued)
+    client.rpush(settings.agent_queue_name, json.dumps(job, ensure_ascii=False, default=str))
+    return {
+        **queued,
         "queue": settings.agent_queue_name,
         "worker_pool": settings.agent_worker_name,
     }
@@ -91,6 +106,12 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
     job_id = str(job["job_id"])
     client = _redis(settings)
     worker = f"{settings.agent_worker_name}@{socket.gethostname()}"
+    selection = {
+        "provider": str(job.get("provider") or settings.ai_provider or "gemini"),
+        "model": str(job.get("model") or ""),
+        "playbook_mode": str(job.get("playbook_mode") or "auto"),
+        "playbook_id": job.get("playbook_id"),
+    }
     _store(
         client,
         settings,
@@ -100,6 +121,7 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
             "status": "running",
             "worker": worker,
             "started_at": _now(),
+            **selection,
         },
     )
     try:
@@ -111,6 +133,10 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
             mode=str(job.get("mode") or "propose"),
             approve=bool(job.get("approve", False)),
             ssh_port=job.get("ssh_port"),
+            provider_name=selection["provider"],
+            model_name=selection["model"] or None,
+            playbook_mode=selection["playbook_mode"],
+            playbook_id=selection["playbook_id"],
             settings=settings,
         )
         payload = {
@@ -120,6 +146,7 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
             "completed_at": _now(),
             "investigation_id": result.get("investigation_id"),
             "result": result,
+            **selection,
         }
         _store(client, settings, job_id, payload)
         return payload
@@ -130,6 +157,7 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
             "worker": worker,
             "completed_at": _now(),
             "error": f"{type(exc).__name__}: {exc}",
+            **selection,
         }
         _store(client, settings, job_id, payload)
         return payload
