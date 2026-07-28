@@ -4,12 +4,14 @@ A aba **Configurações** permite administrar os provedores usados pelo Agent IA
 
 ## Fluxo
 
-1. O operador cadastra ou atualiza uma chave, endpoint e modelos.
-2. A chave é gravada somente no backend configurado (`.env` ou Vault).
-3. O catálogo público recebe apenas nome, endpoint, modelos, tipo de uso e estado configurado.
-4. O diagnóstico valida credencial, modelo e resposta JSON.
-5. O provedor aparece em **Nova investigação** e pode participar da ordem automática.
-6. Antes de qualquer SSH, o preflight completo continua obrigatório.
+1. O operador clica em **Adicionar IA** ou em **Configurar** no card de um provedor.
+2. O formulário abre em um modal, sem criar uma seção permanente no fim da página.
+3. O operador cadastra ou atualiza chave, endpoint e modelos.
+4. A chave é gravada somente no backend configurado (`.env` ou Vault).
+5. O catálogo público recebe apenas nome, endpoint, modelos, tipo de uso e estado configurado.
+6. O diagnóstico valida credencial, modelo e resposta JSON.
+7. O provedor aparece em **Nova investigação** e pode participar da ordem automática.
+8. Antes de qualquer SSH, o preflight completo continua obrigatório.
 
 ## Provedores nativos
 
@@ -53,7 +55,7 @@ E aceitar o formato OpenAI-compatible com:
 }
 ```
 
-Exemplo de cadastro:
+Exemplo de cadastro no modal **Adicionar IA**:
 
 ```text
 Identificador: mistral-interno
@@ -62,7 +64,6 @@ Base URL: https://ia.interna.exemplo/v1
 Modelo padrão: modelo-a
 Modelos: modelo-a, modelo-b
 Tipo de uso: personalizado
-Prioridade: 40
 ```
 
 A chave será armazenada em:
@@ -86,9 +87,11 @@ OMNIROUTE_ROUTES=Código=auto/coding,Rápido=auto/fast
 
 Cadastrar uma chave direta no Agent não injeta automaticamente essa chave dentro do container OmniRoute. O Agent passa a usar o provedor diretamente. Para usar a mesma IA por meio do gateway, ela também deve ser cadastrada no próprio OmniRoute e publicada em uma rota.
 
-## Autopilot
+## Autopilot e ordem dos cards
 
-A ordem é persistida em:
+A grade de provedores funciona como um trilho Kanban horizontal. O card mais à esquerda tem a maior prioridade. Ao arrastar um card e soltá-lo em outra posição, a interface salva automaticamente a nova sequência.
+
+A ordem continua persistida em:
 
 ```env
 AI_AUTO_PROVIDER_ORDER=groq,omniroute,deepseek,gemini,ollama,openrouter

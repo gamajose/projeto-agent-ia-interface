@@ -30,7 +30,7 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "/ui/assets/workspace.js" in html
     assert "/ui/assets/tools.js" in html
     assert "/ui/assets/settings.js" in html
-    assert "v=1.13.0" in html
+    assert "v=1.14.0" in html
     assert 'id="analysis-modal"' in html
     assert 'id="attach-batch-file"' in html
     assert 'id="provider"' in html
@@ -41,8 +41,16 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "OpenCode integrado ao Agent IA" in html
     assert 'id="view-settings"' in html
     assert 'data-view="settings"' in html
-    assert 'id="provider-deepseek"' in html
+    assert 'id="provider-new"' in html
+    assert ">Adicionar IA<" in html
+    assert 'id="provider-modal"' in html
     assert 'id="provider-api-key"' in html
+    assert 'id="provider-order-status"' in html
+    assert 'id="provider-deepseek"' not in html
+    assert 'id="refresh-ai-settings"' not in html
+    assert 'id="ai-provider-order"' not in html
+    assert 'id="provider-save-order"' not in html
+    assert 'id="provider-priority"' not in html
     assert 'id="view-health"' in html
     assert 'data-view="analysis"' not in html
     assert "/ui/api/ai/providers" in script
@@ -55,7 +63,12 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "opencode-agent" in tools_script
     assert "/ui/api/settings/ai" in settings_script
     assert "saveProvider" in settings_script
-    assert "applyDeepSeekPreset" in settings_script
+    assert "openProviderModal" in settings_script
+    assert "persistCardOrder" in settings_script
+    assert 'addEventListener("dragstart"' in settings_script
+    assert 'addEventListener("drop"' in settings_script
+    assert "/ui/api/settings/ai/order" in settings_script
+    assert "applyDeepSeekPreset" not in settings_script
     assert "terminal-card" in workspace_script
     assert "confidence-ring" in workspace_script
     assert "renderApprovedExecution" in workspace_script
@@ -65,7 +78,9 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert ".opencode-chat-panel" in tools_css
     assert ".opencode-composer" in tools_css
     assert ".provider-config-grid" in settings_css
-    assert ".provider-editor" in settings_css
+    assert ".provider-modal" in settings_css
+    assert ".is-dragging" in settings_css
+    assert "overflow-x:auto" in settings_css
     assert "DEEPSEEK_API_KEY" not in html
     assert "OMNIROUTE_API_KEY" not in html
 

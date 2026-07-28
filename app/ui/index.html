@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>Agent IA Infra</title>
-  <link rel="stylesheet" href="/ui/assets/styles.css?v=1.13.0">
-  <link rel="stylesheet" href="/ui/assets/enhancements.css?v=1.13.0">
-  <link rel="stylesheet" href="/ui/assets/batch.css?v=1.13.0">
-  <link rel="stylesheet" href="/ui/assets/workspace.css?v=1.13.0">
-  <link rel="stylesheet" href="/ui/assets/tools.css?v=1.13.0">
-  <link rel="stylesheet" href="/ui/assets/settings.css?v=1.13.0">
+  <link rel="stylesheet" href="/ui/assets/styles.css?v=1.14.0">
+  <link rel="stylesheet" href="/ui/assets/enhancements.css?v=1.14.0">
+  <link rel="stylesheet" href="/ui/assets/batch.css?v=1.14.0">
+  <link rel="stylesheet" href="/ui/assets/workspace.css?v=1.14.0">
+  <link rel="stylesheet" href="/ui/assets/tools.css?v=1.14.0">
+  <link rel="stylesheet" href="/ui/assets/settings.css?v=1.14.0">
 </head>
 <body>
   <div class="app-shell">
@@ -50,27 +50,14 @@
 
       <section class="view" id="view-settings">
         <article class="panel">
-          <div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO DINÂMICA</p><h3>Provedores e chaves de IA</h3></div><div class="filters"><button class="secondary-button" id="provider-deepseek">Configurar DeepSeek</button><button class="secondary-button" id="provider-new">Adicionar API</button><button class="ghost-button" id="refresh-ai-settings">Atualizar</button></div></div>
+          <div class="panel-header ai-settings-header">
+            <div class="ai-settings-intro"><p class="eyebrow">CONFIGURAÇÃO DINÂMICA</p><h3>Provedores e chaves de IA</h3><p>Configure cada IA nos próprios cards. A sequência abaixo é a prioridade usada pelo modo automático.</p></div>
+            <button class="primary-button" id="provider-new" type="button">Adicionar IA</button>
+          </div>
           <div class="ai-settings-workspace">
-            <section class="ai-settings-summary"><div><p class="eyebrow">AUTOPILOT</p><h3>Ordem de seleção automática</h3><p id="ai-settings-note">As chaves são armazenadas somente no servidor e nunca retornam ao navegador.</p></div><div class="ai-settings-order"><label><span>Prioridade</span><input id="ai-provider-order" placeholder="groq,omniroute,deepseek,gemini,ollama,openrouter"></label><button class="primary-button" type="button" id="provider-save-order">Salvar ordem</button></div></section>
-            <div class="provider-config-grid" id="provider-config-grid"><div class="settings-empty">Abra esta seção para carregar os provedores.</div></div>
-            <section class="provider-editor" id="provider-editor">
-              <div class="panel-header"><div><p class="eyebrow">CADASTRO</p><h3 id="provider-editor-title">Adicionar API OpenAI-compatible</h3></div></div>
-              <form id="provider-editor-form">
-                <div class="provider-editor-grid">
-                  <label><span>Identificador</span><input id="provider-id" placeholder="ex.: mistral-interno" required></label>
-                  <label><span>Nome exibido</span><input id="provider-label" placeholder="Nome da IA"></label>
-                  <label><span>Tipo de uso</span><select id="provider-tier"><option value="free">Gratuito</option><option value="paid">Pago/créditos</option><option value="local">Local</option><option value="gateway">Gateway</option><option value="custom" selected>Personalizado</option></select></label>
-                  <label><span>Prioridade</span><input id="provider-priority" type="number" min="1" max="999" value="100"></label>
-                  <label class="wide"><span>Base URL</span><input id="provider-base-url" placeholder="https://api.exemplo.com/v1"></label>
-                  <label class="wide"><span>Modelo padrão</span><input id="provider-default-model" placeholder="modelo-principal"></label>
-                  <label class="full"><span>Modelos disponíveis</span><textarea id="provider-models" placeholder="um modelo por linha ou separado por vírgula"></textarea></label>
-                  <label class="wide"><span>API key</span><input id="provider-api-key" type="password" autocomplete="new-password" placeholder="Deixe vazio para preservar a chave atual"><small class="settings-secret-hint">A chave não será exibida novamente após salvar.</small></label>
-                  <label><span>Estado</span><span><input id="provider-enabled" type="checkbox" checked> Habilitado</span></label>
-                </div>
-                <div class="provider-editor-note">Provedores personalizados devem oferecer uma API compatível com <code>/chat/completions</code>. DeepSeek, Groq, OpenRouter, Gemini, Ollama e OmniRoute permanecem como integrações nativas.</div>
-                <div class="provider-editor-actions"><button type="button" class="ghost-button" id="provider-delete" hidden>Excluir personalizado</button><button type="submit" class="primary-button" id="provider-save">Salvar provedor</button></div>
-              </form>
+            <section class="provider-priority-section">
+              <div class="provider-priority-head"><div><p class="eyebrow">ORDEM AUTOMÁTICA</p><h3>Arraste os cards para definir a prioridade</h3><p>A IA mais à esquerda é testada primeiro. A nova ordem é salva automaticamente ao soltar o card.</p></div><span class="provider-order-status" id="provider-order-status">Carregando prioridade...</span></div>
+              <div class="provider-config-grid" id="provider-config-grid" role="list" aria-label="Provedores em ordem de prioridade"><div class="settings-empty">Abra esta seção para carregar os provedores.</div></div>
             </section>
           </div>
         </article>
@@ -79,6 +66,27 @@
       <section class="view" id="view-health"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AUTODIAGNÓSTICO</p><h3>Saúde da aplicação</h3></div><button class="secondary-button" id="refresh-health">Atualizar diagnóstico</button></div><div class="health-summary" id="health-summary"><div class="empty-state">Abra esta seção para validar a aplicação.</div></div><div class="health-grid" id="health-grid"></div><div class="provider-health-list" id="provider-health-list"></div></article></section>
     </main>
   </div>
+
+  <aside class="provider-modal" id="provider-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="provider-editor-title">
+    <div class="provider-modal-backdrop" data-close-provider-modal></div>
+    <div class="provider-modal-panel">
+      <header class="provider-modal-header"><div><p class="eyebrow">CONFIGURAÇÃO DE IA</p><h2 id="provider-editor-title">Adicionar IA</h2></div><button class="icon-button" type="button" data-close-provider-modal aria-label="Fechar configuração">×</button></header>
+      <form id="provider-editor-form" class="provider-editor">
+        <div class="provider-editor-grid">
+          <label><span>Identificador</span><input id="provider-id" placeholder="ex.: mistral-interno" required></label>
+          <label><span>Nome exibido</span><input id="provider-label" placeholder="Nome da IA"></label>
+          <label><span>Tipo de uso</span><select id="provider-tier"><option value="free">Gratuito</option><option value="paid">Pago/créditos</option><option value="local">Local</option><option value="gateway">Gateway</option><option value="custom" selected>Personalizado</option></select></label>
+          <label class="wide"><span>Base URL</span><input id="provider-base-url" placeholder="https://api.exemplo.com/v1"></label>
+          <label><span>Modelo padrão</span><input id="provider-default-model" placeholder="modelo-principal"></label>
+          <label class="full"><span>Modelos disponíveis</span><textarea id="provider-models" placeholder="um modelo por linha ou separado por vírgula"></textarea></label>
+          <label class="wide"><span>API key</span><input id="provider-api-key" type="password" autocomplete="new-password" placeholder="Deixe vazio para preservar a chave atual"><small class="settings-secret-hint">A chave não será exibida novamente após salvar.</small></label>
+          <label><span>Estado</span><span><input id="provider-enabled" type="checkbox" checked> Habilitado</span></label>
+        </div>
+        <div class="provider-editor-note">Provedores personalizados devem oferecer uma API compatível com <code>/chat/completions</code>. DeepSeek, Groq, OpenRouter, Gemini, Ollama e OmniRoute permanecem como integrações nativas.</div>
+        <div class="provider-editor-actions"><button type="button" class="ghost-button" id="provider-delete" hidden>Excluir personalizado</button><span class="action-spacer"></span><button type="button" class="secondary-button" data-close-provider-modal>Cancelar</button><button type="submit" class="primary-button" id="provider-save">Salvar IA</button></div>
+      </form>
+    </div>
+  </aside>
 
   <aside class="analysis-modal" id="analysis-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="analysis-modal-title">
     <div class="analysis-modal-backdrop" data-close-analysis></div>
@@ -102,10 +110,10 @@
 
   <aside class="result-drawer" id="result-drawer" aria-hidden="true"><div class="drawer-backdrop" data-close-drawer></div><div class="drawer-panel"><div class="drawer-header"><div><p class="eyebrow">RESULTADO DA IA</p><h2 id="result-title">Investigação</h2></div><button class="icon-button" data-close-drawer aria-label="Fechar">×</button></div><div class="drawer-content" id="result-content"></div></div></aside>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="/ui/assets/app.js?v=1.13.0" defer></script>
-  <script src="/ui/assets/batch.js?v=1.13.0" defer></script>
-  <script src="/ui/assets/workspace.js?v=1.13.0" defer></script>
-  <script src="/ui/assets/tools.js?v=1.13.0" defer></script>
-  <script src="/ui/assets/settings.js?v=1.13.0" defer></script>
+  <script src="/ui/assets/app.js?v=1.14.0" defer></script>
+  <script src="/ui/assets/batch.js?v=1.14.0" defer></script>
+  <script src="/ui/assets/workspace.js?v=1.14.0" defer></script>
+  <script src="/ui/assets/tools.js?v=1.14.0" defer></script>
+  <script src="/ui/assets/settings.js?v=1.14.0" defer></script>
 </body>
 </html>
