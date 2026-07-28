@@ -6,9 +6,10 @@ from typing import Any
 
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
+from app.services.ai_providers import use_provider
 from app.services.dynamic_agent import run_dynamic_investigation
 from app.services.persistence import resolve_saved_target
-from app.services.playbooks import selected_playbook_ssh_port
+from app.services.playbooks import selected_playbook_ssh_port, use_playbook
 from app.services.provider_preflight import require_selected_provider
 from app.services.secrets import get_secret
 from app.services.ssh import SSHExecutor
@@ -112,30 +113,41 @@ def run_target(
     mode: str = "propose",
     approve: bool = False,
     ssh_port: int | None = None,
+    provider_name: str | None = None,
+    model_name: str | None = None,
+    playbook_mode: str = "auto",
+    playbook_id: str | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
+    """Executa uma investigação reutilizando o mesmo motor do CLI e da interface.
+
+    As seleções de IA e playbook vivem em ContextVars somente durante esta
+    operação. Isso evita alterar configuração global, funciona com workers e
+    preserva o comportamento das chamadas existentes que não informam opções.
+    """
     settings = settings or get_settings()
-    require_selected_provider(settings)
-    playbook_ssh_port, _ = selected_playbook_ssh_port(
-        objective.strip() or "validar a saúde geral do servidor"
-    )
-    target = resolve_target(
-        reference,
-        environment,
-        ssh_port,
-        playbook_ssh_port=playbook_ssh_port,
-        settings=settings,
-    )
-    executor = build_executor(target, settings=settings)
-    try:
-        executor.connect()
-        return run_dynamic_investigation(
-            executor=executor,
-            target=reference,
-            context=objective,
-            environment=target.environment,
-            mode=mode,
-            approve=approve,
+    with use_provider(provider_name, model_name), use_playbook(playbook_mode, playbook_id):
+        require_selected_provider(settings)
+        playbook_ssh_port, _ = selected_playbook_ssh_port(
+            objective.strip() or "validar a saúde geral do servidor"
         )
-    finally:
-        executor.close()
+        target = resolve_target(
+            reference,
+            environment,
+            ssh_port,
+            playbook_ssh_port=playbook_ssh_port,
+            settings=settings,
+        )
+        executor = build_executor(target, settings=settings)
+        try:
+            executor.connect()
+            return run_dynamic_investigation(
+                executor=executor,
+                target=reference,
+                context=objective,
+                environment=target.environment,
+                mode=mode,
+                approve=approve,
+            )
+        finally:
+            executor.close()
