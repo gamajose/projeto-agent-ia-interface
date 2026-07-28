@@ -10,21 +10,33 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_interface_references_provider_health_and_batch_assets() -> None:
+def test_interface_references_compact_modal_batch_and_result_assets() -> None:
     html = (PROJECT_ROOT / "app" / "ui" / "index.html").read_text(encoding="utf-8")
     script = (PROJECT_ROOT / "app" / "ui" / "app.js").read_text(encoding="utf-8")
     batch_script = (PROJECT_ROOT / "app" / "ui" / "batch.js").read_text(encoding="utf-8")
+    workspace_script = (PROJECT_ROOT / "app" / "ui" / "workspace.js").read_text(encoding="utf-8")
+    workspace_css = (PROJECT_ROOT / "app" / "ui" / "workspace.css").read_text(encoding="utf-8")
 
     assert "/ui/assets/enhancements.css" in html
     assert "/ui/assets/batch.css" in html
+    assert "/ui/assets/workspace.css" in html
     assert "/ui/assets/batch.js" in html
+    assert "/ui/assets/workspace.js" in html
+    assert 'id="analysis-modal"' in html
+    assert 'id="attach-batch-file"' in html
     assert 'id="provider"' in html
     assert 'id="playbook-mode"' in html
     assert 'id="batch-file"' in html
     assert 'id="view-health"' in html
+    assert 'data-view="analysis"' not in html
     assert "/ui/api/ai/providers" in script
     assert "/ui/api/health" in script
     assert "/ui/api/batches/parse" in batch_script
+    assert "terminal-card" in workspace_script
+    assert "confidence-ring" in workspace_script
+    assert "renderApprovedExecution" in workspace_script
+    assert ".analysis-modal" in workspace_css
+    assert ".terminal-screen" in workspace_css
     assert "API_KEY" not in html
 
 
@@ -36,6 +48,7 @@ def test_interface_javascript_has_valid_syntax() -> None:
     for path in (
         PROJECT_ROOT / "app" / "ui" / "app.js",
         PROJECT_ROOT / "app" / "ui" / "batch.js",
+        PROJECT_ROOT / "app" / "ui" / "workspace.js",
     ):
         result = subprocess.run(
             [node, "--check", str(path)],
