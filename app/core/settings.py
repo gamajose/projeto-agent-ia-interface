@@ -86,6 +86,17 @@ class Settings(BaseSettings):
     agent_runtime_discovery_enabled: bool = True
     agent_adaptive_tools_enabled: bool = True
     agent_tool_recommendation_limit: int = Field(default=10, ge=3, le=30)
+
+    # Núcleo cognitivo: interpreta a missão, valida os contratos JSON de cada
+    # etapa, troca de provedor quando uma IA falha e audita a conclusão com uma
+    # IA crítica independente. O playbook vira contexto, não sequência fixa.
+    agent_intelligent_reasoning_enabled: bool = True
+    agent_reasoning_provider_fallback: bool = True
+    agent_reasoning_max_provider_attempts: int = Field(default=3, ge=1, le=5)
+    agent_critic_enabled: bool = True
+    agent_critic_min_coverage: int = Field(default=70, ge=40, le=100)
+    agent_playbook_advisory_only: bool = True
+
     agent_max_rounds: int = 5
     agent_max_commands: int = 20
     agent_min_confidence: int = 70

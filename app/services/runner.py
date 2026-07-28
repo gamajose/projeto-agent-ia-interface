@@ -7,7 +7,7 @@ from typing import Any
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
 from app.services.ai_providers import use_provider
-from app.services.dynamic_agent import run_dynamic_investigation
+from app.services.intelligent_agent import run_dynamic_investigation
 from app.services.persistence import resolve_saved_target
 from app.services.playbooks import selected_playbook_ssh_port, use_playbook
 from app.services.provider_preflight import require_selected_provider
@@ -160,6 +160,7 @@ def _automation_summary(
     evidence_count = len(result.get("evidence") or [])
     proposed_actions = list((result.get("analysis") or {}).get("proposed_actions") or [])
     approval_token = result.get("approval_token")
+    intelligence = result.get("intelligence") or {}
     return {
         "mode": "safe_autopilot" if selection.automatic else "guided",
         "status": "completed",
@@ -174,18 +175,26 @@ def _automation_summary(
         "playbook": {
             "id": playbook.get("id"),
             "title": playbook.get("title"),
-            "selection": "automatic" if selection.automatic else "configured",
+            "selection": "advisory" if intelligence.get("playbook_role") == "advisory" else "configured",
+        },
+        "intelligence": {
+            "enabled": bool(intelligence.get("enabled")),
+            "loop": intelligence.get("loop"),
+            "critic_verdict": (intelligence.get("critic") or {}).get("verdict"),
+            "provider_failover": bool(intelligence.get("provider_failover")),
         },
         "evidence_count": evidence_count,
         "proposal_count": len(proposed_actions),
         "human_approval_available": bool(approval_token),
         "phases": [
             {"name": "provider_selection", "status": "completed", "detail": selection.detail},
+            {"name": "mission_interpretation", "status": "completed", "detail": "Objetivo convertido em missão e critérios verificáveis."},
             {"name": "target_resolution", "status": "completed", "detail": f"{target.host}:{target.port}"},
             {"name": "ssh_access", "status": "completed", "detail": "Acesso autenticado e chave de host validada."},
             {"name": "environment_classification", "status": "completed", "detail": environment},
-            {"name": "playbook_selection", "status": "completed", "detail": playbook.get("title") or "Sem playbook inicial"},
+            {"name": "adaptive_reasoning", "status": "completed", "detail": "Planejamento, execução, observação, reflexão e replanejamento."},
             {"name": "evidence_collection", "status": "completed", "detail": f"{evidence_count} evidência(s) coletada(s)."},
+            {"name": "independent_critic", "status": "completed", "detail": str((intelligence.get("critic") or {}).get("verdict") or "não disponível")},
             {"name": "solution_proposal", "status": "completed", "detail": f"{len(proposed_actions)} ação(ões) proposta(s)."},
             {
                 "name": "corrective_execution",
