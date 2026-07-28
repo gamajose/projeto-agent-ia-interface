@@ -111,8 +111,14 @@ class Settings(BaseSettings):
     agent_allow_legacy_read_commands: bool = True
 
     ai_provider: str = "gemini"
-    ai_auto_provider_order: str = "groq,omniroute,gemini,ollama,openrouter"
+    ai_auto_provider_order: str = "groq,omniroute,deepseek,gemini,ollama,openrouter"
     ai_preflight_timeout_seconds: float = Field(default=8.0, ge=1.0, le=60.0)
+    # O catálogo dinâmico guarda apenas metadados. As chaves continuam no .env
+    # ou Vault e nunca são devolvidas para o navegador.
+    ai_provider_registry_path: str = "~/.config/agent-ia/providers.json"
+    ai_settings_env_path: str = ""
+    ai_settings_ui_enabled: bool = True
+    ai_settings_allow_secret_write: bool = True
 
     # O Gemini consulta a lista de modelos visível para a própria chave. Quando
     # o modelo configurado não existir, usa o primeiro modelo desta lista que
@@ -129,6 +135,14 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
     groq_base_url: str = "https://api.groq.com/openai/v1"
+
+    # DeepSeek usa a API OpenAI-compatible oficial. Os aliases antigos
+    # deepseek-chat e deepseek-reasoner foram substituídos pelos modelos V4.
+    deepseek_api_key: str | None = None
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_models: str = "deepseek-v4-flash,deepseek-v4-pro"
+    deepseek_base_url: str = "https://api.deepseek.com"
+
     openrouter_api_key: str | None = None
     openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
