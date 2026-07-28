@@ -10,23 +10,27 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_interface_references_compact_modal_batch_result_and_tool_assets() -> None:
+def test_interface_references_compact_modal_batch_result_tool_and_settings_assets() -> None:
     html = (PROJECT_ROOT / "app" / "ui" / "index.html").read_text(encoding="utf-8")
     script = (PROJECT_ROOT / "app" / "ui" / "app.js").read_text(encoding="utf-8")
     batch_script = (PROJECT_ROOT / "app" / "ui" / "batch.js").read_text(encoding="utf-8")
     workspace_script = (PROJECT_ROOT / "app" / "ui" / "workspace.js").read_text(encoding="utf-8")
     tools_script = (PROJECT_ROOT / "app" / "ui" / "tools.js").read_text(encoding="utf-8")
+    settings_script = (PROJECT_ROOT / "app" / "ui" / "settings.js").read_text(encoding="utf-8")
     workspace_css = (PROJECT_ROOT / "app" / "ui" / "workspace.css").read_text(encoding="utf-8")
     tools_css = (PROJECT_ROOT / "app" / "ui" / "tools.css").read_text(encoding="utf-8")
+    settings_css = (PROJECT_ROOT / "app" / "ui" / "settings.css").read_text(encoding="utf-8")
 
     assert "/ui/assets/enhancements.css" in html
     assert "/ui/assets/batch.css" in html
     assert "/ui/assets/workspace.css" in html
     assert "/ui/assets/tools.css" in html
+    assert "/ui/assets/settings.css" in html
     assert "/ui/assets/batch.js" in html
     assert "/ui/assets/workspace.js" in html
     assert "/ui/assets/tools.js" in html
-    assert "v=1.12.0" in html
+    assert "/ui/assets/settings.js" in html
+    assert "v=1.13.0" in html
     assert 'id="analysis-modal"' in html
     assert 'id="attach-batch-file"' in html
     assert 'id="provider"' in html
@@ -35,6 +39,10 @@ def test_interface_references_compact_modal_batch_result_and_tool_assets() -> No
     assert 'id="view-opencode"' in html
     assert 'data-view="opencode"' in html
     assert "OpenCode integrado ao Agent IA" in html
+    assert 'id="view-settings"' in html
+    assert 'data-view="settings"' in html
+    assert 'id="provider-deepseek"' in html
+    assert 'id="provider-api-key"' in html
     assert 'id="view-health"' in html
     assert 'data-view="analysis"' not in html
     assert "/ui/api/ai/providers" in script
@@ -45,6 +53,9 @@ def test_interface_references_compact_modal_batch_result_and_tool_assets() -> No
     assert "pollOpenCodeRun" in tools_script
     assert "opencode-prompt" in tools_script
     assert "opencode-agent" in tools_script
+    assert "/ui/api/settings/ai" in settings_script
+    assert "saveProvider" in settings_script
+    assert "applyDeepSeekPreset" in settings_script
     assert "terminal-card" in workspace_script
     assert "confidence-ring" in workspace_script
     assert "renderApprovedExecution" in workspace_script
@@ -53,7 +64,10 @@ def test_interface_references_compact_modal_batch_result_and_tool_assets() -> No
     assert ".opencode-workspace" in tools_css
     assert ".opencode-chat-panel" in tools_css
     assert ".opencode-composer" in tools_css
-    assert "API_KEY" not in html
+    assert ".provider-config-grid" in settings_css
+    assert ".provider-editor" in settings_css
+    assert "DEEPSEEK_API_KEY" not in html
+    assert "OMNIROUTE_API_KEY" not in html
 
 
 def test_interface_javascript_has_valid_syntax() -> None:
@@ -66,6 +80,7 @@ def test_interface_javascript_has_valid_syntax() -> None:
         PROJECT_ROOT / "app" / "ui" / "batch.js",
         PROJECT_ROOT / "app" / "ui" / "workspace.js",
         PROJECT_ROOT / "app" / "ui" / "tools.js",
+        PROJECT_ROOT / "app" / "ui" / "settings.js",
     ):
         result = subprocess.run(
             [node, "--check", str(path)],
