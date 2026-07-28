@@ -4,7 +4,7 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
@@ -18,6 +18,7 @@ from app.services.secrets import clear_secret_cache, get_secret
 _PROVIDER_ID = re.compile(r"^[a-z][a-z0-9_-]{1,47}$")
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{2,95}$")
 _ALLOWED_TIERS = {"free", "paid", "local", "gateway", "custom"}
+_LEGACY_CATALOG_IDS = {"gemini", "groq", "openrouter", "ollama", "omniroute"}
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,21 @@ def _env_path(settings: Settings | None = None) -> Path:
     return Path(configured).expanduser() if configured else PROJECT_ROOT / ".env"
 
 
+def _valid_http_url(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _openrouter_headers(settings: Settings) -> dict[str, str]:
+    headers = {"X-Title": settings.openrouter_app_name}
+    if settings.openrouter_site_url:
+        headers["HTTP-Referer"] = settings.openrouter_site_url
+    return headers
+
+
 def _builtin_specs(settings: Settings) -> tuple[ProviderSpec, ...]:
     return (
         ProviderSpec(
@@ -129,7 +145,7 @@ def _builtin_specs(settings: Settings) -> tuple[ProviderSpec, ...]:
             credential_env="OPENROUTER_API_KEY",
             tier="free",
             priority=60,
-            headers={"X-Title": settings.openrouter_app_name},
+            headers=_openrouter_headers(settings),
             builtin=True,
         ),
         ProviderSpec(
@@ -230,13 +246,12 @@ def provider_specs(
     return tuple(sorted(specs, key=lambda item: (item.priority, item.label.casefold())))
 
 
-def provider_ids(settings: Settings | None = None) -> tuple[str, ...]:
-    return tuple(item.id for item in provider_specs(settings))
-
-
 def provider_spec(provider_id: str, settings: Settings | None = None) -> ProviderSpec | None:
     normalized = str(provider_id or "").strip().lower()
-    return next((item for item in provider_specs(settings, include_disabled=True) if item.id == normalized), None)
+    return next(
+        (item for item in provider_specs(settings, include_disabled=True) if item.id == normalized),
+        None,
+    )
 
 
 def provider_label(provider_id: str, settings: Settings | None = None) -> str:
@@ -266,7 +281,8 @@ def provider_secret(spec: ProviderSpec, settings: Settings | None = None) -> str
         "OPENROUTER_API_KEY": "openrouter_api_key",
         "OMNIROUTE_API_KEY": "omniroute_api_key",
     }
-    fallback = getattr(settings, attribute_map.get(spec.credential_env, ""), None)
+    attribute = attribute_map.get(spec.credential_env)
+    fallback = getattr(settings, attribute, None) if attribute else None
     fallback = fallback or _dotenv_value(spec.credential_env, settings)
     return get_secret(spec.credential_env, fallback, settings=settings)
 
@@ -280,12 +296,19 @@ def provider_configured(spec: ProviderSpec, settings: Settings | None = None) ->
         return False
 
 
-def _valid_http_url(value: str) -> bool:
-    try:
-        parsed = urlparse(value)
-    except ValueError:
-        return False
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+def provider_ids(settings: Settings | None = None) -> tuple[str, ...]:
+    """Retorna o catálogo operacional.
+
+    Os cinco provedores históricos continuam visíveis mesmo sem chave. DeepSeek e
+    provedores personalizados entram automaticamente após receberem credencial,
+    evitando aumentar o catálogo com integrações ainda não configuradas.
+    """
+    settings = settings or get_settings()
+    rows = []
+    for spec in provider_specs(settings):
+        if spec.id in _LEGACY_CATALOG_IDS or provider_configured(spec, settings):
+            rows.append(spec.id)
+    return tuple(rows)
 
 
 def _atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
@@ -317,8 +340,7 @@ def update_env_values(
         stripped = raw.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
-        key = stripped.split("=", 1)[0].strip()
-        positions[key] = index
+        positions[stripped.split("=", 1)[0].strip()] = index
 
     for key, value in updates.items():
         normalized_key = str(key).strip().upper()
@@ -341,8 +363,10 @@ def update_env_values(
 
 def _save_custom_rows(rows: list[dict[str, Any]], settings: Settings) -> Path:
     path = _registry_path(settings)
-    payload = {"version": 1, "providers": rows}
-    _atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    _atomic_write(
+        path,
+        json.dumps({"version": 1, "providers": rows}, ensure_ascii=False, indent=2) + "\n",
+    )
     return path
 
 
@@ -386,14 +410,17 @@ def save_custom_provider(
         "tier": tier if tier in _ALLOWED_TIERS else "custom",
         "priority": max(1, min(int(priority), 999)),
     }
-    rows = _load_custom_rows(settings)
-    rows = [item for item in rows if str(item.get("id") or "").strip().lower() != normalized_id]
+    rows = [
+        item
+        for item in _load_custom_rows(settings)
+        if str(item.get("id") or "").strip().lower() != normalized_id
+    ]
     rows.append(row)
     _save_custom_rows(rows, settings)
     if api_key:
         update_env_values({env_name: api_key}, settings=settings)
     get_settings.cache_clear()
-    spec = provider_spec(normalized_id, Settings())
+    spec = provider_spec(normalized_id, settings)
     if not spec:
         raise RuntimeError("provedor foi salvo, mas não pôde ser recarregado")
     return spec
@@ -403,7 +430,11 @@ def delete_custom_provider(provider_id: str, settings: Settings | None = None) -
     settings = settings or get_settings()
     normalized = provider_id.strip().lower()
     rows = _load_custom_rows(settings)
-    remaining = [item for item in rows if str(item.get("id") or "").strip().lower() != normalized]
+    remaining = [
+        item
+        for item in rows
+        if str(item.get("id") or "").strip().lower() != normalized
+    ]
     if len(remaining) == len(rows):
         return False
     _save_custom_rows(remaining, settings)
@@ -425,20 +456,10 @@ def builtin_env_updates(
     mapping: dict[str, dict[str, str]] = {
         "gemini": {"key": "GEMINI_API_KEY", "model": "GEMINI_MODEL", "models": "GEMINI_FREE_MODELS"},
         "groq": {"key": "GROQ_API_KEY", "base": "GROQ_BASE_URL", "model": "GROQ_MODEL"},
-        "deepseek": {
-            "key": "DEEPSEEK_API_KEY",
-            "base": "DEEPSEEK_BASE_URL",
-            "model": "DEEPSEEK_MODEL",
-            "models": "DEEPSEEK_MODELS",
-        },
+        "deepseek": {"key": "DEEPSEEK_API_KEY", "base": "DEEPSEEK_BASE_URL", "model": "DEEPSEEK_MODEL", "models": "DEEPSEEK_MODELS"},
         "openrouter": {"key": "OPENROUTER_API_KEY", "base": "OPENROUTER_BASE_URL", "model": "OPENROUTER_MODEL"},
         "ollama": {"base": "OLLAMA_BASE_URL", "model": "OLLAMA_MODEL", "models": "OLLAMA_PREFERRED_MODELS"},
-        "omniroute": {
-            "key": "OMNIROUTE_API_KEY",
-            "base": "OMNIROUTE_BASE_URL",
-            "model": "OMNIROUTE_DEFAULT_ROUTE",
-            "models": "OMNIROUTE_ROUTES",
-        },
+        "omniroute": {"key": "OMNIROUTE_API_KEY", "base": "OMNIROUTE_BASE_URL", "model": "OMNIROUTE_DEFAULT_ROUTE", "models": "OMNIROUTE_ROUTES"},
     }
     if normalized not in mapping:
         raise ValueError("provedor nativo desconhecido")
@@ -462,5 +483,8 @@ def public_registry(settings: Settings | None = None) -> dict[str, Any]:
     return {
         "registry_path": str(_registry_path(settings)),
         "env_path": str(_env_path(settings)),
-        "providers": [item.public_dict(settings) for item in provider_specs(settings, include_disabled=True)],
+        "providers": [
+            item.public_dict(settings)
+            for item in provider_specs(settings, include_disabled=True)
+        ],
     }
