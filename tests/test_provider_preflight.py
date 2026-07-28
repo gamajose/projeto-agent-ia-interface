@@ -28,10 +28,15 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
+            response = httpx.Response(
+                self.status_code,
+                request=self.request,
+                json=self._payload,
+            )
             raise httpx.HTTPStatusError(
                 "erro",
                 request=self.request,
-                response=httpx.Response(self.status_code, request=self.request),
+                response=response,
             )
 
 
@@ -39,8 +44,17 @@ def _settings(**overrides) -> Settings:
     values = {
         "postgres_dsn": "sqlite+pysqlite:///:memory:",
         "ai_preflight_timeout_seconds": 2,
+        "gemini_api_key": "gemini-secret",
+        "gemini_model": "gemini-2.5-flash",
+        "gemini_auto_free": True,
+        "gemini_free_models": (
+            "gemini-3.5-flash,gemini-3.1-flash-lite,"
+            "gemini-2.5-flash,gemini-2.5-flash-lite"
+        ),
         "ollama_base_url": "http://ollama.invalid",
         "ollama_model": "gemma3:4b",
+        "ollama_auto_fallback": True,
+        "ollama_preferred_models": "gemma3:4b,llama3.2",
         "omniroute_api_key": "endpoint-secret",
         "omniroute_base_url": "http://omniroute.invalid/v1",
         "omniroute_default_route": "auto",
@@ -63,19 +77,41 @@ def test_ollama_available_only_when_exact_model_and_json_probe_work():
     assert result.state == ProviderState.AVAILABLE
     assert result.selectable is True
     assert result.model == "gemma3:4b"
+    assert result.valid_routes == ("gemma3:4b",)
 
 
-def test_ollama_reports_missing_exact_model_without_generation_call():
-    tags = FakeResponse({"models": [{"name": "gemma3:12b"}]})
+def test_ollama_falls_back_to_installed_preferred_model():
+    tags = FakeResponse({"models": [{"name": "gemma3:4b"}]})
+    generation = FakeResponse({"response": '{"preflight": true}'})
+
+    with patch("app.services.provider_preflight.httpx.get", return_value=tags), patch(
+        "app.services.provider_preflight.httpx.post",
+        return_value=generation,
+    ):
+        result = preflight_provider(
+            "ollama",
+            _settings(ollama_model="llama3.2"),
+        )
+
+    assert result.state == ProviderState.DEGRADED
+    assert result.selectable is True
+    assert result.model == "gemma3:4b"
+    assert "llama3.2" in result.detail
+    assert result.invalid_routes == ("llama3.2",)
+
+
+def test_ollama_rejects_explicit_model_that_is_not_installed():
+    tags = FakeResponse({"models": [{"name": "gemma3:4b"}]})
 
     with patch("app.services.provider_preflight.httpx.get", return_value=tags), patch(
         "app.services.provider_preflight.httpx.post"
     ) as generation:
-        result = preflight_provider("ollama", _settings())
+        result = preflight_provider("ollama", _settings(), "llama3.2")
 
     assert result.state == ProviderState.MISCONFIGURED
     assert result.selectable is False
     assert "não está instalado" in result.detail
+    assert result.valid_routes == ("gemma3:4b",)
     generation.assert_not_called()
 
 
@@ -89,6 +125,103 @@ def test_ollama_reports_unavailable_service_without_raw_traceback():
 
     assert result.state == ProviderState.UNAVAILABLE
     assert "secret-value" not in result.detail
+
+
+def test_gemini_auto_selects_newest_known_free_model_visible_to_key():
+    models = FakeResponse(
+        {
+            "models": [
+                {
+                    "name": "models/gemini-2.5-flash",
+                    "supportedGenerationMethods": ["generateContent"],
+                },
+                {
+                    "name": "models/gemini-3.5-flash",
+                    "supportedGenerationMethods": ["generateContent"],
+                },
+            ]
+        }
+    )
+    generation = FakeResponse(
+        {
+            "candidates": [
+                {"content": {"parts": [{"text": '{"preflight": true}'}]}}
+            ]
+        }
+    )
+
+    with patch("app.services.provider_preflight.httpx.get", return_value=models), patch(
+        "app.services.provider_preflight.httpx.post",
+        return_value=generation,
+    ) as post:
+        result = preflight_provider("gemini", _settings())
+
+    assert result.state == ProviderState.AVAILABLE
+    assert result.selectable is True
+    assert result.model == "gemini-3.5-flash"
+    assert result.valid_routes == ("gemini-3.5-flash", "gemini-2.5-flash")
+    assert "automaticamente" in result.detail
+    assert "gemini-3.5-flash" in post.call_args.args[0]
+
+
+def test_gemini_keeps_explicit_free_model_selected_by_operator():
+    models = FakeResponse(
+        {
+            "models": [
+                {
+                    "name": "models/gemini-2.5-flash",
+                    "supportedGenerationMethods": ["generateContent"],
+                },
+                {
+                    "name": "models/gemini-3.5-flash",
+                    "supportedGenerationMethods": ["generateContent"],
+                },
+            ]
+        }
+    )
+    generation = FakeResponse(
+        {
+            "candidates": [
+                {"content": {"parts": [{"text": '{"preflight": true}'}]}}
+            ]
+        }
+    )
+
+    with patch("app.services.provider_preflight.httpx.get", return_value=models), patch(
+        "app.services.provider_preflight.httpx.post",
+        return_value=generation,
+    ):
+        result = preflight_provider("gemini", _settings(), "gemini-2.5-flash")
+
+    assert result.state == ProviderState.AVAILABLE
+    assert result.model == "gemini-2.5-flash"
+
+
+def test_gemini_reports_public_api_error_message_without_credentials():
+    models = FakeResponse(
+        {
+            "models": [
+                {
+                    "name": "models/gemini-3.5-flash",
+                    "supportedGenerationMethods": ["generateContent"],
+                }
+            ]
+        }
+    )
+    rejected = FakeResponse(
+        {"error": {"message": "model is unavailable for this API version"}},
+        status_code=404,
+    )
+
+    with patch("app.services.provider_preflight.httpx.get", return_value=models), patch(
+        "app.services.provider_preflight.httpx.post",
+        return_value=rejected,
+    ):
+        result = preflight_provider("gemini", _settings())
+
+    assert result.state == ProviderState.MISCONFIGURED
+    assert "model is unavailable" in result.detail
+    assert "gemini-secret" not in result.detail
 
 
 def test_omniroute_requires_endpoint_token_before_network():
