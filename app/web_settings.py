@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from app import web as web_module
 from app.core.settings import Settings, get_settings
@@ -42,6 +42,20 @@ class ProviderOrderPayload(BaseModel):
     providers: list[str] = Field(min_length=1, max_length=100)
 
 
+def _validate_registered_provider(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized == "auto":
+        return normalized
+    if not _PROVIDER_ID.fullmatch(normalized):
+        raise ValueError("identificador de provedor inválido")
+    spec = provider_spec(normalized, get_settings())
+    if not spec or not spec.enabled:
+        raise ValueError(f"provedor não cadastrado ou desabilitado: {normalized}")
+    return normalized
+
+
 def _dynamic_provider_options(result: ProviderPreflight, settings: Settings) -> list[dict[str, Any]]:
     if result.provider == "omniroute":
         configured = omniroute_route_options(settings)
@@ -71,12 +85,13 @@ def _dynamic_provider_options(result: ProviderPreflight, settings: Settings) -> 
     models = list(spec.models if spec else ())
     if result.model and result.model not in models:
         models.insert(0, result.model)
+    valid = set(result.valid_routes)
     return [
         {
             "value": model,
             "label": model,
             "default": model == result.model or bool(spec and model == spec.default_model),
-            "available": not result.valid_routes or model in set(result.valid_routes),
+            "available": not valid or model in valid,
         }
         for model in models
         if model
@@ -84,9 +99,10 @@ def _dynamic_provider_options(result: ProviderPreflight, settings: Settings) -> 
 
 
 def enable_dynamic_provider_payload() -> None:
-    """Permite IDs cadastrados e modelos dinâmicos no fluxo existente."""
-    InvestigationPayload.__annotations__["provider"] = str | None
-    InvestigationPayload.model_fields["provider"].annotation = str | None
+    """Permite IDs cadastrados, mantendo rejeição Pydantic para IDs desconhecidos."""
+    dynamic_type = Annotated[str | None, AfterValidator(_validate_registered_provider)]
+    InvestigationPayload.__annotations__["provider"] = dynamic_type
+    InvestigationPayload.model_fields["provider"].annotation = dynamic_type
     InvestigationPayload.model_fields["provider"].metadata = []
     InvestigationPayload.model_rebuild(force=True)
     web_module._provider_options = _dynamic_provider_options
