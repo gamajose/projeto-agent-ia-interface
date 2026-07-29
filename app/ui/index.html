@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>Agent IA Infra</title>
-  <link rel="stylesheet" href="/ui/assets/styles.css?v=1.16.0">
-  <link rel="stylesheet" href="/ui/assets/enhancements.css?v=1.16.0">
-  <link rel="stylesheet" href="/ui/assets/batch.css?v=1.16.0">
-  <link rel="stylesheet" href="/ui/assets/workspace.css?v=1.16.0">
-  <link rel="stylesheet" href="/ui/assets/tools.css?v=1.16.0">
-  <link rel="stylesheet" href="/ui/assets/settings.css?v=1.16.0">
-  <link rel="stylesheet" href="/ui/assets/ux-improvements.css?v=1.16.0">
+  <link rel="stylesheet" href="/ui/assets/styles.css?v=1.17.0">
+  <link rel="stylesheet" href="/ui/assets/enhancements.css?v=1.17.0">
+  <link rel="stylesheet" href="/ui/assets/batch.css?v=1.17.0">
+  <link rel="stylesheet" href="/ui/assets/workspace.css?v=1.17.0">
+  <link rel="stylesheet" href="/ui/assets/tools.css?v=1.17.0">
+  <link rel="stylesheet" href="/ui/assets/settings.css?v=1.17.0">
+  <link rel="stylesheet" href="/ui/assets/ux-improvements.css?v=1.17.0">
+  <link rel="stylesheet" href="/ui/assets/product-polish.css?v=1.17.0">
 </head>
 <body>
   <div class="app-shell">
@@ -32,11 +33,14 @@
     <main class="main">
       <header class="topbar">
         <div><p class="eyebrow" id="page-eyebrow">CENTRAL OPERACIONAL</p><h1 id="page-title">Visão geral</h1></div>
-        <div class="topbar-actions"><button class="icon-button theme-toggle" id="theme-toggle" aria-label="Alternar tema">☼</button><div class="operator-card"><span class="operator-avatar" id="operator-avatar">OP</span><div><strong id="operator-name">Carregando...</strong><span><i class="online-dot"></i> sessão confiável</span></div></div></div>
+        <div class="topbar-actions">
+          <button class="primary-button topbar-start-investigation" id="topbar-start-investigation" data-open-analysis>Iniciar investigação</button>
+          <button class="icon-button theme-toggle" id="theme-toggle" aria-label="Alternar tema">☼</button>
+          <div class="operator-card"><span class="operator-avatar" id="operator-avatar">OP</span><div><strong id="operator-name">Carregando...</strong><span><i class="online-dot"></i> sessão confiável</span></div></div>
+        </div>
       </header>
 
       <section class="view active" id="view-dashboard">
-        <div class="hero-panel"><div><p class="eyebrow">ANÁLISE GUIADA POR EVIDÊNCIAS</p><h2>Investigue o ambiente sem perder o controle operacional.</h2><p>Escolha a IA, o playbook e um ou vários alvos. Cada servidor recebe uma investigação independente e permanece registrado no histórico.</p></div><button class="primary-button" data-open-analysis>Iniciar investigação</button></div>
         <div class="metrics-grid" id="metrics-grid"><article class="metric-card skeleton"></article><article class="metric-card skeleton"></article><article class="metric-card skeleton"></article><article class="metric-card skeleton"></article></div>
         <div class="dashboard-grid">
           <article class="panel wide-panel"><div class="panel-header"><div><p class="eyebrow">ATIVIDADE</p><h3>Investigações recentes</h3></div><button class="ghost-button" data-view-link="investigations">Ver histórico</button></div><div class="table-wrap"><table><thead><tr><th>Alvo</th><th>Ambiente</th><th>Status</th><th>Confiança</th><th>Quando</th></tr></thead><tbody id="recent-investigations"><tr><td colspan="5" class="empty-cell">Carregando investigações...</td></tr></tbody></table></div></article>
@@ -46,8 +50,22 @@
 
       <section class="view" id="view-investigations"><article class="panel"><div class="panel-header stacked-mobile"><div><p class="eyebrow">MEMÓRIA OPERACIONAL</p><h3>Histórico de investigações</h3></div><div class="filters"><input id="investigation-search" placeholder="Buscar alvo ou objetivo"><select id="investigation-environment"><option value="">Todos os ambientes</option><option value="production">Produção</option><option value="standby">Standby</option><option value="monitoring">Monitoramento</option><option value="training">Treinamento</option><option value="unknown">Desconhecido</option></select><select id="investigation-status"><option value="">Todos os status</option><option value="healthy">Saudável</option><option value="attention">Atenção</option><option value="critical">Crítico</option><option value="inconclusive">Inconclusivo</option></select><button class="secondary-button" id="filter-investigations">Filtrar</button></div></div><div class="table-wrap"><table><thead><tr><th>Alvo</th><th>Objetivo</th><th>Playbook</th><th>Ambiente</th><th>Status</th><th>Confiança</th><th>Data</th></tr></thead><tbody id="investigations-table"><tr><td colspan="7" class="empty-cell">Abra esta seção para carregar o histórico.</td></tr></tbody></table></div><div class="table-footer"><span id="investigation-total">0 registros</span></div></article></section>
       <section class="view" id="view-inventory"><article class="panel"><div class="panel-header stacked-mobile"><div><p class="eyebrow">ALVOS CONHECIDOS</p><h3>Inventário aprendido</h3></div><div class="filters"><input id="inventory-search" placeholder="IP, hostname, site ou container"><select id="inventory-environment"><option value="">Todos os ambientes</option><option value="production">Produção</option><option value="standby">Standby</option><option value="monitoring">Monitoramento</option><option value="training">Treinamento</option><option value="unknown">Desconhecido</option></select><button class="secondary-button" id="filter-inventory">Filtrar</button></div></div><div class="inventory-grid" id="inventory-grid"><div class="empty-state">Abra esta seção para carregar o inventário.</div></div></article></section>
-      <section class="view" id="view-playbooks"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AUTOMAÇÃO CONTROLADA</p><h3>Catálogo de playbooks</h3></div><span class="mode-badge">seleção automática, manual ou nenhuma</span></div><div class="playbook-grid" id="playbook-grid"><div class="empty-state">Abra esta seção para carregar os playbooks.</div></div></article></section>
-      <section class="view" id="view-opencode"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AGENTE DE DESENVOLVIMENTO</p><h3>OpenCode integrado ao Agent IA</h3></div><button class="secondary-button" id="refresh-opencode">Atualizar workspace</button></div><div class="opencode-workspace" id="opencode-workspace"><div class="empty-state">Abra esta seção para usar o OpenCode.</div></div></article></section>
+
+      <section class="view" id="view-playbooks">
+        <article class="panel">
+          <div class="panel-header stacked-mobile">
+            <div><p class="eyebrow">AUTOMAÇÃO CONTROLADA</p><h3>Catálogo de playbooks</h3></div>
+            <div class="playbook-header-actions">
+              <input id="import-playbook-file" type="file" hidden accept=".yml,.yaml,application/yaml,text/yaml,text/plain">
+              <button class="secondary-button playbook-import-button" id="import-playbook" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14"/></svg><span>Importar</span></button>
+              <button class="primary-button playbook-add-button" id="add-playbook" type="button" aria-label="Adicionar playbook" title="Adicionar playbook">+</button>
+            </div>
+          </div>
+          <div class="playbook-grid" id="playbook-grid"><div class="empty-state">Abra esta seção para carregar os playbooks.</div></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-opencode"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AGENTE DE DESENVOLVIMENTO</p><h3>OpenCode integrado ao Agent IA</h3></div></div><div class="opencode-workspace" id="opencode-workspace"><div class="empty-state">Abra esta seção para usar o OpenCode.</div></div></article></section>
 
       <section class="view" id="view-settings">
         <article class="panel">
@@ -55,7 +73,7 @@
             <section class="provider-priority-section">
               <div class="provider-priority-head">
                 <div><p class="eyebrow">ORDEM AUTOMÁTICA</p><h3>Arraste os cards para definir a prioridade</h3><p>A primeira IA da grade é testada primeiro. A nova ordem é salva automaticamente ao soltar o card.</p></div>
-                <div class="provider-priority-actions"><button class="primary-button" id="provider-new" type="button">Adicionar IA</button><span class="provider-order-status" id="provider-order-status">Carregando prioridade...</span></div>
+                <div class="provider-priority-actions"><button class="primary-button" id="provider-new" type="button">Adicionar IA</button><span class="provider-order-status" id="provider-order-status"></span></div>
               </div>
               <div class="provider-config-grid" id="provider-config-grid" role="list" aria-label="Provedores em ordem de prioridade"><div class="settings-empty">Abra esta seção para carregar os provedores.</div></div>
             </section>
@@ -63,7 +81,7 @@
         </article>
       </section>
 
-      <section class="view" id="view-health"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AUTODIAGNÓSTICO</p><h3>Saúde da aplicação</h3></div><button class="secondary-button" id="refresh-health">Atualizar diagnóstico</button></div><div class="health-summary" id="health-summary"><div class="empty-state">Abra esta seção para validar a aplicação.</div></div><div class="health-grid" id="health-grid"></div><div class="provider-health-list" id="provider-health-list"></div></article></section>
+      <section class="view" id="view-health"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AUTODIAGNÓSTICO</p><h3>Saúde da aplicação</h3></div></div><div class="health-summary" id="health-summary" hidden></div><div class="health-grid compact-health-grid" id="health-grid"><div class="empty-state">Abra esta seção para validar a aplicação.</div></div><div class="provider-health-list" id="provider-health-list"></div></article></section>
     </main>
   </div>
 
@@ -110,12 +128,13 @@
 
   <aside class="result-drawer" id="result-drawer" aria-hidden="true"><div class="drawer-backdrop" data-close-drawer></div><div class="drawer-panel"><div class="drawer-header"><div><p class="eyebrow">RESULTADO DA IA</p><h2 id="result-title">Investigação</h2></div><button class="icon-button" data-close-drawer aria-label="Fechar">×</button></div><div class="drawer-content" id="result-content"></div></div></aside>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="/ui/assets/app.js?v=1.16.0" defer></script>
-  <script src="/ui/assets/batch.js?v=1.16.0" defer></script>
-  <script src="/ui/assets/workspace.js?v=1.16.0" defer></script>
-  <script src="/ui/assets/tools.js?v=1.16.0" defer></script>
-  <script src="/ui/assets/settings.js?v=1.16.0" defer></script>
-  <script src="/ui/assets/ux-improvements.js?v=1.16.0" defer></script>
-  <script src="/ui/assets/execution-tracker.js?v=1.16.0" defer></script>
+  <script src="/ui/assets/app.js?v=1.17.0" defer></script>
+  <script src="/ui/assets/batch.js?v=1.17.0" defer></script>
+  <script src="/ui/assets/workspace.js?v=1.17.0" defer></script>
+  <script src="/ui/assets/tools.js?v=1.17.0" defer></script>
+  <script src="/ui/assets/settings.js?v=1.17.0" defer></script>
+  <script src="/ui/assets/ux-improvements.js?v=1.17.0" defer></script>
+  <script src="/ui/assets/execution-tracker.js?v=1.17.0" defer></script>
+  <script src="/ui/assets/product-polish.js?v=1.17.0" defer></script>
 </body>
 </html>
