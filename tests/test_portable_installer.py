@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import stat
@@ -106,6 +107,39 @@ def test_configurator_is_idempotent_and_preserves_existing_secrets(tmp_path: Pat
     assert second_omni["INITIAL_PASSWORD"] == first_omni["INITIAL_PASSWORD"]
     assert second_omni["JWT_SECRET"] == first_omni["JWT_SECRET"]
     assert env_file.read_text(encoding="utf-8").startswith("# comentário preservado")
+
+
+def test_configurator_prefers_existing_container_credentials(tmp_path: Path) -> None:
+    env_file = tmp_path / "agent-ia" / "app" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "POSTGRES_PASSWORD=senha-incorreta\n"
+        "POSTGRES_DSN=postgresql+psycopg://agent_ia:senha-incorreta@127.0.0.1:5432/agent_ia\n"
+        "REDIS_PASSWORD=redis-incorreta\n"
+        "REDIS_URL=redis://:redis-incorreta@127.0.0.1:6379/1\n",
+        encoding="utf-8",
+    )
+
+    postgres_existing = "postgres-existente-seguro"
+    redis_existing = "redis-existente-seguro"
+    env_file, _omni_env, output = run_configurator(
+        tmp_path,
+        extra_env={
+            "INSTALL_EXISTING_POSTGRES_PASSWORD": postgres_existing,
+            "INSTALL_EXISTING_REDIS_PASSWORD": redis_existing,
+        },
+    )
+    values = dotenv_values(env_file)
+    report = json.loads(output)
+
+    assert values["POSTGRES_PASSWORD"] == postgres_existing
+    assert values["REDIS_PASSWORD"] == redis_existing
+    assert postgres_existing in values["POSTGRES_DSN"]
+    assert redis_existing in values["REDIS_URL"]
+    assert report["postgres_password_recovered"] is True
+    assert report["redis_password_recovered"] is True
+    assert postgres_existing not in output
+    assert redis_existing not in output
 
 
 def test_configurator_writes_optional_bastion_without_printing_password(tmp_path: Path) -> None:
