@@ -27,10 +27,15 @@ def test_installation_scripts_have_valid_bash_syntax() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_setup_script_uses_linux_filesystem_for_virtualenv() -> None:
+def test_setup_script_uses_linux_filesystem_and_supported_python_for_virtualenv() -> None:
     content = (PROJECT_ROOT / "scripts" / "setup_wsl.sh").read_text(encoding="utf-8")
 
     assert "$HOME/.venvs/$PROJECT_NAME" in content
+    assert "sys.version_info >= (3, 11)" in content
+    assert "python3.12 python3.11 python3" in content
+    assert "python3.11 python3.11-pip" in content
+    assert "ambiente virtual existente usa Python incompatível" in content
+    assert '"$PYTHON_BIN" -m venv "$VENV_DIR"' in content
     assert "--break-system-packages" not in content
     assert '"$PIP" install -e "$PROJECT_DIR"' in content
 
@@ -55,6 +60,8 @@ def test_bootstrap_uses_predictable_path_and_supports_remote_install() -> None:
     assert "scripts/install_all.sh" in content
     assert "não pode conter espaços" in content
     assert "runuser -u" in content
+    assert "sys.version_info >= (3, 11)" in content
+    assert "dnf install -y python3.11 python3.11-pip" in content
     assert 'systemctl restart agent-ia-web.service' in content
     assert 'systemctl is-active --quiet agent-ia-web.service' in content
     assert "rm -rf" not in content
