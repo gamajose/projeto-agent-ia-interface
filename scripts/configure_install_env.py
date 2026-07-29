@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import re
@@ -129,50 +130,110 @@ def validated_port(value: str | None, default: int) -> str:
     return str(port)
 
 
-def docker_inspect(format_string: str, container: str) -> str:
+def docker_command(
+    *arguments: str,
+    timeout: int = 12,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    process_environment = os.environ.copy()
+    process_environment.update(environment or {})
     try:
-        result = subprocess.run(
-            ["docker", "inspect", "--format", format_string, container],
+        return subprocess.run(
+            ["docker", *arguments],
             capture_output=True,
             text=True,
             check=False,
-            timeout=10,
+            timeout=timeout,
+            env=process_environment,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
+        return None
 
 
-def existing_postgres_password() -> str:
-    explicit = os.environ.get("INSTALL_EXISTING_POSTGRES_PASSWORD", "").strip()
-    if explicit:
-        return explicit
-    output = docker_inspect("{{range .Config.Env}}{{println .}}{{end}}", "agent-ia-postgres")
-    for line in output.splitlines():
-        if line.startswith("POSTGRES_PASSWORD="):
-            return line.split("=", 1)[1]
-    return ""
+def container_exists(container: str) -> bool:
+    result = docker_command("inspect", container)
+    return bool(result and result.returncode == 0)
 
 
-def existing_redis_password() -> str:
-    explicit = os.environ.get("INSTALL_EXISTING_REDIS_PASSWORD", "").strip()
-    if explicit:
-        return explicit
-    raw = docker_inspect("{{json .Config.Cmd}}", "agent-ia-redis")
-    if not raw:
-        return ""
+def container_running(container: str) -> bool:
+    result = docker_command("inspect", "--format", "{{.State.Running}}", container)
+    return bool(result and result.returncode == 0 and result.stdout.strip() == "true")
+
+
+def validate_postgres_password(password: str) -> bool:
+    result = docker_command(
+        "exec",
+        "-e",
+        "PGPASSWORD",
+        "agent-ia-postgres",
+        "psql",
+        "-h",
+        "127.0.0.1",
+        "-U",
+        "agent_ia",
+        "-d",
+        "agent_ia",
+        "-tAc",
+        "SELECT 1",
+        environment={"PGPASSWORD": password},
+    )
+    return bool(result and result.returncode == 0 and result.stdout.strip() == "1")
+
+
+def validate_redis_password(password: str) -> bool:
+    result = docker_command(
+        "exec",
+        "-e",
+        "REDISCLI_AUTH",
+        "agent-ia-redis",
+        "redis-cli",
+        "ping",
+        environment={"REDISCLI_AUTH": password},
+    )
+    return bool(result and result.returncode == 0 and result.stdout.strip() == "PONG")
+
+
+def prompt_secret(prompt: str, environment_name: str) -> str:
     try:
-        command = json.loads(raw)
-    except json.JSONDecodeError:
-        return ""
-    if not isinstance(command, list):
-        return ""
-    for index, item in enumerate(command[:-1]):
-        if item == "--requirepass":
-            return str(command[index + 1])
-    return ""
+        value = getpass.getpass(prompt).strip()
+    except (EOFError, OSError) as exc:
+        raise RuntimeError(
+            f"não foi possível abrir o terminal para ler a senha; "
+            f"execute em um terminal interativo ou informe {environment_name}"
+        ) from exc
+    if not value:
+        raise RuntimeError("a senha não pode ficar vazia para um serviço já existente")
+    return value
+
+
+def resolve_existing_password(
+    *,
+    container: str,
+    environment_name: str,
+    current_password: str,
+    prompt: str,
+    validator,
+) -> tuple[str, bool]:
+    explicit = os.environ.get(environment_name, "").strip()
+    if explicit:
+        if container_running(container) and not validator(explicit):
+            raise RuntimeError(f"a senha informada em {environment_name} não foi aceita por {container}")
+        return explicit, False
+
+    if not container_exists(container):
+        return "", False
+
+    if current_password and container_running(container) and validator(current_password):
+        return current_password, False
+
+    for attempt in range(1, 4):
+        candidate = prompt_secret(prompt, environment_name)
+        if not container_running(container) or validator(candidate):
+            return candidate, True
+        if attempt < 3:
+            print("Senha não aceita. Tente novamente.", flush=True)
+
+    raise RuntimeError(f"a senha informada não foi aceita por {container} após 3 tentativas")
 
 
 def main() -> None:
@@ -185,18 +246,32 @@ def main() -> None:
         base_lines = []
 
     current = read_pairs(base_lines)
-    recovered_postgres_password = existing_postgres_password()
-    recovered_redis_password = existing_redis_password()
-    postgres_password = (
-        recovered_postgres_password
-        or current.get("POSTGRES_PASSWORD", "").strip()
+    current_postgres_password = (
+        current.get("POSTGRES_PASSWORD", "").strip()
         or password_from_url(current.get("POSTGRES_DSN", ""))
     )
-    redis_password = (
-        recovered_redis_password
-        or current.get("REDIS_PASSWORD", "").strip()
+    current_redis_password = (
+        current.get("REDIS_PASSWORD", "").strip()
         or password_from_url(current.get("REDIS_URL", ""))
     )
+
+    confirmed_postgres_password, postgres_prompted = resolve_existing_password(
+        container="agent-ia-postgres",
+        environment_name="INSTALL_EXISTING_POSTGRES_PASSWORD",
+        current_password=current_postgres_password,
+        prompt="Senha atual do PostgreSQL (usuário agent_ia): ",
+        validator=validate_postgres_password,
+    )
+    confirmed_redis_password, redis_prompted = resolve_existing_password(
+        container="agent-ia-redis",
+        environment_name="INSTALL_EXISTING_REDIS_PASSWORD",
+        current_password=current_redis_password,
+        prompt="Senha atual do Redis: ",
+        validator=validate_redis_password,
+    )
+
+    postgres_password = confirmed_postgres_password or current_postgres_password
+    redis_password = confirmed_redis_password or current_redis_password
     postgres_created = not bool(postgres_password and postgres_password != "CHANGE_ME")
     redis_created = not bool(redis_password and redis_password != "CHANGE_ME")
     if postgres_created:
@@ -294,8 +369,8 @@ def main() -> None:
             {
                 "postgres_password_created": postgres_created,
                 "redis_password_created": redis_created,
-                "postgres_password_recovered": bool(recovered_postgres_password),
-                "redis_password_recovered": bool(recovered_redis_password),
+                "postgres_password_prompted": postgres_prompted,
+                "redis_password_prompted": redis_prompted,
                 "approval_secret_created": approval_created,
                 "api_token_created": api_created,
                 "omniroute_password_created": initial_created,
