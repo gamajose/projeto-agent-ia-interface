@@ -7,7 +7,7 @@ import re
 import secrets
 import tempfile
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote as url_unquote, urlsplit
 
 
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:@,+\-~]*$")
@@ -31,8 +31,7 @@ def unquote(value: str) -> str:
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
         value = value[1:-1]
-        if value is not None:
-            value = value.replace(r"\n", "\n").replace(r'\"', '"').replace(r"\\", "\\")
+        value = value.replace(r"\n", "\n").replace(r'\"', '"').replace(r"\\", "\\")
     return value
 
 
@@ -106,7 +105,7 @@ def password_from_url(value: str) -> str:
     if not value or "://" not in value:
         return ""
     try:
-        return urlsplit(value).password or ""
+        return url_unquote(urlsplit(value).password or "")
     except ValueError:
         return ""
 
@@ -116,6 +115,17 @@ def keep_or_generate(values: dict[str, str], key: str, *, size: int = 32) -> tup
     if current and current != "CHANGE_ME":
         return current, False
     return generated_secret(size), True
+
+
+def validated_port(value: str | None, default: int) -> str:
+    raw = str(value or default).strip()
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"porta OmniRoute inválida: {raw!r}") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("porta OmniRoute deve estar entre 1 e 65535")
+    return str(port)
 
 
 def main() -> None:
@@ -150,6 +160,7 @@ def main() -> None:
     install_root = args.install_root.resolve()
     venv_dir = args.venv_dir.resolve()
     registry_path = install_root / "data" / "providers.json"
+    omniroute_port = validated_port(current.get("OMNIROUTE_PORT"), 20128)
 
     updates = {
         "APP_ENV": "production",
@@ -172,9 +183,9 @@ def main() -> None:
         "AI_SETTINGS_ENV_PATH": str(args.env.resolve()),
         "OMNIROUTE_IMAGE": current.get("OMNIROUTE_IMAGE", "diegosouzapw/omniroute:latest") or "diegosouzapw/omniroute:latest",
         "OMNIROUTE_BIND_ADDRESS": current.get("OMNIROUTE_BIND_ADDRESS", "127.0.0.1") or "127.0.0.1",
-        "OMNIROUTE_PORT": current.get("OMNIROUTE_PORT", "20128") or "20128",
+        "OMNIROUTE_PORT": omniroute_port,
         "OMNIROUTE_ENV_FILE": str(args.omniroute_env.resolve()),
-        "OMNIROUTE_BASE_URL": "http://127.0.0.1:20128/v1",
+        "OMNIROUTE_BASE_URL": f"http://127.0.0.1:{omniroute_port}/v1",
         "CODEX_WORKDIR": str(app_dir),
         "OPENCODE_WORKDIR": str(app_dir),
     }
@@ -229,6 +240,7 @@ def main() -> None:
                 "approval_secret_created": approval_created,
                 "api_token_created": api_created,
                 "omniroute_password_created": initial_created,
+                "omniroute_port": int(omniroute_port),
                 "env": str(args.env),
                 "omniroute_env": str(args.omniroute_env),
             },
