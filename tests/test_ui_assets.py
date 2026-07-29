@@ -17,20 +17,26 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     workspace_script = (PROJECT_ROOT / "app" / "ui" / "workspace.js").read_text(encoding="utf-8")
     tools_script = (PROJECT_ROOT / "app" / "ui" / "tools.js").read_text(encoding="utf-8")
     settings_script = (PROJECT_ROOT / "app" / "ui" / "settings.js").read_text(encoding="utf-8")
+    ux_script = (PROJECT_ROOT / "app" / "ui" / "ux-improvements.js").read_text(encoding="utf-8")
+    tracker_script = (PROJECT_ROOT / "app" / "ui" / "execution-tracker.js").read_text(encoding="utf-8")
     workspace_css = (PROJECT_ROOT / "app" / "ui" / "workspace.css").read_text(encoding="utf-8")
     tools_css = (PROJECT_ROOT / "app" / "ui" / "tools.css").read_text(encoding="utf-8")
     settings_css = (PROJECT_ROOT / "app" / "ui" / "settings.css").read_text(encoding="utf-8")
+    ux_css = (PROJECT_ROOT / "app" / "ui" / "ux-improvements.css").read_text(encoding="utf-8")
 
     assert "/ui/assets/enhancements.css" in html
     assert "/ui/assets/batch.css" in html
     assert "/ui/assets/workspace.css" in html
     assert "/ui/assets/tools.css" in html
     assert "/ui/assets/settings.css" in html
+    assert "/ui/assets/ux-improvements.css" in html
     assert "/ui/assets/batch.js" in html
     assert "/ui/assets/workspace.js" in html
     assert "/ui/assets/tools.js" in html
     assert "/ui/assets/settings.js" in html
-    assert "v=1.15.0" in html
+    assert "/ui/assets/ux-improvements.js" in html
+    assert "/ui/assets/execution-tracker.js" in html
+    assert "v=1.16.0" in html
     assert 'id="analysis-modal"' in html
     assert 'id="attach-batch-file"' in html
     assert 'id="provider"' in html
@@ -76,6 +82,17 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "document.elementFromPoint" in settings_script
     assert "/ui/api/settings/ai/order" in settings_script
     assert "applyDeepSeekPreset" not in settings_script
+    assert "enhanceProviderStateField" in ux_script
+    assert "provider-toggle" in ux_script
+    assert "Adicionar playbook" in ux_script
+    assert "/ui/api/playbooks" in ux_script
+    assert "playbook-draft" in ux_script
+    assert "Criar rascunho de playbook" in ux_script
+    assert "/ui/api/executions" in tracker_script
+    assert "agent-ui-active-execution" in tracker_script
+    assert "startTrackedAnalysis" in tracker_script
+    assert 'addEventListener("submit", startTrackedAnalysis, true)' in tracker_script
+    assert "execution-tray" in tracker_script
     assert "terminal-card" in workspace_script
     assert "confidence-ring" in workspace_script
     assert "renderApprovedExecution" in workspace_script
@@ -91,6 +108,10 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "touch-action:none" in settings_css
     assert "overflow-x:auto" not in settings_css
     assert "::-webkit-scrollbar" not in settings_css
+    assert ".provider-enabled-field" in ux_css
+    assert ".provider-toggle-track" in ux_css
+    assert ".playbook-modal" in ux_css
+    assert ".execution-tray" in ux_css
     assert "DEEPSEEK_API_KEY" not in html
     assert "OMNIROUTE_API_KEY" not in html
 
@@ -106,6 +127,8 @@ def test_interface_javascript_has_valid_syntax() -> None:
         PROJECT_ROOT / "app" / "ui" / "workspace.js",
         PROJECT_ROOT / "app" / "ui" / "tools.js",
         PROJECT_ROOT / "app" / "ui" / "settings.js",
+        PROJECT_ROOT / "app" / "ui" / "ux-improvements.js",
+        PROJECT_ROOT / "app" / "ui" / "execution-tracker.js",
     ):
         result = subprocess.run(
             [node, "--check", str(path)],

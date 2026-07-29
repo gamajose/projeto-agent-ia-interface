@@ -9,8 +9,11 @@ A interface adiciona uma camada visual ao mesmo motor AIOps já usado pelo coman
 - seleção de ambiente, modo de análise e porta SSH opcional;
 - atalhos para ocorrências comuns de Checkmk, disco, memória, SNMP e containers;
 - histórico pesquisável de investigações;
-- inventário aprendido de hosts e mapeamentos de monitoramento;
+- inventário aprendido automaticamente depois de uma descoberta SSH bem-sucedida;
 - catálogo dos playbooks YAML já instalados;
+- criação revisada de playbooks pela própria interface, usando somente ferramentas estruturadas de leitura;
+- oferta de rascunho quando uma investigação termina sem playbook correspondente;
+- acompanhamento persistente da etapa atual mesmo depois de fechar o painel de resultado;
 - resultado com causa provável, confiança, fatos, recomendações e texto para ticket;
 - aprovação humana separada quando uma correção segura foi proposta e aprovada pela segunda IA.
 
@@ -82,6 +85,36 @@ Acesse:
 ```text
 http://IP_DO_SERVIDOR:8080/ui
 ```
+
+## Acompanhamento da investigação
+
+A interface inicia a investigação em uma execução acompanhável e devolve imediatamente um identificador. O backend registra as etapas reais de validação da IA, resolução do alvo, SSH, coleta/análise, persistência e conclusão.
+
+Fechar o drawer não interrompe a investigação. Um cartão fixo permanece visível no navegador e permite voltar ao andamento ou abrir o resultado final. O identificador ativo fica no `localStorage`; os detalhes permanecem no processo web por até 24 horas. Reiniciar o serviço web remove apenas esse acompanhamento temporário, não o histórico já persistido no PostgreSQL.
+
+## Playbooks
+
+O catálogo de playbooks não é armazenado no banco. A fonte de verdade continua sendo arquivos YAML no diretório definido por `AGENT_PLAYBOOK_DIR`, cujo padrão é:
+
+```text
+config/playbooks
+```
+
+O PostgreSQL armazena o histórico de investigações, o playbook utilizado e os dados de efetividade que ajudam na seleção futura.
+
+O botão **Adicionar playbook** cria um novo YAML após validação. Pela interface:
+
+- somente ferramentas estruturadas conhecidas são aceitas;
+- comandos shell são recusados;
+- ferramentas corretivas são recusadas;
+- o operador revisa identificador, título, perfis, padrões e etapas antes de salvar;
+- depois do salvamento, o cache é recarregado e o playbook entra no catálogo.
+
+Quando uma investigação não utilizou um playbook, o resultado oferece **Criar rascunho de playbook**. O rascunho reaproveita apenas ferramentas de leitura realmente planejadas e exige revisão humana antes de ser gravado.
+
+## Inventário aprendido
+
+Depois que o SSH foi autenticado e a descoberta do host retornou identidade, sistema operacional e endereços, o Agent atualiza a tabela `hosts` usando o endereço resolvido e a porta utilizada. Uma falha isolada ao atualizar o inventário é mostrada no resultado, mas não descarta a investigação já concluída.
 
 ## Exemplo de serviço systemd
 
