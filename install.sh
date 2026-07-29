@@ -54,6 +54,7 @@ while (($#)); do
 done
 
 [[ "$INSTALL_ROOT" == /* ]] || fail "--install-dir precisa ser um caminho absoluto"
+[[ "$INSTALL_ROOT" != *[[:space:]]* ]] || fail "--install-dir não pode conter espaços; use um caminho como /opt/agent-ia"
 APP_DIR="$INSTALL_ROOT/app"
 TARGET_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 TARGET_GROUP="$(id -gn "$TARGET_USER")"
@@ -76,7 +77,13 @@ fi
 
 as_target() {
   if ((EUID == 0)) && [[ "$(id -un)" != "$TARGET_USER" ]]; then
-    sudo -u "$TARGET_USER" -H "$@"
+    if command -v runuser >/dev/null 2>&1; then
+      runuser -u "$TARGET_USER" -- "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo -u "$TARGET_USER" -H "$@"
+    else
+      fail "não foi possível executar como $TARGET_USER; instale util-linux/runuser ou sudo"
+    fi
   else
     "$@"
   fi
