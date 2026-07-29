@@ -9,6 +9,7 @@ from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.jobs import enqueue_investigation, get_job
 from app.services.progress import report_progress
+from app.services.result_presentation import finalize_result_presentation
 from app.services.tracked_runner import persist_result_inventory, run_target_tracked
 from app.services.ui_executions import execution_detail, submit_ui_execution
 from app.web import (
@@ -37,6 +38,8 @@ def _compact_with_request(
     compact["selected_provider"] = result.get("selected_provider") or requested_provider
     compact["selected_model"] = result.get("selected_model") or model
     compact["inventory"] = result.get("inventory")
+    compact["status"] = (result.get("analysis") or {}).get("status") or result.get("status")
+    compact["confidence"] = (result.get("analysis") or {}).get("confidence") or result.get("confidence")
     return compact
 
 
@@ -46,6 +49,8 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
     settings = get_settings()
     ensure_database_schema()
     provider, model, effective_mode = _validate_selection(payload, settings)
+    if provider == "auto":
+        effective_mode = "propose" if payload.mode == "correct" else payload.mode
 
     common = {
         "environment": payload.environment,
@@ -67,6 +72,7 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
             report_progress(
                 "queue_submission",
                 detail="Enviando a investigação para o worker operacional.",
+                percent=18,
             )
             job = enqueue_investigation(
                 target,
@@ -84,6 +90,7 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
                 "queue_wait",
                 detail=f"Job {job_id} aguardando ou executando no worker.",
                 job_id=job_id,
+                percent=35,
             )
             while True:
                 current = get_job(job_id)
@@ -100,12 +107,14 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
                     ),
                     job_id=job_id,
                     job_status=status,
+                    percent=82 if status == "running" else 42,
                 )
                 if status == "failed":
                     raise RuntimeError(str(current.get("error") or "a execução na fila falhou"))
                 if status == "completed":
                     raw = dict(current.get("result") or {})
-                    persist_result_inventory(raw)
+                    persist_result_inventory(raw, settings=settings)
+                    finalize_result_presentation(raw, settings=settings)
                     return _compact_with_request(
                         raw,
                         requested_mode=payload.mode,
