@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import tempfile
 from pathlib import Path
 from urllib.parse import quote, unquote as url_unquote, urlsplit
@@ -128,6 +129,52 @@ def validated_port(value: str | None, default: int) -> str:
     return str(port)
 
 
+def docker_inspect(format_string: str, container: str) -> str:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", format_string, container],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def existing_postgres_password() -> str:
+    explicit = os.environ.get("INSTALL_EXISTING_POSTGRES_PASSWORD", "").strip()
+    if explicit:
+        return explicit
+    output = docker_inspect("{{range .Config.Env}}{{println .}}{{end}}", "agent-ia-postgres")
+    for line in output.splitlines():
+        if line.startswith("POSTGRES_PASSWORD="):
+            return line.split("=", 1)[1]
+    return ""
+
+
+def existing_redis_password() -> str:
+    explicit = os.environ.get("INSTALL_EXISTING_REDIS_PASSWORD", "").strip()
+    if explicit:
+        return explicit
+    raw = docker_inspect("{{json .Config.Cmd}}", "agent-ia-redis")
+    if not raw:
+        return ""
+    try:
+        command = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(command, list):
+        return ""
+    for index, item in enumerate(command[:-1]):
+        if item == "--requirepass":
+            return str(command[index + 1])
+    return ""
+
+
 def main() -> None:
     args = parse_args()
     if args.env.exists():
@@ -138,8 +185,18 @@ def main() -> None:
         base_lines = []
 
     current = read_pairs(base_lines)
-    postgres_password = current.get("POSTGRES_PASSWORD", "").strip() or password_from_url(current.get("POSTGRES_DSN", ""))
-    redis_password = current.get("REDIS_PASSWORD", "").strip() or password_from_url(current.get("REDIS_URL", ""))
+    recovered_postgres_password = existing_postgres_password()
+    recovered_redis_password = existing_redis_password()
+    postgres_password = (
+        recovered_postgres_password
+        or current.get("POSTGRES_PASSWORD", "").strip()
+        or password_from_url(current.get("POSTGRES_DSN", ""))
+    )
+    redis_password = (
+        recovered_redis_password
+        or current.get("REDIS_PASSWORD", "").strip()
+        or password_from_url(current.get("REDIS_URL", ""))
+    )
     postgres_created = not bool(postgres_password and postgres_password != "CHANGE_ME")
     redis_created = not bool(redis_password and redis_password != "CHANGE_ME")
     if postgres_created:
@@ -237,6 +294,8 @@ def main() -> None:
             {
                 "postgres_password_created": postgres_created,
                 "redis_password_created": redis_created,
+                "postgres_password_recovered": bool(recovered_postgres_password),
+                "redis_password_recovered": bool(recovered_redis_password),
                 "approval_secret_created": approval_created,
                 "api_token_created": api_created,
                 "omniroute_password_created": initial_created,

@@ -171,6 +171,11 @@ ensure_supported_python() {
   info "Python selecionado: $($PYTHON_BIN --version 2>&1)"
 }
 
+repository_clean_ignoring_filemode() {
+  as_target git -c core.fileMode=false -C "$APP_DIR" diff --quiet -- \
+    && as_target git -c core.fileMode=false -C "$APP_DIR" diff --cached --quiet --
+}
+
 install_bootstrap_packages
 ensure_supported_python
 "${SUDO[@]}" mkdir -p "$INSTALL_ROOT"
@@ -178,14 +183,14 @@ ensure_supported_python
 
 if [[ -d "$APP_DIR/.git" ]]; then
   info "Instalação existente encontrada em $APP_DIR"
-  if as_target git -C "$APP_DIR" diff --quiet && as_target git -C "$APP_DIR" diff --cached --quiet; then
+  if repository_clean_ignoring_filemode; then
     as_target git -C "$APP_DIR" fetch --prune origin
     as_target git -C "$APP_DIR" checkout "$REPO_REF"
     if as_target git -C "$APP_DIR" show-ref --verify --quiet "refs/remotes/origin/$REPO_REF"; then
       as_target git -C "$APP_DIR" merge --ff-only "origin/$REPO_REF"
     fi
   else
-    warn "há alterações locais em $APP_DIR; o código foi preservado sem atualizar"
+    warn "há alterações locais de conteúdo em $APP_DIR; o código foi preservado sem atualizar"
   fi
 elif [[ -e "$APP_DIR" ]]; then
   fail "$APP_DIR já existe, mas não é um clone Git válido"
