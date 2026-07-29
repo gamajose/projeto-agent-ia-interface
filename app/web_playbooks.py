@@ -9,6 +9,7 @@ from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.persistence import get_investigation
 from app.services.playbook_editor import draft_playbook, save_playbook
+from app.services.playbook_import import preview_imported_playbook
 from app.web import _require_access, _require_mutation
 
 
@@ -22,6 +23,11 @@ class PlaybookCreatePayload(BaseModel):
     profiles: list[str] = Field(default_factory=lambda: ["any"], max_length=20)
     patterns: list[str] = Field(min_length=1, max_length=30)
     steps_yaml: str = Field(min_length=3, max_length=30000)
+
+
+class PlaybookImportPayload(BaseModel):
+    filename: str = Field(default="playbook.yml", min_length=1, max_length=255)
+    content: str = Field(min_length=1, max_length=100000)
 
 
 @router.post("/ui/api/playbooks")
@@ -47,6 +53,19 @@ def create_playbook(payload: PlaybookCreatePayload, request: Request) -> dict[st
         "saved": True,
         "message": "Playbook salvo e carregado no catálogo.",
         "item": item,
+    }
+
+
+@router.post("/ui/api/playbooks/import-preview")
+def import_playbook_preview(payload: PlaybookImportPayload, request: Request) -> dict[str, Any]:
+    _require_mutation(request)
+    try:
+        draft = preview_imported_playbook(payload.content, filename=payload.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "draft": draft,
+        "message": "Playbook importado para revisão. Nenhum arquivo foi salvo ainda.",
     }
 
 

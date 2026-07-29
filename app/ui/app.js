@@ -271,21 +271,20 @@ async function loadInvestigations() {
   $("#investigations-table").innerHTML = '<tr><td colspan="7" class="empty-cell">Carregando histórico...</td></tr>';
   try {
     const data = await api(`/ui/api/investigations?${params}`);
-    $("#investigations-table").innerHTML = data.items.length ? data.items.map((item) => investigationRow(item, "full")).join("") : '<tr><td colspan="7" class="empty-cell">Nenhum registro encontrado.</td></tr>';
-    $("#investigation-total").textContent = `${data.total} registro${data.total === 1 ? "" : "s"}`;
+    $("#investigations-table").innerHTML = data.items.length ? data.items.map((item) => investigationRow(item, "full")).join("") : '<tr><td colspan="7" class="empty-cell">Nenhuma investigação encontrada.</td></tr>';
+    $("#investigation-total").textContent = `${data.total} registro(s)`;
     bindInvestigationRows($("#investigations-table"));
     state.investigationsLoaded = true;
   } catch (error) { toast(error.message, "error"); }
 }
 
-function hostCard(host) {
-  const mapping = host.mapping || {};
-  const subtitle = host.os_name || host.host_type || "Sistema não identificado";
-  return `<article class="inventory-card"><div class="card-top"><div><h4>${escapeHtml(host.hostname || host.vpn_ip)}</h4><p>${escapeHtml(subtitle)}</p></div>${environmentBadge(host.environment)}</div><div class="card-meta"><div><span>IP VPN</span><strong>${escapeHtml(host.vpn_ip)}:${escapeHtml(host.ssh_port)}</strong></div><div><span>Site Checkmk</span><strong>${escapeHtml(mapping.site_name || "—")}</strong></div><div><span>Container</span><strong>${escapeHtml(mapping.container_name || "—")}</strong></div><div><span>Última coleta</span><strong>${escapeHtml(formatDate(host.last_seen_at))}</strong></div></div><div class="card-actions"><button class="ghost-button" data-analyze-target="${escapeHtml(host.vpn_ip)}" data-analyze-environment="${escapeHtml(host.environment)}">Analisar alvo</button></div></article>`;
+function inventoryCard(host) {
+  const mapping = host.mapping;
+  return `<article class="inventory-card"><div class="card-top"><div><h4>${escapeHtml(host.hostname || host.vpn_ip)}</h4><p>${escapeHtml(host.vpn_ip)}:${escapeHtml(host.ssh_port)}</p></div>${environmentBadge(host.environment)}</div><div class="card-meta"><div><span>SO</span><strong>${escapeHtml(host.os_name || "Não identificado")}</strong></div><div><span>Tipo</span><strong>${escapeHtml(host.host_type || "desconhecido")}</strong></div><div><span>Última coleta</span><strong>${escapeHtml(formatDate(host.last_seen_at))}</strong></div>${mapping ? `<div><span>Site Checkmk</span><strong>${escapeHtml(mapping.site_name || "—")}</strong></div><div><span>Container</span><strong>${escapeHtml(mapping.container_name || "—")}</strong></div>` : ""}</div><div class="card-actions"><button class="ghost-button" data-investigate-host="${escapeHtml(host.vpn_ip)}" data-investigate-port="${escapeHtml(host.ssh_port)}" data-investigate-env="${escapeHtml(host.environment)}">Investigar alvo</button></div></article>`;
 }
 
 async function loadInventory() {
-  const params = new URLSearchParams({ limit: "200" });
+  const params = new URLSearchParams();
   const q = $("#inventory-search").value.trim();
   const environment = $("#inventory-environment").value;
   if (q) params.set("q", q);
@@ -293,10 +292,11 @@ async function loadInventory() {
   $("#inventory-grid").innerHTML = '<div class="empty-state">Carregando inventário...</div>';
   try {
     const data = await api(`/ui/api/hosts?${params}`);
-    $("#inventory-grid").innerHTML = data.items.length ? data.items.map(hostCard).join("") : '<div class="empty-state">Nenhum alvo encontrado no inventário.</div>';
-    $$('[data-analyze-target]', $("#inventory-grid")).forEach((button) => button.addEventListener("click", () => {
-      $("#target").value = button.dataset.analyzeTarget;
-      $("#environment").value = button.dataset.analyzeEnvironment || "unknown";
+    $("#inventory-grid").innerHTML = data.items.length ? data.items.map(inventoryCard).join("") : '<div class="empty-state">Nenhum alvo aprendido ainda.</div>';
+    $$('[data-investigate-host]').forEach((button) => button.addEventListener("click", () => {
+      $("#target").value = button.dataset.investigateHost;
+      $("#ssh-port").value = button.dataset.investigatePort;
+      $("#environment").value = button.dataset.investigateEnv || "unknown";
       updateCorrectionMode();
       showView("analysis");
       $("#objective").focus();
@@ -524,7 +524,7 @@ function bindEvents() {
   $("#playbook-mode").addEventListener("change", updatePlaybookMode);
   $("#environment").addEventListener("change", updateCorrectionMode);
   $("#theme-toggle").addEventListener("click", toggleTheme);
-  $("#refresh-health").addEventListener("click", () => { state.healthLoaded = false; loadHealth(); });
+  $("#refresh-health")?.addEventListener("click", () => { state.healthLoaded = false; loadHealth(); });
   $("#filter-investigations").addEventListener("click", loadInvestigations);
   $("#filter-inventory").addEventListener("click", loadInventory);
   $("#investigation-search").addEventListener("keydown", (event) => { if (event.key === "Enter") loadInvestigations(); });

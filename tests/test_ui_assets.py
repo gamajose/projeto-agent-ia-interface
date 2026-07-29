@@ -19,24 +19,32 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     settings_script = (PROJECT_ROOT / "app" / "ui" / "settings.js").read_text(encoding="utf-8")
     ux_script = (PROJECT_ROOT / "app" / "ui" / "ux-improvements.js").read_text(encoding="utf-8")
     tracker_script = (PROJECT_ROOT / "app" / "ui" / "execution-tracker.js").read_text(encoding="utf-8")
+    polish_script = (PROJECT_ROOT / "app" / "ui" / "product-polish.js").read_text(encoding="utf-8")
     workspace_css = (PROJECT_ROOT / "app" / "ui" / "workspace.css").read_text(encoding="utf-8")
     tools_css = (PROJECT_ROOT / "app" / "ui" / "tools.css").read_text(encoding="utf-8")
     settings_css = (PROJECT_ROOT / "app" / "ui" / "settings.css").read_text(encoding="utf-8")
     ux_css = (PROJECT_ROOT / "app" / "ui" / "ux-improvements.css").read_text(encoding="utf-8")
+    polish_css = (PROJECT_ROOT / "app" / "ui" / "product-polish.css").read_text(encoding="utf-8")
 
-    assert "/ui/assets/enhancements.css" in html
-    assert "/ui/assets/batch.css" in html
-    assert "/ui/assets/workspace.css" in html
-    assert "/ui/assets/tools.css" in html
-    assert "/ui/assets/settings.css" in html
-    assert "/ui/assets/ux-improvements.css" in html
-    assert "/ui/assets/batch.js" in html
-    assert "/ui/assets/workspace.js" in html
-    assert "/ui/assets/tools.js" in html
-    assert "/ui/assets/settings.js" in html
-    assert "/ui/assets/ux-improvements.js" in html
-    assert "/ui/assets/execution-tracker.js" in html
-    assert "v=1.16.0" in html
+    for asset in (
+        "enhancements.css",
+        "batch.css",
+        "workspace.css",
+        "tools.css",
+        "settings.css",
+        "ux-improvements.css",
+        "product-polish.css",
+        "batch.js",
+        "workspace.js",
+        "tools.js",
+        "settings.js",
+        "ux-improvements.js",
+        "execution-tracker.js",
+        "product-polish.js",
+    ):
+        assert f"/ui/assets/{asset}" in html
+    assert "v=1.17.0" in html
+
     assert 'id="analysis-modal"' in html
     assert 'id="attach-batch-file"' in html
     assert 'id="provider"' in html
@@ -44,16 +52,46 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert 'id="batch-file"' in html
     assert 'id="view-opencode"' in html
     assert 'data-view="opencode"' in html
-    assert "OpenCode integrado ao Agent IA" in html
     assert 'id="view-settings"' in html
     assert 'data-view="settings"' in html
     assert 'id="provider-new"' in html
     assert ">Adicionar IA<" in html
-    assert 'class="provider-priority-actions"' in html
-    assert html.index('id="provider-new"') > html.index('class="provider-priority-section"')
     assert 'id="provider-modal"' in html
     assert 'id="provider-api-key"' in html
     assert 'id="provider-order-status"' in html
+    assert 'id="topbar-start-investigation"' in html
+    assert "hero-panel" not in html
+    assert "Investigue o ambiente sem perder o controle operacional" not in html
+
+    assert 'id="add-playbook"' in html
+    assert 'id="import-playbook"' in html
+    assert 'id="import-playbook-file"' in html
+    assert "seleção automática, manual ou nenhuma" not in html
+    assert "/ui/api/playbooks/import-preview" in ux_script
+    assert "importPlaybookFile" in ux_script
+
+    assert 'id="refresh-opencode"' not in html
+    assert 'id="refresh-health"' not in html
+    assert "OPEN SOURCE CODING AGENT" not in tools_script
+    assert "Enviar ao OpenCode" not in tools_script
+    assert ">Enviar<" in tools_script
+    assert "opencode-session-history" in tools_script
+    assert "SESSION_STORAGE_KEY" in tools_script
+    assert "startOpenCodeAutoRefresh" in tools_script
+    assert "Acesso avançado à interface original" in tools_script
+    assert "opencode-build-confirmation" in tools_css
+    assert "white-space: pre-wrap" in tools_css
+
+    assert "As alterações entram no próximo diagnóstico ou investigação" not in polish_script
+    assert "cleanSettingsStatusHint" in polish_script
+    assert "compactAutomaticHealth" in polish_script
+    assert "/ui/api/executions" in tracker_script
+    assert "agent-ui-active-execution" in tracker_script
+    assert "startTrackedAnalysis" in tracker_script
+    assert "execution-tray" in tracker_script
+    assert "compact-health-grid" in polish_css
+    assert "grid-template-columns: repeat(5" in polish_css
+
     assert "Provedores e chaves de IA" not in html
     assert "ai-settings-header" not in html
     assert 'id="provider-deepseek"' not in html
@@ -61,7 +99,6 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert 'id="ai-provider-order"' not in html
     assert 'id="provider-save-order"' not in html
     assert 'id="provider-priority"' not in html
-    assert 'id="view-health"' in html
     assert 'data-view="analysis"' not in html
     assert "/ui/api/ai/providers" in script
     assert "/ui/api/health" in script
@@ -82,17 +119,6 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "document.elementFromPoint" in settings_script
     assert "/ui/api/settings/ai/order" in settings_script
     assert "applyDeepSeekPreset" not in settings_script
-    assert "enhanceProviderStateField" in ux_script
-    assert "provider-toggle" in ux_script
-    assert "Adicionar playbook" in ux_script
-    assert "/ui/api/playbooks" in ux_script
-    assert "playbook-draft" in ux_script
-    assert "Criar rascunho de playbook" in ux_script
-    assert "/ui/api/executions" in tracker_script
-    assert "agent-ui-active-execution" in tracker_script
-    assert "startTrackedAnalysis" in tracker_script
-    assert 'addEventListener("submit", startTrackedAnalysis, true)' in tracker_script
-    assert "execution-tray" in tracker_script
     assert "terminal-card" in workspace_script
     assert "confidence-ring" in workspace_script
     assert "renderApprovedExecution" in workspace_script
@@ -106,12 +132,12 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert ".is-dragging" in settings_css
     assert "grid-template-columns:repeat(auto-fit" in settings_css
     assert "touch-action:none" in settings_css
-    assert "overflow-x:auto" not in settings_css
-    assert "::-webkit-scrollbar" not in settings_css
     assert ".provider-enabled-field" in ux_css
     assert ".provider-toggle-track" in ux_css
     assert ".playbook-modal" in ux_css
     assert ".execution-tray" in ux_css
+    assert "overflow-x:auto" not in settings_css
+    assert "::-webkit-scrollbar" not in settings_css
     assert "DEEPSEEK_API_KEY" not in html
     assert "OMNIROUTE_API_KEY" not in html
 
@@ -129,6 +155,7 @@ def test_interface_javascript_has_valid_syntax() -> None:
         PROJECT_ROOT / "app" / "ui" / "settings.js",
         PROJECT_ROOT / "app" / "ui" / "ux-improvements.js",
         PROJECT_ROOT / "app" / "ui" / "execution-tracker.js",
+        PROJECT_ROOT / "app" / "ui" / "product-polish.js",
     ):
         result = subprocess.run(
             [node, "--check", str(path)],

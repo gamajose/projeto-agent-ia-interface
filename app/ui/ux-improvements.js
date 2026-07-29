@@ -53,7 +53,10 @@
   function openPlaybookEditor(draft = null) {
     const modal = $("#playbook-editor-modal");
     if (!modal) return;
-    $("#playbook-editor-title").textContent = draft ? "Revisar rascunho de playbook" : "Adicionar playbook";
+    const imported = Boolean(draft?.source_filename);
+    $("#playbook-editor-title").textContent = imported
+      ? "Revisar playbook importado"
+      : (draft ? "Revisar rascunho de playbook" : "Adicionar playbook");
     $("#playbook-editor-id").value = draft?.id || "";
     $("#playbook-editor-name").value = draft?.title || "";
     $("#playbook-editor-priority").value = draft?.priority ?? 20;
@@ -101,6 +104,27 @@
     }
   }
 
+  async function importPlaybookFile(event) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      if (file.size > 100000) throw new Error("O arquivo de playbook deve ter no máximo 100 KB.");
+      if (!/\.(ya?ml)$/i.test(file.name)) throw new Error("Selecione um arquivo YAML com extensão .yml ou .yaml.");
+      const content = await file.text();
+      const response = await api("/ui/api/playbooks/import-preview", {
+        method: "POST",
+        body: { filename: file.name, content },
+      });
+      openPlaybookEditor(response.draft);
+      toast("Configuração importada. Revise antes de salvar.");
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      input.value = "";
+    }
+  }
+
   function resultPlaybook(result) {
     if (result?.playbook?.id) return result.playbook;
     for (const plan of result?.plans || []) {
@@ -119,8 +143,8 @@
     section.innerHTML = `<h3>Nenhum playbook correspondente</h3><p>A investigação foi concluída sem um playbook específico. Você pode gerar um rascunho com o objetivo e as ferramentas utilizadas, revisar e só então salvar no catálogo.</p><button type="button" class="primary-button" data-create-playbook-draft="${escapeHtml(investigationId)}">Criar rascunho de playbook</button>`;
     const raw = content.querySelector(".raw-details");
     content.insertBefore(section, raw || null);
-    section.querySelector("[data-create-playbook-draft]").addEventListener("click", async (event) => {
-      const button = event.currentTarget;
+    section.querySelector("[data-create-playbook-draft]").addEventListener("click", async (draftEvent) => {
+      const button = draftEvent.currentTarget;
       button.disabled = true;
       button.textContent = "Gerando rascunho...";
       try {
@@ -141,23 +165,12 @@
   };
 
   function setupPlaybookManagement() {
-    const header = $("#view-playbooks .panel-header");
-    if (header && !$("#add-playbook")) {
-      const badge = header.querySelector(".mode-badge");
-      const actions = document.createElement("div");
-      actions.className = "playbook-header-actions";
-      if (badge) actions.appendChild(badge);
-      const button = document.createElement("button");
-      button.type = "button";
-      button.id = "add-playbook";
-      button.className = "primary-button";
-      button.textContent = "Adicionar playbook";
-      button.addEventListener("click", () => openPlaybookEditor());
-      actions.appendChild(button);
-      header.appendChild(actions);
-    }
-
     if (!$("#playbook-editor-modal")) document.body.insertAdjacentHTML("beforeend", playbookModalMarkup());
+
+    const addButton = $("#add-playbook");
+    addButton?.addEventListener("click", () => openPlaybookEditor());
+    $("#import-playbook")?.addEventListener("click", () => $("#import-playbook-file")?.click());
+    $("#import-playbook-file")?.addEventListener("change", importPlaybookFile);
     $("#playbook-editor-form")?.addEventListener("submit", savePlaybook);
     $$('[data-close-playbook-modal]').forEach((button) => button.addEventListener("click", closePlaybookEditor));
     document.addEventListener("keydown", (event) => {

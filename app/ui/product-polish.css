@@ -1,0 +1,32 @@
+.topbar-actions { flex-wrap: wrap; justify-content: flex-end; }
+.topbar-start-investigation { padding: 10px 15px; min-height: 40px; }
+#view-dashboard .metrics-grid { margin-top: 0; }
+.playbook-header-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.playbook-import-button { display: inline-flex; align-items: center; gap: 7px; }
+.playbook-import-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.playbook-add-button { width: 42px; height: 42px; padding: 0; display: grid; place-items: center; border-radius: 12px; font-size: 1.45rem; line-height: 1; }
+.provider-order-status:empty { display: none; }
+.health-summary[hidden] { display: none; }
+.health-grid.compact-health-grid { padding: 18px 22px; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; }
+.compact-health-grid .health-card { min-width: 0; padding: 14px; }
+.compact-health-grid .health-card p { margin-top: 8px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.compact-health-grid .health-meta { margin-top: 9px; padding-top: 8px; flex-wrap: wrap; }
+.overall-health-card[data-state="healthy"] { border-color: rgba(85,214,158,.28); }
+.overall-health-card[data-state="attention"] { border-color: rgba(255,201,107,.30); }
+.overall-health-card[data-state="critical"] { border-color: rgba(255,117,137,.34); }
+.panel-subheader { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.auto-refresh-note { color: var(--muted); font-size: .63rem; }
+@media (max-width: 1280px) { .health-grid.compact-health-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 900px) { .health-grid.compact-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 820px) {
+  .topbar { align-items: flex-start; padding: 18px 0; }
+  .topbar-actions { gap: 8px; }
+  .topbar-start-investigation { order: -1; }
+  .playbook-header-actions { width: 100%; justify-content: flex-end; }
+}
+@media (max-width: 580px) {
+  .health-grid.compact-health-grid { grid-template-columns: 1fr; padding: 14px; }
+  .topbar { gap: 12px; }
+  .topbar-actions { max-width: 170px; }
+  .topbar-start-investigation { width: 100%; }
+}
