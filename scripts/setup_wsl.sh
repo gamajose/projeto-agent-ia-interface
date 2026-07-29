@@ -4,7 +4,7 @@ set -Eeuo pipefail
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_NAME="$(basename "$PROJECT_DIR")"
 VENV_DIR="${AGENT_VENV_DIR:-$HOME/.venvs/$PROJECT_NAME}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+PYTHON_BIN="${PYTHON_BIN:-}"
 RECREATE=false
 INSTALL_SYSTEM_PACKAGES=true
 
@@ -21,13 +21,13 @@ Uso:
 
 Opções:
   --recreate             recria o ambiente virtual
-  --no-system-packages   não tenta instalar python3-full/python3-venv
+  --no-system-packages   não tenta instalar pacotes Python do sistema
   --help                 exibe esta ajuda
 
 Variáveis opcionais:
   AGENT_VENV_DIR          diretório do ambiente virtual
                           padrão: $HOME/.venvs/$PROJECT_NAME
-  PYTHON_BIN              executável Python; padrão: python3
+  PYTHON_BIN              executável Python 3.11 ou superior
 EOF
 }
 
@@ -41,23 +41,82 @@ while (($#)); do
     shift
 done
 
+python_supported() {
+    local candidate="$1"
+    command -v "$candidate" >/dev/null 2>&1 || return 1
+    "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
+
+select_python() {
+    local candidate
+    if [[ -n "$PYTHON_BIN" ]]; then
+        python_supported "$PYTHON_BIN" || return 1
+        printf '%s' "$PYTHON_BIN"
+        return
+    fi
+    for candidate in python3.12 python3.11 python3; do
+        if python_supported "$candidate"; then
+            printf '%s' "$candidate"
+            return
+        fi
+    done
+    return 1
+}
+
+sudo_prefix() {
+    if ((EUID == 0)); then
+        return
+    fi
+    command -v sudo >/dev/null 2>&1 || fail "sudo não está instalado. Execute como root ou instale Python 3.11 manualmente."
+    printf '%s\0' sudo
+}
+
 install_python_packages() {
-    if ! command -v apt-get >/dev/null 2>&1; then
-        fail "não foi possível criar o venv. Instale manualmente o pacote de venv do Python da sua distribuição."
-    fi
-    if ! $INSTALL_SYSTEM_PACKAGES; then
-        fail "o suporte a venv não está disponível e --no-system-packages foi informado."
-    fi
+    $INSTALL_SYSTEM_PACKAGES || fail "Python 3.11 não está disponível e --no-system-packages foi informado."
 
     local sudo_cmd=()
     if ((EUID != 0)); then
-        command -v sudo >/dev/null 2>&1 || fail "sudo não está instalado. Execute como root ou instale python3-full e python3-venv manualmente."
         sudo_cmd=(sudo)
     fi
 
-    info "Instalando suporte do Python para ambientes virtuais..."
-    "${sudo_cmd[@]}" apt-get update
-    "${sudo_cmd[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-full python3-venv
+    info "Instalando Python 3.11 e suporte a ambientes virtuais..."
+    if command -v dnf >/dev/null 2>&1; then
+        "${sudo_cmd[@]}" dnf install -y python3.11 python3.11-pip \
+            || "${sudo_cmd[@]}" dnf install -y python3.12 python3.12-pip
+    elif command -v yum >/dev/null 2>&1; then
+        "${sudo_cmd[@]}" yum install -y python3.11 python3.11-pip \
+            || "${sudo_cmd[@]}" yum install -y python3.12 python3.12-pip
+    elif command -v apt-get >/dev/null 2>&1; then
+        "${sudo_cmd[@]}" apt-get update
+        "${sudo_cmd[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            python3 python3-pip python3-venv python3-full
+        if ! select_python >/dev/null 2>&1; then
+            "${sudo_cmd[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                python3.11 python3.11-venv python3.11-dev
+        fi
+    elif command -v zypper >/dev/null 2>&1; then
+        "${sudo_cmd[@]}" zypper --non-interactive install python311 python311-pip
+    else
+        fail "gerenciador de pacotes não reconhecido. Instale Python 3.11 ou superior manualmente."
+    fi
+}
+
+ensure_supported_python() {
+    local selected=""
+    if selected="$(select_python)"; then
+        PYTHON_BIN="$selected"
+        return
+    fi
+
+    [[ -z "$PYTHON_BIN" ]] || fail "$PYTHON_BIN não atende ao requisito mínimo Python 3.11"
+    install_python_packages
+    selected="$(select_python)" || fail "não foi possível localizar Python 3.11 ou superior após a instalação"
+    PYTHON_BIN="$selected"
+}
+
+venv_supported() {
+    [[ -x "$VENV_DIR/bin/python" && -f "$VENV_DIR/pyvenv.cfg" ]] || return 1
+    "$VENV_DIR/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
 }
 
 create_venv() {
@@ -66,15 +125,18 @@ create_venv() {
     if $RECREATE && [[ -e "$VENV_DIR" ]]; then
         info "Removendo ambiente virtual anterior: $VENV_DIR"
         rm -rf -- "$VENV_DIR"
+    elif [[ -e "$VENV_DIR" ]] && ! venv_supported; then
+        warn "O ambiente virtual existente usa Python incompatível; recriando com $($PYTHON_BIN --version 2>&1)."
+        rm -rf -- "$VENV_DIR"
     fi
 
-    if [[ -x "$VENV_DIR/bin/python" && -f "$VENV_DIR/pyvenv.cfg" ]]; then
+    if venv_supported; then
         info "Reutilizando ambiente virtual: $VENV_DIR"
         return
     fi
 
     [[ ! -e "$VENV_DIR" ]] || rm -rf -- "$VENV_DIR"
-    info "Criando ambiente virtual fora de /mnt: $VENV_DIR"
+    info "Criando ambiente virtual com $($PYTHON_BIN --version 2>&1): $VENV_DIR"
 
     if ! "$PYTHON_BIN" -m venv "$VENV_DIR"; then
         warn "A primeira tentativa de criar o ambiente virtual falhou."
@@ -107,7 +169,8 @@ append_env_default() {
     grep -Eq "^[[:space:]]*${key}=" "$env_file" || printf '\n%s=%s\n' "$key" "$value" >> "$env_file"
 }
 
-command -v "$PYTHON_BIN" >/dev/null 2>&1 || install_python_packages
+ensure_supported_python
+info "Interpretador selecionado: $($PYTHON_BIN --version 2>&1)"
 
 if [[ "$PROJECT_DIR" == /mnt/* ]]; then
     info "Projeto detectado em $PROJECT_DIR. O venv ficará no filesystem Linux para evitar o erro lib -> lib64 do WSL."
@@ -147,6 +210,9 @@ info "Validando instalação..."
 cat <<EOF
 
 Ambiente preparado com sucesso.
+
+Python:
+  $($PYTHON --version 2>&1)
 
 Ambiente virtual:
   $VENV_DIR
