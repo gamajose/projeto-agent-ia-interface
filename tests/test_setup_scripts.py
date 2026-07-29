@@ -74,18 +74,24 @@ def test_full_installer_creates_required_services_without_reboot() -> None:
     assert "agent-ia-infra.service" in content
     assert "omniroute.service" in content
     assert "agent-ia-web.service" in content
-    assert "python\" -m app.db.init_db" in content
+    assert 'python" -m app.db.init_db' in content
     assert "systemctl enable --now" in content
+    assert "wait_omniroute 180" in content
+    assert "wait_container omniroute" not in content
     assert "reboot" not in content.lower()
     assert "shutdown" not in content.lower()
     assert "docker compose down" not in content
 
 
-def test_stack_control_reuses_containers_instead_of_removing_them() -> None:
+def test_stack_control_reuses_containers_and_external_omniroute() -> None:
     content = (PROJECT_ROOT / "scripts" / "stack_control.sh").read_text(encoding="utf-8")
 
     assert "container_exists" in content
     assert "Reutilizando container ativo" in content
+    assert "Reutilizando OmniRoute externo já ativo" in content
+    assert "OmniRoute externo preservado" in content
+    assert "OMNIROUTE_MODE_FILE" in content
+    assert "omniroute_http_ready" in content
     assert "docker compose" not in content  # comando é montado por array para usar o plugin v2
     assert '"${COMPOSE[@]}" up -d "$service"' in content
     assert "docker rm" not in content
