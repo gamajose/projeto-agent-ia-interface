@@ -55,6 +55,8 @@ def test_bootstrap_uses_predictable_path_and_supports_remote_install() -> None:
     assert "scripts/install_all.sh" in content
     assert "não pode conter espaços" in content
     assert "runuser -u" in content
+    assert 'systemctl restart agent-ia-web.service' in content
+    assert 'systemctl is-active --quiet agent-ia-web.service' in content
     assert "rm -rf" not in content
 
 
