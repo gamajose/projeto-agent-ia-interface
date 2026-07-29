@@ -212,6 +212,22 @@ wait_container() {
   fail "$name não ficou pronto em ${timeout}s"
 }
 
+wait_omniroute() {
+  local timeout="${1:-180}" elapsed=0 port code
+  port="$(awk -F= '$1=="OMNIROUTE_PORT" {gsub(/["\r]/, "", $2); print $2; exit}' "$ENV_FILE")"
+  port="${port:-20128}"
+  while ((elapsed < timeout)); do
+    code="$(curl -sS --max-time 4 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null || true)"
+    if [[ "$code" =~ ^[234][0-9][0-9]$ ]]; then
+      ok "OmniRoute está pronto em 127.0.0.1:$port"
+      return
+    fi
+    sleep 3
+    elapsed=$((elapsed + 3))
+  done
+  fail "OmniRoute não respondeu em 127.0.0.1:$port após ${timeout}s"
+}
+
 install_system_packages
 install_docker
 
@@ -343,7 +359,7 @@ EOF
 "${SUDO[@]}" systemctl enable --now agent-ia-infra.service omniroute.service
 wait_container agent-ia-postgres 150
 wait_container agent-ia-redis 90
-wait_container omniroute 180
+wait_omniroute 180
 
 info "Inicializando o schema do PostgreSQL"
 as_target env AGENT_ENV_FILE="$ENV_FILE" AGENT_VENV_DIR="$VENV_DIR" \
@@ -364,8 +380,10 @@ fi
 sleep 2
 "${SUDO[@]}" systemctl is-active --quiet agent-ia-web.service || fail "agent-ia-web não iniciou"
 
-UI_PORT="$(awk -F= '$1=="AGENT_UI_PORT" {gsub(/[\"\r]/, "", $2); print $2; exit}' "$ENV_FILE")"
+UI_PORT="$(awk -F= '$1=="AGENT_UI_PORT" {gsub(/["\r]/, "", $2); print $2; exit}' "$ENV_FILE")"
 UI_PORT="${UI_PORT:-8080}"
+OMNIROUTE_PORT="$(awk -F= '$1=="OMNIROUTE_PORT" {gsub(/["\r]/, "", $2); print $2; exit}' "$ENV_FILE")"
+OMNIROUTE_PORT="${OMNIROUTE_PORT:-20128}"
 HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 HOST_IP="${HOST_IP:-127.0.0.1}"
 
@@ -379,7 +397,7 @@ Interface:
   http://$HOST_IP:$UI_PORT/ui
 
 OmniRoute local:
-  http://127.0.0.1:20128
+  http://127.0.0.1:$OMNIROUTE_PORT
 
 Arquivos protegidos:
   $ENV_FILE
