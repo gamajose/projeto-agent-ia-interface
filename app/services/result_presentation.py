@@ -9,6 +9,7 @@ from app.core.settings import Settings, get_settings
 from app.db.base import SessionLocal, ensure_database_schema
 from app.db.models import InvestigationORM
 from app.services.ai_providers import get_provider
+from app.services.provider_router import resolve_automatic_provider
 from app.services.redaction import redact_object
 
 
@@ -82,15 +83,10 @@ def _localization_payload(analysis: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _translate_user_fields(
-    analysis: dict[str, Any],
+def _translation_provider(
     result: dict[str, Any],
     settings: Settings,
-) -> dict[str, Any]:
-    payload = _localization_payload(analysis)
-    if not payload or not _needs_ptbr(payload):
-        return analysis
-
+) -> tuple[str, str | None]:
     provider_name = str(
         result.get("selected_provider")
         or (result.get("provider_selection") or {}).get("provider")
@@ -102,16 +98,32 @@ def _translate_user_fields(
         or (result.get("provider_selection") or {}).get("model")
         or ""
     ).strip() or None
-    prompt = (
-        "Você é um revisor de idioma técnico. Responda somente JSON válido.\n"
-        "Traduza TODOS os valores textuais para português do Brasil natural e profissional.\n"
-        "Preserve exatamente as chaves, números, percentuais, nomes de ferramentas, comandos, IPs, "
-        "hostnames, modelos, estados técnicos e a estrutura de listas/objetos.\n"
-        "Não acrescente conclusões, não altere confiança e não invente evidências.\n\n"
-        "CONTEÚDO:\n"
-        + json.dumps(redact_object(payload), ensure_ascii=False, default=str)
-    )
+    if provider_name == "auto":
+        selection = resolve_automatic_provider(settings)
+        return selection.provider, selection.model or model
+    return provider_name, model
+
+
+def _translate_user_fields(
+    analysis: dict[str, Any],
+    result: dict[str, Any],
+    settings: Settings,
+) -> dict[str, Any]:
+    payload = _localization_payload(analysis)
+    if not payload or not _needs_ptbr(payload):
+        return analysis
+
     try:
+        provider_name, model = _translation_provider(result, settings)
+        prompt = (
+            "Você é um revisor de idioma técnico. Responda somente JSON válido.\n"
+            "Traduza TODOS os valores textuais para português do Brasil natural e profissional.\n"
+            "Preserve exatamente as chaves, números, percentuais, nomes de ferramentas, comandos, IPs, "
+            "hostnames, modelos, estados técnicos e a estrutura de listas/objetos.\n"
+            "Não acrescente conclusões, não altere confiança e não invente evidências.\n\n"
+            "CONTEÚDO:\n"
+            + json.dumps(redact_object(payload), ensure_ascii=False, default=str)
+        )
         provider = get_provider(provider_name, settings, model)
         translated, _metadata = provider.generate_json(prompt)
         if not isinstance(translated, dict):
