@@ -1,5 +1,20 @@
 (() => {
   const STORAGE_KEY = "agent-ui-active-execution";
+  const PIPELINE = [
+    { stage: "provider_validation", label: "Validando e selecionando a IA" },
+    { stage: "target_resolution", label: "Resolvendo alvo e playbook" },
+    { stage: "ssh_connection", label: "Conectando e validando o SSH" },
+    { stage: "evidence_analysis", label: "Coletando e analisando evidências" },
+    { stage: "result_persistence", label: "Salvando resultado e inventário" },
+    { stage: "completed", label: "Investigação concluída" },
+  ];
+  const STAGE_ALIASES = {
+    provider_selected: "provider_validation",
+    target_resolved: "target_resolution",
+    ssh_connected: "ssh_connection",
+    queue_submission: "target_resolution",
+    queue_wait: "evidence_analysis",
+  };
   let activeExecution = null;
   let pollTimer = null;
   let showingFinalResult = false;
@@ -7,7 +22,7 @@
   const stageLabels = {
     queued: "Aguardando início",
     execution_started: "Execução recebida",
-    provider_validation: "Validando a IA",
+    provider_validation: "Validando e selecionando a IA",
     provider_selected: "IA selecionada",
     target_resolution: "Resolvendo alvo e playbook",
     target_resolved: "Alvo resolvido",
@@ -21,23 +36,40 @@
     failed: "Investigação falhou",
   };
 
+  const baseTrackedShowResult = showResult;
+  showResult = function showResultWithoutProgressCollision(result) {
+    showingFinalResult = true;
+    return baseTrackedShowResult(result);
+  };
+
   function executionTrayMarkup() {
     return `<aside class="execution-tray" id="execution-tray" role="status" aria-live="polite">
       <span class="execution-tray-spinner" aria-hidden="true"></span>
-      <div class="execution-tray-copy"><strong>Investigação em andamento</strong><span>Aguardando início...</span></div>
+      <div class="execution-tray-copy"><strong>Investigação em andamento</strong><span>Aguardando início...</span><div class="execution-tray-progress"><i></i></div></div>
+      <span class="execution-tray-percent">0%</span>
       <button class="execution-tray-dismiss" type="button" aria-label="Dispensar acompanhamento">×</button>
     </aside>`;
+  }
+
+  function canonicalStage(stage) {
+    return STAGE_ALIASES[stage] || stage;
   }
 
   function currentPhase(record) {
     return record?.current_phase || [...(record?.phases || [])].reverse()[0] || {
       stage: record?.status || "queued",
       detail: "Aguardando atualização.",
+      percent: record?.percent || 0,
     };
   }
 
   function phaseTitle(phase) {
     return stageLabels[phase?.stage] || String(phase?.stage || "Processando").replaceAll("_", " ");
+  }
+
+  function percentValue(record = activeExecution) {
+    const value = Number(record?.percent ?? currentPhase(record)?.percent ?? (record?.status === "completed" ? 100 : 0));
+    return Math.max(0, Math.min(100, Number.isFinite(value) ? Math.round(value) : 0));
   }
 
   function isRunning(record = activeExecution) {
@@ -53,6 +85,7 @@
     const tray = $("#execution-tray");
     if (!tray || !record) return;
     const phase = currentPhase(record);
+    const percent = percentValue(record);
     tray.classList.add("visible");
     tray.dataset.status = record.status || "running";
     tray.querySelector("strong").textContent = record.status === "completed"
@@ -60,25 +93,43 @@
       : record.status === "failed"
         ? "Investigação com falha"
         : `Analisando ${record.target || "o alvo"}`;
-    tray.querySelector(".execution-tray-copy span").textContent = record.status === "completed"
+    tray.querySelector(".execution-tray-copy > span").textContent = record.status === "completed"
       ? "Clique para abrir o resultado."
       : record.status === "failed"
         ? (record.error || phase.detail || "Clique para ver os detalhes.")
         : `${phaseTitle(phase)} · ${phase.detail || "em andamento"}`;
+    tray.querySelector(".execution-tray-percent").textContent = `${percent}%`;
+    tray.querySelector(".execution-tray-progress i").style.width = `${percent}%`;
+  }
+
+  function phaseMap(record) {
+    const map = new Map();
+    (record.phases || []).forEach((phase) => {
+      const stage = canonicalStage(phase.stage);
+      const previous = map.get(stage);
+      if (!previous || Number(phase.percent || 0) >= Number(previous.percent || 0)) map.set(stage, { ...phase, stage });
+    });
+    const current = currentPhase(record);
+    const currentStage = canonicalStage(current.stage);
+    const previous = map.get(currentStage);
+    map.set(currentStage, { ...(previous || {}), ...current, stage: currentStage });
+    return map;
   }
 
   function timelineMarkup(record) {
-    const phases = [...(record.phases || [])];
     const current = currentPhase(record);
-    if (!phases.some((item) => item.stage === current.stage)) phases.push(current);
-    const rows = phases.map((phase) => {
-      const completed = phase.status === "completed" || (record.status === "completed" && phase.stage !== "failed");
-      const failed = phase.status === "failed";
-      const active = !completed && !failed && phase.stage === current.stage;
-      const css = failed ? "active" : completed ? "completed" : active ? "active" : "";
-      return `<div class="timeline-item ${css}"><span></span><div><strong>${escapeHtml(phaseTitle(phase))}</strong><p>${escapeHtml(phase.detail || "Etapa registrada pelo backend.")}</p></div></div>`;
+    const currentStage = canonicalStage(current.stage);
+    const phases = phaseMap(record);
+    const percent = percentValue(record);
+    const rows = PIPELINE.map((definition) => {
+      const phase = phases.get(definition.stage) || { stage: definition.stage, detail: "Aguardando a etapa anterior." };
+      const failed = record.status === "failed" && currentStage === definition.stage;
+      const completed = record.status === "completed" || phase.status === "completed";
+      const active = !completed && !failed && currentStage === definition.stage;
+      const css = failed ? "failed" : completed ? "completed" : active ? "active" : "pending";
+      return `<div class="timeline-item ${css}"><span></span><div><strong>${escapeHtml(definition.label)}</strong><p>${escapeHtml(phase.detail || "Aguardando a etapa anterior.")}</p></div></div>`;
     }).join("");
-    return `<div class="execution-progress-summary"><strong>${escapeHtml(record.target || "Investigação")}</strong><p>O acompanhamento continua mesmo que este painel seja fechado. Use o cartão fixo no canto da tela para voltar.</p><div class="execution-progress-meta"><span class="mode-badge">${escapeHtml(record.provider || "IA automática")}</span>${record.model ? `<span class="mode-badge">${escapeHtml(record.model)}</span>` : ""}<span class="mode-badge">${escapeHtml(record.execution_mode || "inline")}</span></div></div><div class="execution-timeline">${rows}</div>`;
+    return `<div class="execution-progress-summary"><div class="execution-progress-title"><strong>${escapeHtml(record.target || "Investigação")}</strong><b>${percent}%</b></div><div class="execution-progress-bar"><i style="width:${percent}%"></i></div><p>O acompanhamento continua mesmo com este painel fechado. Abrir uma investigação antiga não interrompe nem substitui esta execução.</p><div class="execution-progress-meta"><span class="mode-badge">${escapeHtml(record.provider || "IA automática")}</span>${record.model ? `<span class="mode-badge">${escapeHtml(record.model)}</span>` : ""}<span class="mode-badge">${escapeHtml(record.execution_mode || "inline")}</span></div></div><div class="execution-timeline">${rows}</div>`;
   }
 
   function renderProgressDrawer(record, force = false) {
@@ -103,8 +154,7 @@
     renderTray(record);
     setSubmitting(false);
     invalidateViews();
-    if ($("#result-drawer")?.classList.contains("open")) {
-      showingFinalResult = true;
+    if ($("#result-drawer")?.classList.contains("open") && !showingFinalResult) {
       showResult(record.result || {});
     } else {
       toast("Investigação concluída. Clique no acompanhamento para abrir o resultado.");
@@ -146,7 +196,7 @@
         ...activeExecution,
         status: "failed",
         error: error.message,
-        current_phase: { stage: "failed", status: "failed", detail: error.message },
+        current_phase: { stage: "failed", status: "failed", detail: error.message, percent: percentValue(activeExecution) },
       };
       failExecution(activeExecution);
     }
@@ -171,6 +221,7 @@
     event.stopImmediatePropagation();
     if (isRunning()) {
       toast("Já existe uma investigação em andamento. Abra o acompanhamento para ver a etapa atual.", "error");
+      showingFinalResult = false;
       renderProgressDrawer(activeExecution, true);
       return;
     }
@@ -200,7 +251,6 @@
   function openTrackedExecution() {
     if (!activeExecution) return;
     if (activeExecution.status === "completed" && activeExecution.result) {
-      showingFinalResult = true;
       showResult(activeExecution.result);
       return;
     }
