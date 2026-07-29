@@ -144,4 +144,12 @@ $SKIP_DOCKER && args+=(--skip-docker)
 [[ "$OPENCODE_MODE" == "yes" ]] && args+=(--with-opencode)
 [[ "$OPENCODE_MODE" == "no" ]] && args+=(--without-opencode)
 
-exec bash "$APP_DIR/scripts/install_all.sh" "${args[@]}"
+bash "$APP_DIR/scripts/install_all.sh" "${args[@]}"
+
+# Uma instalação anterior pode manter o processo web ativo no caminho antigo.
+# Reiniciar somente esta unidade faz o systemd carregar WorkingDirectory e
+# ExecStart já gravados para a nova raiz, sem reiniciar host ou containers.
+info "Ativando a interface a partir de $APP_DIR"
+"${SUDO[@]}" systemctl restart agent-ia-web.service
+"${SUDO[@]}" systemctl is-active --quiet agent-ia-web.service \
+  || fail "agent-ia-web não permaneceu ativo após a migração"
