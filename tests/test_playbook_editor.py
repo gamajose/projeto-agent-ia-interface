@@ -7,7 +7,14 @@ import yaml
 
 from app.core.settings import Settings
 from app.services.playbook_editor import draft_playbook, save_playbook
-from app.services.playbooks import list_playbooks, reload_playbooks
+from app.services.playbooks import list_playbooks, load_playbooks, reload_playbooks
+
+
+@pytest.fixture(autouse=True)
+def clear_playbook_cache():
+    load_playbooks.cache_clear()
+    yield
+    load_playbooks.cache_clear()
 
 
 def _settings(tmp_path: Path) -> Settings:
