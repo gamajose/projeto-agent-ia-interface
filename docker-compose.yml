@@ -32,6 +32,29 @@ services:
       timeout: 5s
       retries: 10
 
+  omniroute:
+    image: ${OMNIROUTE_IMAGE:-diegosouzapw/omniroute:latest}
+    container_name: omniroute
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file:
+      - ${OMNIROUTE_ENV_FILE:-./.omniroute.env}
+    volumes:
+      - omniroute_data:/app/data
+    ports:
+      - "${OMNIROUTE_BIND_ADDRESS:-127.0.0.1}:${OMNIROUTE_PORT:-20128}:20128"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:20128/').then(r =>
+          process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 30s
+
 volumes:
   postgres_data:
   redis_data:
+  omniroute_data:
