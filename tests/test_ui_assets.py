@@ -20,11 +20,14 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     ux_script = (PROJECT_ROOT / "app" / "ui" / "ux-improvements.js").read_text(encoding="utf-8")
     tracker_script = (PROJECT_ROOT / "app" / "ui" / "execution-tracker.js").read_text(encoding="utf-8")
     polish_script = (PROJECT_ROOT / "app" / "ui" / "product-polish.js").read_text(encoding="utf-8")
+    investigation_script = (PROJECT_ROOT / "app" / "ui" / "investigation-flow.js").read_text(encoding="utf-8")
+    correction_script = (PROJECT_ROOT / "app" / "ui" / "correction-flow.js").read_text(encoding="utf-8")
     workspace_css = (PROJECT_ROOT / "app" / "ui" / "workspace.css").read_text(encoding="utf-8")
     tools_css = (PROJECT_ROOT / "app" / "ui" / "tools.css").read_text(encoding="utf-8")
     settings_css = (PROJECT_ROOT / "app" / "ui" / "settings.css").read_text(encoding="utf-8")
     ux_css = (PROJECT_ROOT / "app" / "ui" / "ux-improvements.css").read_text(encoding="utf-8")
     polish_css = (PROJECT_ROOT / "app" / "ui" / "product-polish.css").read_text(encoding="utf-8")
+    investigation_css = (PROJECT_ROOT / "app" / "ui" / "investigation-flow.css").read_text(encoding="utf-8")
 
     for asset in (
         "enhancements.css",
@@ -34,6 +37,7 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
         "settings.css",
         "ux-improvements.css",
         "product-polish.css",
+        "investigation-flow.css",
         "batch.js",
         "workspace.js",
         "tools.js",
@@ -41,9 +45,12 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
         "ux-improvements.js",
         "execution-tracker.js",
         "product-polish.js",
+        "investigation-flow.js",
+        "correction-flow.js",
     ):
         assert f"/ui/assets/{asset}" in html
-    assert "v=1.17.0" in html
+    assert "v=1.18.0" in html
+    assert "v=1.17.0" not in html
 
     assert 'id="analysis-modal"' in html
     assert 'id="attach-batch-file"' in html
@@ -89,8 +96,25 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "agent-ui-active-execution" in tracker_script
     assert "startTrackedAnalysis" in tracker_script
     assert "execution-tray" in tracker_script
+    assert "execution-tray-percent" in tracker_script
+    assert "PIPELINE" in tracker_script
+    assert "showResultWithoutProgressCollision" in tracker_script
+    assert "completed" in tracker_script
+    assert "pending" in tracker_script
     assert "compact-health-grid" in polish_css
     assert "grid-template-columns: repeat(5" in polish_css
+
+    assert "/ui/api/inventory/backfill" in investigation_script
+    assert "/ui/api/targets/suggestions" in investigation_script
+    assert "target-autocomplete" in investigation_script
+    assert "chooseSuggestion" in investigation_script
+    assert "/prepare-correction" in correction_script
+    assert "/normalize-presentation" in correction_script
+    assert "Continuar para correção" in correction_script
+    assert "looksEnglish" in correction_script
+    assert ".target-autocomplete" in investigation_css
+    assert ".execution-tray-progress" in investigation_css
+    assert ".timeline-item.pending" in investigation_css
 
     assert "Provedores e chaves de IA" not in html
     assert "ai-settings-header" not in html
@@ -156,6 +180,8 @@ def test_interface_javascript_has_valid_syntax() -> None:
         PROJECT_ROOT / "app" / "ui" / "ux-improvements.js",
         PROJECT_ROOT / "app" / "ui" / "execution-tracker.js",
         PROJECT_ROOT / "app" / "ui" / "product-polish.js",
+        PROJECT_ROOT / "app" / "ui" / "investigation-flow.js",
+        PROJECT_ROOT / "app" / "ui" / "correction-flow.js",
     ):
         result = subprocess.run(
             [node, "--check", str(path)],
