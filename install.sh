@@ -8,6 +8,7 @@ APP_DIR=""
 NON_INTERACTIVE=false
 SKIP_DOCKER=false
 OPENCODE_MODE="ask"
+PYTHON_BIN="${PYTHON_BIN:-}"
 
 info() { printf '\033[1;34m[INFO]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[AVISO]\033[0m %s\n' "$*"; }
@@ -34,7 +35,7 @@ Opções:
   --help                  mostra esta ajuda
 
 Variáveis equivalentes:
-  AGENT_INSTALL_ROOT, AGENT_REPO_URL e AGENT_REPO_REF
+  AGENT_INSTALL_ROOT, AGENT_REPO_URL, AGENT_REPO_REF e PYTHON_BIN
 EOF
 }
 
@@ -89,6 +90,28 @@ as_target() {
   fi
 }
 
+python_supported() {
+  local candidate="$1"
+  command -v "$candidate" >/dev/null 2>&1 || return 1
+  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
+
+select_supported_python() {
+  local candidate
+  if [[ -n "$PYTHON_BIN" ]]; then
+    python_supported "$PYTHON_BIN" || return 1
+    printf '%s' "$PYTHON_BIN"
+    return
+  fi
+  for candidate in python3.12 python3.11 python3; do
+    if python_supported "$candidate"; then
+      printf '%s' "$candidate"
+      return
+    fi
+  done
+  return 1
+}
+
 install_bootstrap_packages() {
   local missing=()
   for command in git curl; do
@@ -111,7 +134,45 @@ install_bootstrap_packages() {
   fi
 }
 
+ensure_supported_python() {
+  local selected=""
+  if selected="$(select_supported_python)"; then
+    PYTHON_BIN="$selected"
+    export PYTHON_BIN
+    info "Python compatível detectado: $($PYTHON_BIN --version 2>&1)"
+    return
+  fi
+
+  [[ -z "${PYTHON_BIN:-}" ]] || fail "$PYTHON_BIN não atende ao requisito mínimo Python 3.11"
+  info "Python 3.11 ou superior não encontrado; instalando uma versão paralela compatível"
+
+  if command -v dnf >/dev/null 2>&1; then
+    "${SUDO[@]}" dnf install -y python3.11 python3.11-pip \
+      || "${SUDO[@]}" dnf install -y python3.12 python3.12-pip
+  elif command -v yum >/dev/null 2>&1; then
+    "${SUDO[@]}" yum install -y python3.11 python3.11-pip \
+      || "${SUDO[@]}" yum install -y python3.12 python3.12-pip
+  elif command -v apt-get >/dev/null 2>&1; then
+    "${SUDO[@]}" apt-get update
+    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv python3-full
+    if ! selected="$(select_supported_python)"; then
+      "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y python3.11 python3.11-venv python3.11-dev
+    fi
+  elif command -v zypper >/dev/null 2>&1; then
+    "${SUDO[@]}" zypper --non-interactive install python311 python311-pip
+  else
+    fail "gerenciador de pacotes não reconhecido; instale Python 3.11 ou superior"
+  fi
+
+  selected="$(select_supported_python)" \
+    || fail "não foi possível disponibilizar Python 3.11 ou superior nesta distribuição"
+  PYTHON_BIN="$selected"
+  export PYTHON_BIN
+  info "Python selecionado: $($PYTHON_BIN --version 2>&1)"
+}
+
 install_bootstrap_packages
+ensure_supported_python
 "${SUDO[@]}" mkdir -p "$INSTALL_ROOT"
 "${SUDO[@]}" chown "$TARGET_USER:$TARGET_GROUP" "$INSTALL_ROOT"
 
