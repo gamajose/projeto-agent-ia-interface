@@ -21,6 +21,11 @@ def _investigation_item(row: InvestigationORM) -> dict[str, Any]:
             }
             break
 
+    final_confidence = analysis.get("confidence")
+    try:
+        confidence = max(0, min(100, int(final_confidence if final_confidence is not None else row.confidence)))
+    except (TypeError, ValueError):
+        confidence = int(row.confidence or 0)
     return {
         "id": str(row.id),
         "target": row.target,
@@ -28,8 +33,8 @@ def _investigation_item(row: InvestigationORM) -> dict[str, Any]:
         "objective": row.objective,
         "environment": row.environment,
         "mode": row.mode,
-        "status": row.status,
-        "confidence": row.confidence,
+        "status": analysis.get("status") or row.status,
+        "confidence": confidence,
         "profile": row.profile,
         "model": row.model,
         "duration_ms": row.duration_ms,
