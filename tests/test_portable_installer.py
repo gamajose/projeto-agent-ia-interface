@@ -125,3 +125,16 @@ def test_configurator_writes_optional_bastion_without_printing_password(tmp_path
     assert values["SSH_SRV_VPN_USER"] == "jose"
     assert values["SSH_SRV_VPN_SENHA"] == "segredo-bastion"
     assert "segredo-bastion" not in output
+
+
+def test_configurator_propagates_custom_omniroute_host_port(tmp_path: Path) -> None:
+    env_file = tmp_path / "agent-ia" / "app" / ".env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("OMNIROUTE_PORT=22128\n", encoding="utf-8")
+
+    env_file, _omni_env, output = run_configurator(tmp_path)
+    values = dotenv_values(env_file)
+
+    assert values["OMNIROUTE_PORT"] == "22128"
+    assert values["OMNIROUTE_BASE_URL"] == "http://127.0.0.1:22128/v1"
+    assert '"omniroute_port": 22128' in output
