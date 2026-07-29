@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.services.progress import report_progress
@@ -9,11 +8,11 @@ from app.services.tracked_runner import persist_result_inventory
 from app.services.ui_executions import execution_detail, submit_ui_execution
 
 
-def test_ui_execution_tracks_phases_and_result() -> None:
+def test_ui_execution_tracks_phases_percentage_and_result() -> None:
     def operation():
-        report_progress("ssh_connection", detail="Conectando ao alvo.")
-        report_progress("ssh_connected", status="completed", detail="SSH validado.")
-        report_progress("evidence_analysis", detail="Coletando evidências.")
+        report_progress("ssh_connection", detail="Conectando ao alvo.", percent=36)
+        report_progress("ssh_connection", status="completed", detail="SSH validado.", percent=42)
+        report_progress("evidence_analysis", detail="Coletando evidências.", percent=55)
         return {"investigation_id": "investigation-1", "analysis": {"status": "healthy"}}
 
     created = submit_ui_execution(
@@ -32,17 +31,20 @@ def test_ui_execution_tracks_phases_and_result() -> None:
         record = execution_detail(created["execution_id"]) or {}
 
     assert record["status"] == "completed"
+    assert record["percent"] == 100
     assert record["result"]["investigation_id"] == "investigation-1"
     stages = [item["stage"] for item in record["phases"]]
     assert "execution_started" in stages
     assert "ssh_connection" in stages
-    assert "ssh_connected" in stages
     assert "evidence_analysis" in stages
+    assert "completed" in stages
+    percentages = [int(item.get("percent") or 0) for item in record["phases"]]
+    assert percentages == sorted(percentages)
 
 
-def test_ui_execution_preserves_failure_for_follow_up() -> None:
+def test_ui_execution_preserves_failure_and_last_percentage_for_follow_up() -> None:
     def operation():
-        report_progress("provider_validation", detail="Validando provedor.")
+        report_progress("provider_validation", detail="Validando provedor.", percent=10)
         raise RuntimeError("falha controlada")
 
     created = submit_ui_execution(
@@ -63,9 +65,10 @@ def test_ui_execution_preserves_failure_for_follow_up() -> None:
     assert record["status"] == "failed"
     assert "falha controlada" in record["error"]
     assert record["current_phase"]["stage"] == "failed"
+    assert record["percent"] >= 10
 
 
-def test_persist_result_inventory_uses_discovered_identity() -> None:
+def test_persist_result_inventory_uses_learning_service_and_updates_analysis() -> None:
     result = {
         "target": "servidor-a",
         "hostname": "srv-a",
@@ -76,29 +79,30 @@ def test_persist_result_inventory_uses_discovered_identity() -> None:
             "ip_brief": "eth0 UP 10.0.0.10/24\nlo UNKNOWN 127.0.0.1/8",
         },
         "environment_classification": {"environment": "monitoring"},
+        "analysis": {"status": "attention"},
+    }
+    inventory = {
+        "saved": True,
+        "id": "host-1",
+        "vpn_ip": "172.27.232.203",
+        "ssh_port": 2222,
+        "hostname": "srv-a",
+        "environment": "monitoring",
     }
 
     with patch(
-        "app.services.tracked_runner.upsert_host",
-        return_value=SimpleNamespace(id="host-1"),
-    ) as upsert:
+        "app.services.tracked_runner.learn_result_inventory",
+        return_value=inventory,
+    ) as learn:
         persisted = persist_result_inventory(
             result,
             resolved_host="172.27.232.203",
             ssh_port=2222,
         )
 
-    upsert.assert_called_once_with(
-        host_type="linux_generic",
-        vpn_ip="172.27.232.203",
-        ssh_port=2222,
-        hostname="srv-a",
-        os_name="Oracle Linux 8.8",
-        environment="monitoring",
-        internal_ips=["eth0 UP 10.0.0.10/24", "lo UNKNOWN 127.0.0.1/8"],
-    )
-    assert persisted["inventory"]["saved"] is True
-    assert persisted["inventory"]["hostname"] == "srv-a"
+    learn.assert_called_once()
+    assert persisted["inventory"] == inventory
+    assert persisted["analysis"]["inventory"] == inventory
 
 
 def test_inventory_failure_does_not_discard_investigation() -> None:
@@ -109,7 +113,10 @@ def test_inventory_failure_does_not_discard_investigation() -> None:
         "environment_classification": {"environment": "production"},
     }
 
-    with patch("app.services.tracked_runner.upsert_host", side_effect=RuntimeError("db indisponível")):
+    with patch(
+        "app.services.tracked_runner.learn_result_inventory",
+        return_value={"saved": False, "detail": "RuntimeError: db indisponível"},
+    ):
         persisted = persist_result_inventory(result, resolved_host="192.0.2.12", ssh_port=22)
 
     assert persisted["investigation_id"] == "investigation-2"
