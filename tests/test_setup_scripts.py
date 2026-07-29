@@ -62,6 +62,9 @@ def test_bootstrap_uses_predictable_path_and_supports_remote_install() -> None:
     assert "runuser -u" in content
     assert "sys.version_info >= (3, 11)" in content
     assert "dnf install -y python3.11 python3.11-pip" in content
+    assert "repository_clean_ignoring_filemode" in content
+    assert "core.fileMode=false" in content
+    assert "alterações locais de conteúdo" in content
     assert 'systemctl restart agent-ia-web.service' in content
     assert 'systemctl is-active --quiet agent-ia-web.service' in content
     assert "rm -rf" not in content
@@ -81,6 +84,19 @@ def test_full_installer_creates_required_services_without_reboot() -> None:
     assert "reboot" not in content.lower()
     assert "shutdown" not in content.lower()
     assert "docker compose down" not in content
+
+
+def test_configurator_recovers_existing_container_credentials_without_logging_them() -> None:
+    content = (PROJECT_ROOT / "scripts" / "configure_install_env.py").read_text(encoding="utf-8")
+
+    assert "existing_postgres_password" in content
+    assert "existing_redis_password" in content
+    assert '"agent-ia-postgres"' in content
+    assert '"agent-ia-redis"' in content
+    assert "docker_inspect" in content
+    assert "INSTALL_EXISTING_POSTGRES_PASSWORD" in content
+    assert "INSTALL_EXISTING_REDIS_PASSWORD" in content
+    assert "capture_output=True" in content
 
 
 def test_stack_control_reuses_containers_and_external_omniroute() -> None:
