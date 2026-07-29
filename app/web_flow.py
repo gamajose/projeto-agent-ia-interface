@@ -13,6 +13,8 @@ from app.services.inventory_learning import (
     backfill_inventory_from_history,
     target_suggestions,
 )
+from app.services.persistence import get_investigation
+from app.services.result_presentation import finalize_result_presentation
 from app.web import _require_access, _require_mutation
 
 
@@ -50,3 +52,15 @@ def prepare_correction(investigation_id: str, request: Request) -> dict[str, Any
         )
     except CorrectionContinuationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/ui/api/investigations/{investigation_id}/normalize-presentation")
+def normalize_presentation(investigation_id: str, request: Request) -> dict[str, Any]:
+    _require_mutation(request)
+    result = get_investigation(investigation_id, include_evidence=True)
+    if not result:
+        raise HTTPException(status_code=404, detail="investigação não encontrada")
+    result["investigation_id"] = investigation_id
+    result["selected_model"] = result.get("model")
+    finalize_result_presentation(result, settings=get_settings())
+    return result
