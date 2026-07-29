@@ -20,7 +20,7 @@ def run_configurator(tmp_path: Path, *, extra_env: dict[str, str] | None = None)
     venv_dir = install_root / "venv"
     env_file = app_dir / ".env"
     omni_env = install_root / "config" / "omniroute.env"
-    app_dir.mkdir(parents=True)
+    app_dir.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment.update(extra_env or {})
 
