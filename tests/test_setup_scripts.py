@@ -53,6 +53,8 @@ def test_bootstrap_uses_predictable_path_and_supports_remote_install() -> None:
     assert "git clone" in content
     assert "merge --ff-only" in content
     assert "scripts/install_all.sh" in content
+    assert "não pode conter espaços" in content
+    assert "runuser -u" in content
     assert "rm -rf" not in content
 
 
@@ -75,7 +77,7 @@ def test_stack_control_reuses_containers_instead_of_removing_them() -> None:
 
     assert "container_exists" in content
     assert "Reutilizando container ativo" in content
-    assert 'docker compose' not in content  # comando é montado por array para usar o plugin v2
+    assert "docker compose" not in content  # comando é montado por array para usar o plugin v2
     assert '"${COMPOSE[@]}" up -d "$service"' in content
     assert "docker rm" not in content
     assert " compose down" not in content
