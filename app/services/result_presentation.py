@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from typing import Any
+
+from app.core.settings import Settings, get_settings
+from app.db.base import SessionLocal, ensure_database_schema
+from app.db.models import InvestigationORM
+from app.services.ai_providers import get_provider
+from app.services.redaction import redact_object
+
+
+_USER_FIELDS = (
+    "summary",
+    "facts",
+    "probable_cause",
+    "conclusion",
+    "recommendations",
+    "evidence_map",
+)
+_ENGLISH_WORDS = {
+    "the", "and", "this", "that", "with", "from", "server", "memory", "service",
+    "evidence", "summary", "likely", "cause", "recommendation", "should", "investigation",
+    "confidence", "status", "running", "stopped", "available", "usage", "issue", "because",
+}
+_PORTUGUESE_WORDS = {
+    "o", "a", "os", "as", "e", "com", "sem", "servidor", "memória", "memoria",
+    "serviço", "servico", "evidência", "evidencia", "resumo", "causa", "recomendação",
+    "recomendacao", "deve", "investigação", "investigacao", "confiança", "confianca",
+    "estado", "execução", "execucao", "disponível", "disponivel", "utilização", "utilizacao",
+}
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        rows: list[str] = []
+        for item in value.values():
+            rows.extend(_strings(item))
+        return rows
+    if isinstance(value, (list, tuple)):
+        rows = []
+        for item in value:
+            rows.extend(_strings(item))
+        return rows
+    return []
+
+
+def _needs_ptbr(value: Any) -> bool:
+    text = " ".join(_strings(value)).casefold()
+    words = re.findall(r"[a-záàâãéêíóôõúç]+", text)
+    english = sum(1 for word in words if word in _ENGLISH_WORDS)
+    portuguese = sum(1 for word in words if word in _PORTUGUESE_WORDS)
+    return english >= 4 and english > portuguese
+
+
+def _localization_payload(analysis: dict[str, Any]) -> dict[str, Any]:
+    payload = {key: analysis.get(key) for key in _USER_FIELDS if key in analysis}
+    review = dict(analysis.get("review") or {})
+    if review:
+        payload["review"] = {
+            key: review.get(key)
+            for key in ("reason", "risks", "action_reviews")
+            if key in review
+        }
+    critic = dict(analysis.get("critic") or {})
+    if critic:
+        payload["critic"] = {
+            key: critic.get(key)
+            for key in (
+                "summary",
+                "supported_claims",
+                "unsupported_claims",
+                "contradictions",
+                "missing_evidence",
+            )
+            if key in critic
+        }
+    return payload
+
+
+def _translate_user_fields(
+    analysis: dict[str, Any],
+    result: dict[str, Any],
+    settings: Settings,
+) -> dict[str, Any]:
+    payload = _localization_payload(analysis)
+    if not payload or not _needs_ptbr(payload):
+        return analysis
+
+    provider_name = str(
+        result.get("selected_provider")
+        or (result.get("provider_selection") or {}).get("provider")
+        or settings.ai_provider
+        or "gemini"
+    ).strip().lower()
+    model = str(
+        result.get("selected_model")
+        or (result.get("provider_selection") or {}).get("model")
+        or ""
+    ).strip() or None
+    prompt = (
+        "Você é um revisor de idioma técnico. Responda somente JSON válido.\n"
+        "Traduza TODOS os valores textuais para português do Brasil natural e profissional.\n"
+        "Preserve exatamente as chaves, números, percentuais, nomes de ferramentas, comandos, IPs, "
+        "hostnames, modelos, estados técnicos e a estrutura de listas/objetos.\n"
+        "Não acrescente conclusões, não altere confiança e não invente evidências.\n\n"
+        "CONTEÚDO:\n"
+        + json.dumps(redact_object(payload), ensure_ascii=False, default=str)
+    )
+    try:
+        provider = get_provider(provider_name, settings, model)
+        translated, _metadata = provider.generate_json(prompt)
+        if not isinstance(translated, dict):
+            return analysis
+        merged = dict(analysis)
+        for key in _USER_FIELDS:
+            if key in translated:
+                merged[key] = translated[key]
+        if isinstance(translated.get("review"), dict):
+            merged["review"] = {**dict(merged.get("review") or {}), **translated["review"]}
+        if isinstance(translated.get("critic"), dict):
+            merged["critic"] = {**dict(merged.get("critic") or {}), **translated["critic"]}
+        return merged
+    except Exception:
+        return analysis
+
+
+def _status_label(status: str) -> str:
+    return {
+        "healthy": "Saudável",
+        "attention": "Atenção",
+        "critical": "Crítico",
+        "inconclusive": "Inconclusivo",
+    }.get(status, status or "Inconclusivo")
+
+
+def build_ticket_report_ptbr(analysis: dict[str, Any]) -> str:
+    confidence = max(0, min(100, int(analysis.get("confidence") or 0)))
+    status = str(analysis.get("status") or "inconclusive")
+    facts = [str(item).strip() for item in analysis.get("facts") or [] if str(item).strip()]
+    recommendations = [
+        str(item).strip()
+        for item in analysis.get("recommendations") or []
+        if str(item).strip()
+    ]
+    rows = [
+        f"Status da análise: {_status_label(status)}",
+        f"Confiança validada: {confidence}%",
+        "",
+        "Resumo:",
+        str(analysis.get("summary") or "A investigação foi concluída sem resumo textual.").strip(),
+    ]
+    probable_cause = str(analysis.get("probable_cause") or "").strip()
+    if probable_cause:
+        rows.extend(["", "Causa provável:", probable_cause])
+    conclusion = str(analysis.get("conclusion") or "").strip()
+    if conclusion:
+        rows.extend(["", "Conclusão:", conclusion])
+    if facts:
+        rows.extend(["", "Fatos confirmados:", *[f"- {item}" for item in facts[:12]]])
+    if recommendations:
+        rows.extend(["", "Recomendações:", *[f"- {item}" for item in recommendations[:12]]])
+    return "\n".join(rows).strip()
+
+
+def _sync_investigation(result: dict[str, Any], analysis: dict[str, Any]) -> None:
+    investigation_id = result.get("investigation_id") or result.get("id")
+    if not investigation_id:
+        return
+    try:
+        identifier = uuid.UUID(str(investigation_id))
+    except ValueError:
+        return
+    try:
+        ensure_database_schema()
+        with SessionLocal() as session:
+            row = session.get(InvestigationORM, identifier)
+            if not row:
+                return
+            row.analysis = redact_object(analysis)
+            row.status = str(analysis.get("status") or row.status or "inconclusive")
+            row.confidence = max(0, min(100, int(analysis.get("confidence") or 0)))
+            session.commit()
+    except Exception:
+        return
+
+
+def finalize_result_presentation(
+    result: dict[str, Any],
+    *,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Garante pt-BR e uma única confiança para tela, histórico e texto do ticket."""
+    settings = settings or get_settings()
+    analysis = dict(result.get("analysis") or {})
+    analysis = _translate_user_fields(analysis, result, settings)
+    analysis["confidence"] = max(0, min(100, int(analysis.get("confidence") or 0)))
+    analysis["language"] = "pt-BR"
+    analysis["ticket_report"] = build_ticket_report_ptbr(analysis)
+    result["analysis"] = analysis
+    result["status"] = analysis.get("status")
+    result["confidence"] = analysis.get("confidence")
+    _sync_investigation(result, analysis)
+    return result
