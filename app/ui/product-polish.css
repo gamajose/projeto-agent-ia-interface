@@ -16,17 +16,78 @@
 .overall-health-card[data-state="critical"] { border-color: rgba(255,117,137,.34); }
 .panel-subheader { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .auto-refresh-note { color: var(--muted); font-size: .63rem; }
-@media (max-width: 1280px) { .health-grid.compact-health-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
+/* Inventário denso: mais alvos visíveis sem perder legibilidade. */
+#view-inventory .inventory-grid {
+  padding: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+#view-inventory .inventory-card {
+  min-width: 0;
+  min-height: 0;
+  padding: 13px 14px 10px;
+  border-radius: 14px;
+}
+#view-inventory .inventory-card .card-top { gap: 8px; }
+#view-inventory .inventory-card .card-top h4 {
+  font-size: .88rem;
+  line-height: 1.2;
+}
+#view-inventory .inventory-card .card-top p {
+  margin-top: 3px;
+  font-size: .65rem;
+}
+#view-inventory .inventory-card .environment-badge {
+  padding: 4px 7px;
+  font-size: .6rem;
+}
+#view-inventory .inventory-card .card-meta {
+  margin-top: 10px;
+  gap: 5px;
+}
+#view-inventory .inventory-card .card-meta div {
+  min-height: 17px;
+  gap: 9px;
+  font-size: .65rem;
+  line-height: 1.25;
+}
+#view-inventory .inventory-card .card-meta span { white-space: nowrap; }
+#view-inventory .inventory-card .card-meta strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#view-inventory .inventory-card .card-actions {
+  margin-top: 7px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(150,179,215,.09);
+}
+#view-inventory .inventory-card .card-actions .ghost-button {
+  padding: 6px 8px;
+  font-size: .69rem;
+  border-radius: 9px;
+}
+
+@media (max-width: 1280px) {
+  .health-grid.compact-health-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #view-inventory .inventory-grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+}
 @media (max-width: 900px) { .health-grid.compact-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 820px) {
   .topbar { align-items: flex-start; padding: 18px 0; }
   .topbar-actions { gap: 8px; }
   .topbar-start-investigation { order: -1; }
   .playbook-header-actions { width: 100%; justify-content: flex-end; }
+  #view-inventory .inventory-grid { padding: 12px; gap: 9px; }
 }
 @media (max-width: 580px) {
   .health-grid.compact-health-grid { grid-template-columns: 1fr; padding: 14px; }
   .topbar { gap: 12px; }
   .topbar-actions { max-width: 170px; }
   .topbar-start-investigation { width: 100%; }
+  #view-inventory .inventory-grid { grid-template-columns: 1fr; padding: 10px; gap: 8px; }
+  #view-inventory .inventory-card { padding: 12px; }
 }
