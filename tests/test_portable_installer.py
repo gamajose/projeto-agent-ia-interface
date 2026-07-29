@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,14 @@ from dotenv import dotenv_values
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIGURATOR = PROJECT_ROOT / "scripts" / "configure_install_env.py"
 EXAMPLE = PROJECT_ROOT / ".env.example"
+
+
+def load_configurator_module():
+    spec = importlib.util.spec_from_file_location("configure_install_env_test", CONFIGURATOR)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def run_configurator(tmp_path: Path, *, extra_env: dict[str, str] | None = None) -> tuple[Path, Path, str]:
@@ -109,7 +118,7 @@ def test_configurator_is_idempotent_and_preserves_existing_secrets(tmp_path: Pat
     assert env_file.read_text(encoding="utf-8").startswith("# comentário preservado")
 
 
-def test_configurator_prefers_existing_container_credentials(tmp_path: Path) -> None:
+def test_configurator_uses_explicit_existing_credentials_without_printing_them(tmp_path: Path) -> None:
     env_file = tmp_path / "agent-ia" / "app" / ".env"
     env_file.parent.mkdir(parents=True)
     env_file.write_text(
@@ -136,10 +145,36 @@ def test_configurator_prefers_existing_container_credentials(tmp_path: Path) -> 
     assert values["REDIS_PASSWORD"] == redis_existing
     assert postgres_existing in values["POSTGRES_DSN"]
     assert redis_existing in values["REDIS_URL"]
-    assert report["postgres_password_recovered"] is True
-    assert report["redis_password_recovered"] is True
+    assert report["postgres_password_prompted"] is False
+    assert report["redis_password_prompted"] is False
     assert postgres_existing not in output
     assert redis_existing not in output
+
+
+def test_existing_service_password_is_prompted_and_validated(monkeypatch) -> None:
+    module = load_configurator_module()
+    monkeypatch.delenv("INSTALL_EXISTING_POSTGRES_PASSWORD", raising=False)
+    monkeypatch.setattr(module, "container_exists", lambda container: True)
+    monkeypatch.setattr(module, "container_running", lambda container: True)
+    monkeypatch.setattr(module, "prompt_secret", lambda prompt, environment_name: "senha-correta")
+
+    value, prompted = module.resolve_existing_password(
+        container="agent-ia-postgres",
+        environment_name="INSTALL_EXISTING_POSTGRES_PASSWORD",
+        current_password="senha-incorreta",
+        prompt="Senha atual do PostgreSQL: ",
+        validator=lambda password: password == "senha-correta",
+    )
+
+    assert value == "senha-correta"
+    assert prompted is True
+
+
+def test_prompt_secret_uses_hidden_terminal_input(monkeypatch) -> None:
+    module = load_configurator_module()
+    monkeypatch.setattr(module.getpass, "getpass", lambda prompt: "senha-oculta")
+
+    assert module.prompt_secret("Senha: ", "INSTALL_PASSWORD") == "senha-oculta"
 
 
 def test_configurator_writes_optional_bastion_without_printing_password(tmp_path: Path) -> None:

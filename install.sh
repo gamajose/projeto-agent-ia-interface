@@ -171,9 +171,33 @@ ensure_supported_python() {
   info "Python selecionado: $($PYTHON_BIN --version 2>&1)"
 }
 
-repository_clean_ignoring_filemode() {
-  as_target git -c core.fileMode=false -C "$APP_DIR" diff --quiet -- \
-    && as_target git -c core.fileMode=false -C "$APP_DIR" diff --cached --quiet --
+restore_mode_only_changes() {
+  local path index_sha work_sha tracked_mode restored=0
+
+  while IFS= read -r -d '' path; do
+    [[ -f "$APP_DIR/$path" ]] || continue
+
+    index_sha="$(as_target git -C "$APP_DIR" rev-parse ":$path" 2>/dev/null || true)"
+    work_sha="$(as_target git -C "$APP_DIR" hash-object -- "$APP_DIR/$path" 2>/dev/null || true)"
+    [[ -n "$index_sha" && "$index_sha" == "$work_sha" ]] || continue
+
+    tracked_mode="$(as_target git -C "$APP_DIR" ls-files -s -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
+    case "$tracked_mode" in
+      100755) "${SUDO[@]}" chmod 755 "$APP_DIR/$path" ;;
+      100644) "${SUDO[@]}" chmod 644 "$APP_DIR/$path" ;;
+      *) continue ;;
+    esac
+    restored=$((restored + 1))
+  done < <(as_target git -C "$APP_DIR" diff --name-only -z --)
+
+  if ((restored > 0)); then
+    info "Permissões de $restored arquivo(s) restauradas conforme o Git"
+  fi
+}
+
+repository_clean() {
+  as_target git -C "$APP_DIR" diff --quiet -- \
+    && as_target git -C "$APP_DIR" diff --cached --quiet --
 }
 
 install_bootstrap_packages
@@ -183,14 +207,16 @@ ensure_supported_python
 
 if [[ -d "$APP_DIR/.git" ]]; then
   info "Instalação existente encontrada em $APP_DIR"
-  if repository_clean_ignoring_filemode; then
+  restore_mode_only_changes
+  if repository_clean; then
     as_target git -C "$APP_DIR" fetch --prune origin
     as_target git -C "$APP_DIR" checkout "$REPO_REF"
     if as_target git -C "$APP_DIR" show-ref --verify --quiet "refs/remotes/origin/$REPO_REF"; then
       as_target git -C "$APP_DIR" merge --ff-only "origin/$REPO_REF"
     fi
   else
-    warn "há alterações locais de conteúdo em $APP_DIR; o código foi preservado sem atualizar"
+    warn "há alterações locais reais em $APP_DIR; o código foi preservado sem atualizar"
+    as_target git -C "$APP_DIR" status --short
   fi
 elif [[ -e "$APP_DIR" ]]; then
   fail "$APP_DIR já existe, mas não é um clone Git válido"
