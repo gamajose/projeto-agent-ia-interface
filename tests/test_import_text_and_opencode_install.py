@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
+
+import pytest
 
 from app.services.intelligent_playbook_import import _normalize_ai_result
 
@@ -52,3 +56,23 @@ def test_installer_enables_opencode_and_supports_nvm() -> None:
     assert ".nvm/versions/node" in setup
     assert "NODE_MAJOR" in setup
     assert "npm install -g opencode-ai@latest" in setup
+
+
+def test_install_scripts_have_valid_bash_syntax() -> None:
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash não está disponível no ambiente de testes")
+
+    for path in (
+        PROJECT_ROOT / "install.sh",
+        PROJECT_ROOT / "scripts" / "install_all.sh",
+        PROJECT_ROOT / "scripts" / "setup_opencode.sh",
+    ):
+        result = subprocess.run(
+            [bash, "-n", str(path)],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"{path.name}: {result.stderr}"
