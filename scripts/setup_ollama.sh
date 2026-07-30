@@ -49,6 +49,8 @@ fi
 DATA_DIR="$INSTALL_ROOT/data/ollama"
 MODELS_DIR="$DATA_DIR/models"
 MODEL_FILE="$INSTALL_ROOT/data/ollama.model"
+ENV_FILE="$INSTALL_ROOT/app/.env"
+VENV_PYTHON="$INSTALL_ROOT/venv/bin/python"
 DROPIN_DIR="/etc/systemd/system/ollama.service.d"
 DROPIN_FILE="$DROPIN_DIR/agent-ia.conf"
 
@@ -184,9 +186,63 @@ pull_model() {
   ok "Llama local preparado: $SELECTED_MODEL"
 }
 
+update_agent_env() {
+  [[ -x "$VENV_PYTHON" ]] || fail "Python do Agent não encontrado em $VENV_PYTHON"
+  [[ -f "$ENV_FILE" ]] || fail "arquivo de ambiente não encontrado em $ENV_FILE"
+
+  "${SUDO[@]}" env SELECTED_OLLAMA_MODEL="$SELECTED_MODEL" OLLAMA_ENV_FILE="$ENV_FILE" \
+    "$VENV_PYTHON" - <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import tempfile
+from pathlib import Path
+
+path = Path(os.environ["OLLAMA_ENV_FILE"])
+model = os.environ["SELECTED_OLLAMA_MODEL"]
+updates = {
+    "OLLAMA_MODEL": model,
+    "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
+    "OLLAMA_AUTO_FALLBACK": "true",
+    "OLLAMA_PREFERRED_MODELS": f"{model},llama3.2:1b,llama3.2:3b",
+}
+lines = path.read_text(encoding="utf-8").splitlines()
+positions: dict[str, int] = {}
+for index, raw in enumerate(lines):
+    if "=" not in raw or raw.lstrip().startswith("#"):
+        continue
+    key = raw.split("=", 1)[0].strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        positions[key] = index
+
+for key, value in updates.items():
+    rendered = f"{key}={value}"
+    if key in positions:
+        lines[positions[key]] = rendered
+    else:
+        lines.append(rendered)
+
+fd, temporary = tempfile.mkstemp(prefix=".env.ollama.", dir=path.parent, text=True)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines).rstrip() + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+    os.chmod(path, 0o600)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+  ok "Agent configurado para usar $SELECTED_MODEL como IA local"
+}
+
 SELECTED_MODEL="$(select_model)"
 ensure_disk_space "$SELECTED_MODEL"
 install_ollama
 ensure_service
 wait_ollama
 pull_model
+update_agent_env
