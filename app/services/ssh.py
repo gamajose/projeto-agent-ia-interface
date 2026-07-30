@@ -3,11 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import shlex
+import time
+from uuid import uuid4
 
 import paramiko
 
 from app.core.policies import EnvironmentType, classify_command, evaluate_action
+from app.services.cancellation import ExecutionCancelled, raise_if_cancelled
 from app.services.correction_policy import validate_correction
+from app.services.progress import report_progress
+from app.services.redaction import redact_text
 
 
 @dataclass
@@ -80,6 +85,7 @@ class SSHExecutor:
         }
 
     def connect(self) -> None:
+        raise_if_cancelled("Conexão SSH cancelada pelo operador.")
         sock = None
         if self.bastion_host:
             bastion = paramiko.SSHClient()
@@ -105,6 +111,7 @@ class SSHExecutor:
             )
             self.bastion_client = bastion
 
+        raise_if_cancelled("Conexão SSH cancelada pelo operador.")
         client = paramiko.SSHClient()
         self._configure_host_keys(client)
         client.connect(
@@ -140,28 +147,136 @@ class SSHExecutor:
             if not correction.allowed:
                 raise PermissionError(f"CORRECTION_POLICY_BLOCKED: {correction.reason}")
 
-    def run(self, command: str, environment: EnvironmentType, approved: bool = False, timeout: int = 60) -> CommandResult:
+    @staticmethod
+    def _tail(value: str, limit: int = 6000) -> str:
+        return redact_text(value[-limit:])
+
+    def _execute_streaming(
+        self,
+        *,
+        command: str,
+        wrapped_command: str,
+        timeout: int,
+        sudo_password: str | None = None,
+    ) -> CommandResult:
         if not self.client:
             raise RuntimeError("Conexão SSH não iniciada.")
 
+        command_id = str(uuid4())
+        safe_command = redact_text(command)
+        started = time.monotonic()
+        report_progress(
+            "command_started",
+            detail=f"Executando: {safe_command}",
+            command_id=command_id,
+            command=safe_command,
+            host=self.host,
+            ssh_port=self.port,
+        )
+
+        stdin, stdout, _stderr = self.client.exec_command(
+            wrapped_command,
+            timeout=max(1, int(timeout)),
+            get_pty=False,
+        )
+        if sudo_password is not None:
+            stdin.write(sudo_password + "\n")
+            stdin.flush()
+            stdin.channel.shutdown_write()
+
+        channel = stdout.channel
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        last_report = 0.0
+        last_reported_size = 0
+
+        try:
+            while True:
+                raise_if_cancelled(f"Coleta cancelada durante o comando: {safe_command}")
+                elapsed = time.monotonic() - started
+                if elapsed > max(1, int(timeout)):
+                    channel.close()
+                    raise TimeoutError(f"comando excedeu o timeout de {timeout}s: {safe_command}")
+
+                changed = False
+                while channel.recv_ready():
+                    stdout_chunks.append(channel.recv(32768).decode(errors="replace"))
+                    changed = True
+                while channel.recv_stderr_ready():
+                    stderr_chunks.append(channel.recv_stderr(32768).decode(errors="replace"))
+                    changed = True
+
+                total_size = sum(len(item) for item in stdout_chunks) + sum(len(item) for item in stderr_chunks)
+                now = time.monotonic()
+                if changed and total_size != last_reported_size and now - last_report >= 0.45:
+                    report_progress(
+                        "command_output",
+                        detail=f"Recebendo saída de: {safe_command}",
+                        command_id=command_id,
+                        command=safe_command,
+                        stdout_tail=self._tail("".join(stdout_chunks)),
+                        stderr_tail=self._tail("".join(stderr_chunks)),
+                        elapsed_seconds=round(elapsed, 1),
+                    )
+                    last_report = now
+                    last_reported_size = total_size
+
+                if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                    break
+                time.sleep(0.1)
+
+            exit_code = channel.recv_exit_status()
+            stdout_text = "".join(stdout_chunks)
+            stderr_text = "".join(stderr_chunks)
+            report_progress(
+                "command_completed",
+                status="completed" if exit_code == 0 else "failed",
+                detail=f"Comando finalizado com código {exit_code}: {safe_command}",
+                command_id=command_id,
+                command=safe_command,
+                exit_code=exit_code,
+                stdout_tail=self._tail(stdout_text),
+                stderr_tail=self._tail(stderr_text),
+                elapsed_seconds=round(time.monotonic() - started, 1),
+            )
+            return CommandResult(command, exit_code, stdout_text, stderr_text)
+        except ExecutionCancelled:
+            channel.close()
+            report_progress(
+                "command_cancelled",
+                status="cancelled",
+                detail=f"Comando interrompido pelo operador: {safe_command}",
+                command_id=command_id,
+                command=safe_command,
+                stdout_tail=self._tail("".join(stdout_chunks)),
+                stderr_tail=self._tail("".join(stderr_chunks)),
+                elapsed_seconds=round(time.monotonic() - started, 1),
+            )
+            raise
+
+    def run(self, command: str, environment: EnvironmentType, approved: bool = False, timeout: int = 60) -> CommandResult:
+        if not self.client:
+            raise RuntimeError("Conexão SSH não iniciada.")
         self._validate(command, environment, approved)
-        _, stdout, stderr = self.client.exec_command(command, timeout=timeout)
-        exit_code = stdout.channel.recv_exit_status()
-        return CommandResult(command, exit_code, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace"))
+        return self._execute_streaming(
+            command=command,
+            wrapped_command=command,
+            timeout=timeout,
+        )
 
     def run_sudo(self, command: str, environment: EnvironmentType, approved: bool = False, timeout: int = 60) -> CommandResult:
         if not self.client:
             raise RuntimeError("Conexão SSH não iniciada.")
-
         self._validate(command, environment, approved)
         if self.password:
             wrapped = f"sudo -S -p '' sh -lc {shlex.quote(command)}"
-            stdin, stdout, stderr = self.client.exec_command(wrapped, timeout=timeout, get_pty=False)
-            stdin.write(self.password + "\n")
-            stdin.flush()
-            stdin.channel.shutdown_write()
+            password = self.password
         else:
             wrapped = f"sudo -n sh -lc {shlex.quote(command)}"
-            _, stdout, stderr = self.client.exec_command(wrapped, timeout=timeout, get_pty=False)
-        exit_code = stdout.channel.recv_exit_status()
-        return CommandResult(command, exit_code, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace"))
+            password = None
+        return self._execute_streaming(
+            command=command,
+            wrapped_command=wrapped,
+            timeout=timeout,
+            sudo_password=password,
+        )
