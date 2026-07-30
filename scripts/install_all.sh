@@ -396,13 +396,9 @@ as_target env AGENT_ENV_FILE="$ENV_FILE" AGENT_VENV_DIR="$VENV_DIR" \
 "${SUDO[@]}" systemctl enable --now agent-ia-worker.service agent-ia-web.service
 
 if [[ "$OPENCODE_MODE" == "yes" ]]; then
-  if command -v npm >/dev/null 2>&1; then
-    info "Preparando o OpenCode integrado"
-    as_target env AGENT_ENV_FILE="$ENV_FILE" AGENT_VENV="$VENV_DIR" bash "$APP_DIR/scripts/setup_opencode.sh" \
-      || warn "o núcleo foi instalado, mas o OpenCode não pôde ser concluído"
-  else
-    warn "OpenCode solicitado, mas npm não está instalado. O núcleo do Agent IA foi concluído normalmente."
-  fi
+  info "Preparando o OpenCode integrado"
+  as_target env AGENT_ENV_FILE="$ENV_FILE" AGENT_VENV="$VENV_DIR" bash "$APP_DIR/scripts/setup_opencode.sh" \
+    || warn "o núcleo foi instalado, mas o OpenCode não pôde ser concluído; consulte a saída acima"
 fi
 
 sleep 2

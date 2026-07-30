@@ -69,7 +69,11 @@
 
   function defaultSteps() { return `- tool: system.basics\n  arguments: {}\n  purpose: Identificar o host, kernel, uptime e horário.\n`; }
   function splitValues(value) { return String(value || "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean); }
-  function joinValues(value) { return (Array.isArray(value) ? value : []).filter(Boolean).join("\n"); }
+  function joinValues(value) {
+    if (Array.isArray(value)) return value.filter(Boolean).join("\n");
+    if (typeof value === "string") return value;
+    return "";
+  }
 
   function openPlaybookEditor(draft = null) {
     const modal = $("#playbook-editor-modal");
