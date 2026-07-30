@@ -32,25 +32,10 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     live_css = (PROJECT_ROOT / "app" / "ui" / "execution-live.css").read_text(encoding="utf-8")
 
     for asset in (
-        "enhancements.css",
-        "batch.css",
-        "workspace.css",
-        "tools.css",
-        "settings.css",
-        "ux-improvements.css",
-        "product-polish.css",
-        "investigation-flow.css",
-        "execution-live.css",
-        "api-resilience.js",
-        "batch.js",
-        "workspace.js",
-        "tools.js",
-        "settings.js",
-        "ux-improvements.js",
-        "execution-tracker.js",
-        "product-polish.js",
-        "investigation-flow.js",
-        "correction-flow.js",
+        "enhancements.css", "batch.css", "workspace.css", "tools.css", "settings.css",
+        "ux-improvements.css", "product-polish.css", "investigation-flow.css", "execution-live.css",
+        "api-resilience.js", "batch.js", "workspace.js", "tools.js", "settings.js", "ux-improvements.js",
+        "execution-tracker.js", "product-polish.js", "investigation-flow.js", "correction-flow.js",
     ):
         assert f"/ui/assets/{asset}" in html
     assert "v=1.21.0" in html
@@ -80,7 +65,9 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "seleção automática, manual ou nenhuma" not in html
     assert "/ui/api/playbooks/intelligent-import-preview" in ux_script
     assert "importPlaybookFile" in ux_script
-    assert "playbook-import-warning" in ux_script
+    assert "playbook-editor-summary" in ux_script
+    assert "playbook-editor-validations" in ux_script
+    assert "playbook-import-log" in ux_script
     assert "import_warnings" in ux_script
     assert "await response.text()" in api_script
     assert "JSON.parse" in api_script

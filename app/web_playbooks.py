@@ -24,6 +24,12 @@ class PlaybookCreatePayload(BaseModel):
     profiles: list[str] = Field(default_factory=lambda: ["any"], max_length=20)
     patterns: list[str] = Field(min_length=1, max_length=30)
     steps_yaml: str = Field(min_length=3, max_length=30000)
+    summary: str = Field(default="", max_length=4000)
+    required_inputs: list[str] = Field(default_factory=list, max_length=30)
+    safety_rules: list[str] = Field(default_factory=list, max_length=30)
+    validation_notes: list[str] = Field(default_factory=list, max_length=30)
+    import_notes: list[str] = Field(default_factory=list, max_length=30)
+    source_filename: str = Field(default="", max_length=255)
 
 
 class PlaybookImportPayload(BaseModel):
@@ -49,6 +55,12 @@ def create_playbook(payload: PlaybookCreatePayload, request: Request) -> dict[st
             profiles=payload.profiles,
             patterns=payload.patterns,
             steps_yaml=payload.steps_yaml,
+            summary=payload.summary,
+            required_inputs=payload.required_inputs,
+            safety_rules=payload.safety_rules,
+            validation_notes=payload.validation_notes,
+            import_notes=payload.import_notes,
+            source_filename=payload.source_filename,
             settings=get_settings(),
         )
     except FileExistsError as exc:
@@ -62,7 +74,6 @@ def create_playbook(payload: PlaybookCreatePayload, request: Request) -> dict[st
 
 @router.post("/ui/api/playbooks/import-preview")
 def import_playbook_preview(payload: PlaybookImportPayload, request: Request) -> dict[str, Any]:
-    """Mantém compatibilidade com a importação YAML estruturada existente."""
     _require_mutation(request)
     try:
         draft = preview_imported_playbook(payload.content, filename=payload.filename)
@@ -93,11 +104,7 @@ def intelligent_import_preview(payload: IntelligentPlaybookImportPayload, reques
         detail = str(exc).strip() or type(exc).__name__
         raise HTTPException(status_code=500, detail=f"não foi possível analisar o documento: {detail[:500]}") from exc
     mode = draft.get("import_mode")
-    message = (
-        "YAML compatível importado para revisão."
-        if mode == "structured"
-        else "Documento analisado pela IA e convertido em rascunho seguro para revisão."
-    )
+    message = "YAML compatível importado para revisão." if mode == "structured" else "Documento analisado pela IA e convertido em rascunho seguro para revisão."
     return {"draft": draft, "message": message}
 
 
@@ -109,10 +116,7 @@ def investigation_playbook_draft(investigation_id: str, request: Request) -> dic
     if not investigation:
         raise HTTPException(status_code=404, detail="investigação não encontrada")
     try:
-        return {
-            "draft": draft_playbook(investigation),
-            "message": "Rascunho criado a partir das ferramentas e do objetivo da investigação.",
-        }
+        return {"draft": draft_playbook(investigation), "message": "Rascunho criado a partir das ferramentas e do objetivo da investigação."}
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -121,8 +125,4 @@ def investigation_playbook_draft(investigation_id: str, request: Request) -> dic
 def playbook_storage(request: Request) -> dict[str, Any]:
     _require_access(request)
     settings = get_settings()
-    return {
-        "backend": "yaml_files",
-        "directory": settings.agent_playbook_dir,
-        "database_role": "histórico de uso, resultado e efetividade",
-    }
+    return {"backend": "yaml_files", "directory": settings.agent_playbook_dir, "database_role": "histórico de uso, resultado e efetividade"}
