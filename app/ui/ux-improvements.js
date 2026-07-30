@@ -36,7 +36,7 @@
             <label class="full"><span>Etapas estruturadas em YAML</span><textarea class="playbook-steps" id="playbook-editor-steps" spellcheck="false" required></textarea></label>
           </div>
           <div class="playbook-import-warning" id="playbook-import-warning" hidden></div>
-          <div class="playbook-editor-note">A interface aceita somente ferramentas estruturadas e de leitura. Comandos shell e ferramentas corretivas são recusados pelo backend. O playbook só entra no catálogo depois de você revisar e salvar.</div>
+          <div class="playbook-editor-note">A IA transforma YAML, Word, PDF ou texto em ferramentas estruturadas e somente de leitura. Revise os campos antes de salvar; nenhuma ação corretiva é executada durante a importação.</div>
           <div class="playbook-editor-actions"><span class="action-spacer"></span><button type="button" class="secondary-button" data-close-playbook-modal>Cancelar</button><button type="submit" class="primary-button" id="playbook-editor-save">Salvar playbook</button></div>
         </form>
       </div>
@@ -51,14 +51,20 @@
     return String(value || "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
   }
 
-  function renderImportWarnings(warnings = []) {
+  function renderImportWarnings(draft = {}) {
     const element = $("#playbook-import-warning");
     if (!element) return;
-    const items = Array.isArray(warnings) ? warnings.filter(Boolean) : [];
-    element.hidden = !items.length;
-    element.innerHTML = items.length
-      ? `<strong>Importado com ajustes de segurança</strong><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-      : "";
+    const warnings = Array.isArray(draft.import_warnings) ? draft.import_warnings.filter(Boolean) : [];
+    const safety = Array.isArray(draft.safety_rules) ? draft.safety_rules.filter(Boolean) : [];
+    const validations = Array.isArray(draft.validation_notes) ? draft.validation_notes.filter(Boolean) : [];
+    const summary = String(draft.extracted_summary || "").trim();
+    const items = [
+      ...warnings.map((item) => `Ajuste: ${item}`),
+      ...safety.map((item) => `Segurança: ${item}`),
+      ...validations.map((item) => `Validação: ${item}`),
+    ];
+    element.hidden = !(summary || items.length);
+    element.innerHTML = element.hidden ? "" : `${summary ? `<p><strong>Resumo extraído:</strong> ${escapeHtml(summary)}</p>` : ""}${items.length ? `<strong>Revisão da importação</strong><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}`;
   }
 
   function openPlaybookEditor(draft = null) {
@@ -74,7 +80,7 @@
     $("#playbook-editor-profiles").value = (draft?.profiles || ["linux_generic"]).join(", ");
     $("#playbook-editor-patterns").value = (draft?.patterns || []).join("\n");
     $("#playbook-editor-steps").value = draft?.steps_yaml || defaultSteps();
-    renderImportWarnings(draft?.import_warnings || []);
+    renderImportWarnings(draft || {});
     modal.classList.add("open");
     modal.setAttribute("aria-hidden", "false");
     document.body.classList.add("settings-modal-open");
@@ -116,27 +122,52 @@
     }
   }
 
+  function bytesToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunk = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+    }
+    return btoa(binary);
+  }
+
   async function importPlaybookFile(event) {
     const input = event.currentTarget;
     const file = input.files?.[0];
     if (!file) return;
+    const button = $("#import-playbook");
+    const originalLabel = button?.querySelector("span")?.textContent || "Importar";
     try {
-      if (file.size > 100000) throw new Error("O arquivo de playbook deve ter no máximo 100 KB.");
-      if (!/\.(ya?ml)$/i.test(file.name)) throw new Error("Selecione um arquivo YAML com extensão .yml ou .yaml.");
-      const content = await file.text();
-      const response = await api("/ui/api/playbooks/import-preview", {
+      if (file.size > 5 * 1024 * 1024) throw new Error("O documento deve ter no máximo 5 MB.");
+      if (!/\.(ya?ml|txt|md|docx|pdf)$/i.test(file.name)) throw new Error("Use YAML, YML, TXT, MD, DOCX ou PDF.");
+      if (button) {
+        button.disabled = true;
+        const label = button.querySelector("span");
+        if (label) label.textContent = "Analisando...";
+      }
+      toast("A IA está lendo o documento e montando um playbook seguro...");
+      const contentBase64 = bytesToBase64(await file.arrayBuffer());
+      const response = await api("/ui/api/playbooks/intelligent-import-preview", {
         method: "POST",
-        body: { filename: file.name, content },
+        body: {
+          filename: file.name,
+          content_base64: contentBase64,
+          provider: $("#provider")?.value || null,
+          model: $("#model")?.value || null,
+        },
       });
       openPlaybookEditor(response.draft);
-      const warnings = response.draft?.import_warnings || [];
-      toast(warnings.length
-        ? `Playbook importado com ${warnings.length} ajuste(s) de segurança. Revise antes de salvar.`
-        : "Configuração importada. Revise antes de salvar.");
+      toast(response.message || "Documento analisado. Revise antes de salvar.");
     } catch (error) {
       toast(error.message, "error");
     } finally {
       input.value = "";
+      if (button) {
+        button.disabled = false;
+        const label = button.querySelector("span");
+        if (label) label.textContent = originalLabel;
+      }
     }
   }
 
@@ -159,17 +190,17 @@
     const raw = content.querySelector(".raw-details");
     content.insertBefore(section, raw || null);
     section.querySelector("[data-create-playbook-draft]").addEventListener("click", async (draftEvent) => {
-      const button = draftEvent.currentTarget;
-      button.disabled = true;
-      button.textContent = "Gerando rascunho...";
+      const draftButton = draftEvent.currentTarget;
+      draftButton.disabled = true;
+      draftButton.textContent = "Gerando rascunho...";
       try {
         const response = await api(`/ui/api/investigations/${encodeURIComponent(investigationId)}/playbook-draft`, { method: "POST" });
         openPlaybookEditor(response.draft);
       } catch (error) {
         toast(error.message, "error");
       } finally {
-        button.disabled = false;
-        button.textContent = "Criar rascunho de playbook";
+        draftButton.disabled = false;
+        draftButton.textContent = "Criar rascunho de playbook";
       }
     });
   }
@@ -182,10 +213,12 @@
   function setupPlaybookManagement() {
     if (!$("#playbook-editor-modal")) document.body.insertAdjacentHTML("beforeend", playbookModalMarkup());
 
+    const fileInput = $("#import-playbook-file");
+    if (fileInput) fileInput.accept = ".yml,.yaml,.txt,.md,.docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain";
     const addButton = $("#add-playbook");
     addButton?.addEventListener("click", () => openPlaybookEditor());
-    $("#import-playbook")?.addEventListener("click", () => $("#import-playbook-file")?.click());
-    $("#import-playbook-file")?.addEventListener("change", importPlaybookFile);
+    $("#import-playbook")?.addEventListener("click", () => fileInput?.click());
+    fileInput?.addEventListener("change", importPlaybookFile);
     $("#playbook-editor-form")?.addEventListener("submit", savePlaybook);
     $$('[data-close-playbook-modal]').forEach((button) => button.addEventListener("click", closePlaybookEditor));
     document.addEventListener("keydown", (event) => {
