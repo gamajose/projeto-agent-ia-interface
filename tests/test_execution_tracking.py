@@ -3,9 +3,23 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
+from app.services.cancellation import raise_if_cancelled
 from app.services.progress import report_progress
 from app.services.tracked_runner import persist_result_inventory
-from app.services.ui_executions import execution_detail, submit_ui_execution
+from app.services.ui_executions import (
+    execution_detail,
+    request_execution_cancel,
+    submit_ui_execution,
+)
+
+
+def _wait_terminal(execution_id: str, timeout: float = 5) -> dict:
+    deadline = time.monotonic() + timeout
+    record = execution_detail(execution_id) or {}
+    while record.get("status") not in {"completed", "failed", "cancelled"} and time.monotonic() < deadline:
+        time.sleep(0.02)
+        record = execution_detail(execution_id) or {}
+    return record
 
 
 def test_ui_execution_tracks_phases_percentage_and_result() -> None:
@@ -24,11 +38,7 @@ def test_ui_execution_tracks_phases_percentage_and_result() -> None:
         execution_mode="inline",
     )
 
-    deadline = time.monotonic() + 5
-    record = created
-    while record.get("status") not in {"completed", "failed"} and time.monotonic() < deadline:
-        time.sleep(0.02)
-        record = execution_detail(created["execution_id"]) or {}
+    record = _wait_terminal(created["execution_id"])
 
     assert record["status"] == "completed"
     assert record["percent"] == 100
@@ -40,6 +50,89 @@ def test_ui_execution_tracks_phases_percentage_and_result() -> None:
     assert "completed" in stages
     percentages = [int(item.get("percent") or 0) for item in record["phases"]]
     assert percentages == sorted(percentages)
+
+
+def test_ui_execution_preserves_live_command_events() -> None:
+    def operation():
+        report_progress(
+            "command_started",
+            detail="Executando uname -a",
+            command_id="command-1",
+            command="uname -a",
+            percent=55,
+        )
+        report_progress(
+            "command_output",
+            detail="Recebendo saída",
+            command_id="command-1",
+            command="uname -a",
+            stdout_tail="Linux servidor 6.8",
+            percent=65,
+        )
+        report_progress(
+            "command_completed",
+            status="completed",
+            detail="Comando concluído",
+            command_id="command-1",
+            command="uname -a",
+            exit_code=0,
+            stdout_tail="Linux servidor 6.8",
+            percent=75,
+        )
+        return {"investigation_id": "investigation-live"}
+
+    created = submit_ui_execution(
+        operation,
+        target="192.0.2.21",
+        objective="acompanhar comandos",
+        provider="ollama",
+        model="llama3.2:1b",
+        execution_mode="inline",
+    )
+    record = _wait_terminal(created["execution_id"])
+
+    command_events = [item for item in record["events"] if item.get("command_id") == "command-1"]
+    assert [item["stage"] for item in command_events] == [
+        "command_started",
+        "command_output",
+        "command_completed",
+    ]
+    assert command_events[-1]["stdout_tail"] == "Linux servidor 6.8"
+    assert command_events[-1]["exit_code"] == 0
+
+
+def test_ui_execution_can_be_cancelled_cooperatively() -> None:
+    def operation():
+        report_progress("evidence_analysis", detail="Coleta longa em andamento.", percent=55)
+        for _ in range(300):
+            raise_if_cancelled()
+            time.sleep(0.01)
+        return {"investigation_id": "should-not-complete"}
+
+    created = submit_ui_execution(
+        operation,
+        target="192.0.2.22",
+        objective="cancelar coleta",
+        provider="auto",
+        model=None,
+        execution_mode="inline",
+    )
+
+    deadline = time.monotonic() + 2
+    record = execution_detail(created["execution_id"]) or {}
+    while record.get("percent", 0) < 55 and time.monotonic() < deadline:
+        time.sleep(0.01)
+        record = execution_detail(created["execution_id"]) or {}
+
+    requested = request_execution_cancel(created["execution_id"])
+    assert requested is not None
+    assert requested["status"] == "cancelling"
+
+    record = _wait_terminal(created["execution_id"])
+    assert record["status"] == "cancelled"
+    assert record["result"] is None
+    assert record["current_phase"]["status"] == "cancelled"
+    assert "cancelada" in record["current_phase"]["detail"].lower()
 
 
 def test_ui_execution_preserves_failure_and_last_percentage_for_follow_up() -> None:
@@ -56,11 +149,7 @@ def test_ui_execution_preserves_failure_and_last_percentage_for_follow_up() -> N
         execution_mode="inline",
     )
 
-    deadline = time.monotonic() + 5
-    record = created
-    while record.get("status") not in {"completed", "failed"} and time.monotonic() < deadline:
-        time.sleep(0.02)
-        record = execution_detail(created["execution_id"]) or {}
+    record = _wait_terminal(created["execution_id"])
 
     assert record["status"] == "failed"
     assert "falha controlada" in record["error"]
