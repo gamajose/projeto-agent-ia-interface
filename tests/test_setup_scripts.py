@@ -11,6 +11,7 @@ def test_installation_scripts_have_valid_bash_syntax() -> None:
     scripts = [
         PROJECT_ROOT / "install.sh",
         PROJECT_ROOT / "scripts" / "install_all.sh",
+        PROJECT_ROOT / "scripts" / "setup_ollama.sh",
         PROJECT_ROOT / "scripts" / "stack_control.sh",
         PROJECT_ROOT / "scripts" / "setup_wsl.sh",
         PROJECT_ROOT / "scripts" / "start_web.sh",
@@ -67,9 +68,32 @@ def test_bootstrap_uses_predictable_path_and_supports_remote_install() -> None:
     assert "ls-files -s" in content
     assert "core.fileMode=false" not in content
     assert "alterações locais reais" in content
+    assert "prepare_ui_port" in content
+    assert "wait_ui" in content
+    assert "setup_ollama.sh" in content
+    assert "AGENT_INSTALL_OLLAMA" in content
     assert 'systemctl restart agent-ia-web.service' in content
     assert 'systemctl is-active --quiet agent-ia-web.service' in content
     assert "rm -rf" not in content
+
+
+def test_ollama_setup_is_local_idempotent_and_selects_small_model_for_low_ram() -> None:
+    content = (PROJECT_ROOT / "scripts" / "setup_ollama.sh").read_text(encoding="utf-8")
+
+    assert "https://ollama.com/install.sh" in content
+    assert "llama3.2:1b" in content
+    assert "llama3.2:3b" in content
+    assert "MemTotal" in content
+    assert "OLLAMA_MODELS=" in content
+    assert "/opt/agent-ia" in content
+    assert "ollama pull" in content
+    assert "ollama show" in content
+    assert "systemctl restart ollama.service" in content
+    assert "OLLAMA_MODEL" in content
+    assert "OLLAMA_BASE_URL" in content
+    assert "reboot" not in content.lower()
+    assert "shutdown" not in content.lower()
+    assert "docker rm" not in content
 
 
 def test_full_installer_creates_required_services_without_reboot() -> None:
