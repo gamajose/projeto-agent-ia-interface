@@ -85,6 +85,7 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
 
     if execution_mode == "queue":
         def operation() -> dict[str, Any]:
+            raise_if_cancelled("Coleta cancelada antes de entrar na fila.")
             report_progress(
                 "queue_submission",
                 status="completed",
@@ -103,6 +104,11 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
                 **common,
             )
             job_id = str(job.get("job_id") or "")
+            try:
+                raise_if_cancelled("Coleta cancelada logo após entrar na fila.")
+            except ExecutionCancelled:
+                cancel_job(job_id, settings=settings)
+                raise
             report_progress(
                 "worker_wait",
                 detail=f"Job {job_id} aguardando worker operacional.",
@@ -115,7 +121,7 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
             last_wait_report = 0.0
             while True:
                 raise_if_cancelled("Coleta cancelada pelo operador enquanto aguardava o worker.")
-                current = get_job(job_id)
+                current = get_job(job_id, settings=settings)
                 if not current:
                     raise RuntimeError("job não encontrado ou expirado")
                 status = str(current.get("status") or "queued")
@@ -199,10 +205,23 @@ def get_ui_execution(execution_id: str, request: Request) -> dict[str, Any]:
 @router.post("/ui/api/executions/{execution_id}/cancel")
 def cancel_ui_execution(execution_id: str, request: Request) -> dict[str, Any]:
     _require_mutation(request)
+    current = execution_detail(execution_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="execução não encontrada ou expirada")
+
+    job_id = str(current.get("job_id") or "")
+    if job_id:
+        try:
+            remote = cancel_job(job_id, settings=get_settings())
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"não foi possível enviar o cancelamento ao worker: {exc}",
+            ) from exc
+        if not remote:
+            raise HTTPException(status_code=409, detail="o job distribuído não está mais disponível para cancelamento")
+
     record = request_execution_cancel(execution_id)
     if not record:
         raise HTTPException(status_code=404, detail="execução não encontrada ou expirada")
-    job_id = str(record.get("job_id") or "")
-    if job_id:
-        cancel_job(job_id)
     return execution_detail(execution_id) or record
