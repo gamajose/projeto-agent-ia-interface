@@ -63,6 +63,15 @@ def _safe_patterns(values: list[str]) -> list[str]:
     return patterns
 
 
+def _safe_text_list(values: list[str] | None, *, limit: int = 30, item_limit: int = 500) -> list[str]:
+    result: list[str] = []
+    for raw in values or []:
+        value = str(raw or "").strip()
+        if value and value not in result:
+            result.append(value[:item_limit])
+    return result[:limit]
+
+
 def _parse_steps(steps_yaml: str) -> list[dict[str, Any]]:
     try:
         payload = yaml.safe_load(steps_yaml or "[]")
@@ -102,6 +111,12 @@ def save_playbook(
     profiles: list[str],
     patterns: list[str],
     steps_yaml: str,
+    summary: str = "",
+    required_inputs: list[str] | None = None,
+    safety_rules: list[str] | None = None,
+    validation_notes: list[str] | None = None,
+    import_notes: list[str] | None = None,
+    source_filename: str = "",
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     settings = settings or get_settings()
@@ -121,10 +136,17 @@ def save_playbook(
         "priority": normalized_priority,
         "profiles": _safe_profiles(profiles),
         "match": {"any": _safe_patterns(patterns)},
+        "summary": str(summary or "").strip()[:4000],
+        "required_inputs": _safe_text_list(required_inputs, item_limit=160),
+        "safety_rules": _safe_text_list(safety_rules, item_limit=400),
         "steps": _parse_steps(steps_yaml),
         "allowed_corrections": [],
-        "validation": [],
+        "validation": _safe_text_list(validation_notes, item_limit=400),
+        "import_notes": _safe_text_list(import_notes, item_limit=500),
     }
+    if source_filename:
+        payload["source"] = {"filename": Path(source_filename).name[:255]}
+
     directory = Path(settings.agent_playbook_dir).expanduser()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{normalized_id}.yml"
@@ -194,13 +216,7 @@ def _draft_steps(investigation: dict[str, Any]) -> list[dict[str, Any]]:
                     resolve_tool(tool, arguments)
             except Exception:
                 continue
-            steps.append(
-                {
-                    "tool": tool,
-                    "arguments": arguments,
-                    "purpose": str(raw.get("purpose") or descriptor.get("description") or tool)[:500],
-                }
-            )
+            steps.append({"tool": tool, "arguments": arguments, "purpose": str(raw.get("purpose") or descriptor.get("description") or tool)[:500]})
             seen.add(tool)
             if len(steps) >= 8:
                 return steps
@@ -235,15 +251,8 @@ def draft_playbook(investigation: dict[str, Any]) -> dict[str, Any]:
     keywords = _objective_keywords(objective)
     suffix = "-".join(keywords[:3]) or "investigacao"
     playbook_id = _slug(f"{profile}-{suffix}")[:64]
-    patterns = []
-    if keywords:
-        patterns.append("(?=.*" + ")(?=.*".join(re.escape(item) for item in keywords[:3]) + ")")
-    else:
-        patterns.append(re.escape(objective[:80]))
-    steps = _draft_steps(investigation)
-    if not steps:
-        steps = [{"tool": "system.basics", "arguments": {}, "purpose": "Identificar o host e o estado básico."}]
-
+    patterns = ["(?=.*" + ")(?=.*".join(re.escape(item) for item in keywords[:3]) + ")"] if keywords else [re.escape(objective[:80])]
+    steps = _draft_steps(investigation) or [{"tool": "system.basics", "arguments": {}, "purpose": "Identificar o host e o estado básico."}]
     return {
         "id": playbook_id,
         "title": f"Diagnóstico: {objective[:110]}",
