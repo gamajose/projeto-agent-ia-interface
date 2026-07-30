@@ -7,7 +7,7 @@ INSTALL_ROOT="${AGENT_INSTALL_ROOT:-/opt/agent-ia}"
 APP_DIR=""
 NON_INTERACTIVE=false
 SKIP_DOCKER=false
-OPENCODE_MODE="ask"
+OPENCODE_MODE="yes"
 OLLAMA_MODE="${AGENT_INSTALL_OLLAMA:-true}"
 OLLAMA_MODEL="${AGENT_OLLAMA_MODEL:-auto}"
 PYTHON_BIN="${PYTHON_BIN:-}"
@@ -32,7 +32,7 @@ Opções:
   --repo URL              repositório Git
   --non-interactive       não solicita dados opcionais
   --skip-docker           não instala Docker; exige Docker já funcional
-  --with-opencode         prepara também o OpenCode integrado
+  --with-opencode         prepara também o OpenCode integrado; padrão
   --without-opencode      não prepara o OpenCode
   --with-ollama           instala Ollama e um Llama local; padrão
   --without-ollama        não instala Ollama/modelo local
