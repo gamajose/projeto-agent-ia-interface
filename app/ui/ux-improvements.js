@@ -35,6 +35,7 @@
             <label class="full"><span>Padrões de correspondência</span><textarea id="playbook-editor-patterns" placeholder="Uma expressão regular por linha" required></textarea></label>
             <label class="full"><span>Etapas estruturadas em YAML</span><textarea class="playbook-steps" id="playbook-editor-steps" spellcheck="false" required></textarea></label>
           </div>
+          <div class="playbook-import-warning" id="playbook-import-warning" hidden></div>
           <div class="playbook-editor-note">A interface aceita somente ferramentas estruturadas e de leitura. Comandos shell e ferramentas corretivas são recusados pelo backend. O playbook só entra no catálogo depois de você revisar e salvar.</div>
           <div class="playbook-editor-actions"><span class="action-spacer"></span><button type="button" class="secondary-button" data-close-playbook-modal>Cancelar</button><button type="submit" class="primary-button" id="playbook-editor-save">Salvar playbook</button></div>
         </form>
@@ -50,6 +51,16 @@
     return String(value || "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
   }
 
+  function renderImportWarnings(warnings = []) {
+    const element = $("#playbook-import-warning");
+    if (!element) return;
+    const items = Array.isArray(warnings) ? warnings.filter(Boolean) : [];
+    element.hidden = !items.length;
+    element.innerHTML = items.length
+      ? `<strong>Importado com ajustes de segurança</strong><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+      : "";
+  }
+
   function openPlaybookEditor(draft = null) {
     const modal = $("#playbook-editor-modal");
     if (!modal) return;
@@ -63,6 +74,7 @@
     $("#playbook-editor-profiles").value = (draft?.profiles || ["linux_generic"]).join(", ");
     $("#playbook-editor-patterns").value = (draft?.patterns || []).join("\n");
     $("#playbook-editor-steps").value = draft?.steps_yaml || defaultSteps();
+    renderImportWarnings(draft?.import_warnings || []);
     modal.classList.add("open");
     modal.setAttribute("aria-hidden", "false");
     document.body.classList.add("settings-modal-open");
@@ -117,7 +129,10 @@
         body: { filename: file.name, content },
       });
       openPlaybookEditor(response.draft);
-      toast("Configuração importada. Revise antes de salvar.");
+      const warnings = response.draft?.import_warnings || [];
+      toast(warnings.length
+        ? `Playbook importado com ${warnings.length} ajuste(s) de segurança. Revise antes de salvar.`
+        : "Configuração importada. Revise antes de salvar.");
     } catch (error) {
       toast(error.message, "error");
     } finally {
