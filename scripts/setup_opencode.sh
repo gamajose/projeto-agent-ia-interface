@@ -24,11 +24,67 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
   exit 1
 fi
 
-if ! command -v npm >/dev/null 2>&1; then
-  echo "npm não encontrado. Instale o Node.js/NVM antes de continuar." >&2
+find_node_bin() {
+  local direct candidate selected=""
+
+  direct="$(command -v npm 2>/dev/null || true)"
+  if [[ -n "${direct}" && -x "${direct}" ]]; then
+    dirname "${direct}"
+    return 0
+  fi
+
+  # Instalações feitas pelo NVM não entram no PATH de processos iniciados por
+  # systemd ou por instaladores não interativos. Procura a versão mais recente.
+  while IFS= read -r candidate; do
+    [[ -x "${candidate}/npm" && -x "${candidate}/node" ]] || continue
+    selected="${candidate}"
+  done < <(find "${TARGET_HOME}/.nvm/versions/node" -mindepth 2 -maxdepth 2 -type d -name bin 2>/dev/null | sort -V)
+
+  if [[ -n "${selected}" ]]; then
+    printf '%s\n' "${selected}"
+    return 0
+  fi
+
+  # Também cobre instalações locais mantidas no diretório do usuário.
+  for candidate in \
+    "${TARGET_HOME}/.local/bin" \
+    "${TARGET_HOME}/bin" \
+    "/usr/local/bin" \
+    "/usr/bin"; do
+    if [[ -x "${candidate}/npm" && -x "${candidate}/node" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+NODE_BIN_DIR="$(find_node_bin || true)"
+if [[ -z "${NODE_BIN_DIR}" ]]; then
+  cat >&2 <<EOF
+npm e Node.js não foram encontrados para o usuário ${TARGET_USER}.
+Instale Node.js 20 ou superior e execute novamente:
+  bash ${ROOT_DIR}/scripts/setup_opencode.sh
+EOF
   exit 1
 fi
 
+export PATH="${NODE_BIN_DIR}:${PATH}"
+hash -r
+
+if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+  echo "Node.js/npm foram localizados, mas não puderam ser ativados no PATH: ${NODE_BIN_DIR}" >&2
+  exit 1
+fi
+
+NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || printf '0')"
+if [[ ! "${NODE_MAJOR}" =~ ^[0-9]+$ || "${NODE_MAJOR}" -lt 20 ]]; then
+  echo "OpenCode requer Node.js 20 ou superior; encontrado: $(node --version 2>/dev/null || echo desconhecido)" >&2
+  exit 1
+fi
+
+echo "Node.js detectado: $(node --version) em ${NODE_BIN_DIR}"
 echo "Instalando ou atualizando OpenCode..."
 npm install -g opencode-ai@latest
 CURRENT_OPENCODE="$(command -v opencode || true)"
