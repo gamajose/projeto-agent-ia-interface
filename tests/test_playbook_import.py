@@ -32,6 +32,7 @@ def test_preview_imported_playbook_returns_reviewable_safe_draft() -> None:
     assert draft["profiles"] == ["linux_generic"]
     assert draft["patterns"] == ["swap", "mem[oó]ria"]
     assert draft["source_filename"] == "meu-playbook.yml"
+    assert draft["import_warnings"] == []
     steps = yaml.safe_load(draft["steps_yaml"])
     assert [item["tool"] for item in steps] == ["system.basics", "memory.swap"]
 
@@ -51,17 +52,56 @@ def test_preview_imported_playbook_rejects_shell_commands() -> None:
         preview_imported_playbook(content)
 
 
-def test_preview_imported_playbook_rejects_corrections_and_validation() -> None:
-    base = {
-        "id": "playbook-seguro",
-        "title": "Playbook seguro",
-        "profiles": ["linux_generic"],
-        "match": {"any": ["teste"]},
-        "steps": [{"tool": "system.basics", "arguments": {}, "purpose": "Identificar"}],
-    }
+def test_preview_imported_playbook_removes_corrections_and_validation_for_review() -> None:
+    content = yaml.safe_dump(
+        {
+            "id": "playbook-seguro",
+            "title": "Playbook seguro",
+            "profiles": "linux_generic",
+            "match": {"any": "teste"},
+            "steps": [{"tool": "system.basics", "arguments": {}, "purpose": "Identificar"}],
+            "allowed_corrections": ["systemd.recover_unit"],
+            "validation": [{"tool": "system.basics"}],
+        },
+        allow_unicode=True,
+        sort_keys=False,
+    )
 
-    with pytest.raises(ValueError, match="somente playbooks de leitura"):
-        preview_imported_playbook(yaml.safe_dump({**base, "allowed_corrections": ["systemd.recover_unit"]}))
+    draft = preview_imported_playbook(content)
 
-    with pytest.raises(ValueError, match="não aceita pós-validações"):
-        preview_imported_playbook(yaml.safe_dump({**base, "validation": [{"tool": "system.basics"}]}))
+    assert draft["profiles"] == ["linux_generic"]
+    assert draft["patterns"] == ["teste"]
+    assert len(draft["import_warnings"]) == 2
+    assert "allowed_corrections" in draft["import_warnings"][0]
+    assert "validation" in draft["import_warnings"][1]
+    assert "systemd.recover_unit" not in draft["steps_yaml"]
+
+
+def test_preview_imported_playbook_accepts_wrapped_document_and_checks_alias() -> None:
+    content = yaml.safe_dump(
+        {
+            "playbook": {
+                "name": "diagnostico-basico",
+                "title": "Diagnóstico básico",
+                "profiles": ["linux_generic"],
+                "patterns": ["saúde geral"],
+                "checks": [
+                    {"tool": "system.basics", "arguments": {}, "purpose": "Identificar host"},
+                ],
+            }
+        },
+        allow_unicode=True,
+        sort_keys=False,
+    )
+
+    draft = preview_imported_playbook(content, filename="embrulhado.yaml")
+
+    assert draft["id"] == "diagnostico-basico"
+    assert draft["patterns"] == ["saúde geral"]
+    assert yaml.safe_load(draft["steps_yaml"])[0]["tool"] == "system.basics"
+
+
+def test_preview_imported_playbook_rejects_multiple_documents() -> None:
+    content = "id: primeiro\ntitle: Primeiro playbook\nsteps: []\n---\nid: segundo\ntitle: Segundo playbook\nsteps: []\n"
+    with pytest.raises(ValueError, match="um playbook por arquivo"):
+        preview_imported_playbook(content)

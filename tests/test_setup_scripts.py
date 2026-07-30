@@ -102,7 +102,11 @@ def test_full_installer_creates_required_services_without_reboot() -> None:
     assert "https://get.docker.com" in content
     assert "agent-ia-infra.service" in content
     assert "omniroute.service" in content
+    assert "agent-ia-worker.service" in content
     assert "agent-ia-web.service" in content
+    assert "ExecStart=$VENV_DIR/bin/agent-worker run" in content
+    assert "Restart=always" in content
+    assert 'systemctl is-active --quiet agent-ia-worker.service' in content
     assert 'python" -m app.db.init_db' in content
     assert "systemctl enable --now" in content
     assert "wait_omniroute 180" in content

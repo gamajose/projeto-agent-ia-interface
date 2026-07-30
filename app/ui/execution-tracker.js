@@ -1,6 +1,6 @@
 (() => {
   const STORAGE_KEY = "agent-ui-active-execution";
-  const PIPELINE = [
+  const BASE_PIPELINE = [
     { stage: "provider_validation", label: "Validando e selecionando a IA" },
     { stage: "target_resolution", label: "Resolvendo alvo e playbook" },
     { stage: "ssh_connection", label: "Conectando e validando o SSH" },
@@ -8,13 +8,23 @@
     { stage: "result_persistence", label: "Salvando resultado e inventário" },
     { stage: "completed", label: "Investigação concluída" },
   ];
+  const QUEUE_PIPELINE = [
+    { stage: "worker_wait", label: "Aguardando worker operacional" },
+    ...BASE_PIPELINE,
+  ];
   const STAGE_ALIASES = {
     provider_selected: "provider_validation",
     target_resolved: "target_resolution",
     ssh_connected: "ssh_connection",
-    queue_submission: "target_resolution",
-    queue_wait: "evidence_analysis",
+    queue_submission: "worker_wait",
+    queue_wait: "worker_wait",
+    command_started: "evidence_analysis",
+    command_output: "evidence_analysis",
+    command_completed: "evidence_analysis",
+    command_cancelled: "evidence_analysis",
   };
+  const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
+  const COMMAND_STAGES = new Set(["command_started", "command_output", "command_completed", "command_cancelled"]);
   let activeExecution = null;
   let pollTimer = null;
   let showingFinalResult = false;
@@ -22,6 +32,7 @@
   const stageLabels = {
     queued: "Aguardando início",
     execution_started: "Execução recebida",
+    worker_wait: "Aguardando worker operacional",
     provider_validation: "Validando e selecionando a IA",
     provider_selected: "IA selecionada",
     target_resolution: "Resolvendo alvo e playbook",
@@ -29,11 +40,16 @@
     ssh_connection: "Conectando por SSH",
     ssh_connected: "SSH validado",
     evidence_analysis: "Coletando e analisando evidências",
+    command_started: "Executando comando",
+    command_output: "Recebendo saída do comando",
+    command_completed: "Comando finalizado",
+    command_cancelled: "Comando interrompido",
     result_persistence: "Salvando resultado e inventário",
     queue_submission: "Enviando para a fila",
-    queue_wait: "Execução no worker",
+    queue_wait: "Aguardando worker",
     completed: "Investigação concluída",
     failed: "Investigação falhou",
+    cancelled: "Investigação cancelada",
   };
 
   const baseTrackedShowResult = showResult;
@@ -43,12 +59,16 @@
   };
 
   function executionTrayMarkup() {
-    return `<aside class="execution-tray" id="execution-tray" role="status" aria-live="polite">
+    return `<aside class="execution-tray" id="execution-tray" role="button" tabindex="0" aria-live="polite" aria-label="Abrir acompanhamento da investigação">
       <span class="execution-tray-spinner" aria-hidden="true"></span>
       <div class="execution-tray-copy"><strong>Investigação em andamento</strong><span>Aguardando início...</span><div class="execution-tray-progress"><i></i></div></div>
       <span class="execution-tray-percent">0%</span>
       <button class="execution-tray-dismiss" type="button" aria-label="Dispensar acompanhamento">×</button>
     </aside>`;
+  }
+
+  function pipelineFor(record) {
+    return record?.execution_mode === "queue" ? QUEUE_PIPELINE : BASE_PIPELINE;
   }
 
   function canonicalStage(stage) {
@@ -63,6 +83,14 @@
     };
   }
 
+  function currentCanonicalStage(record) {
+    const current = currentPhase(record);
+    const canonical = canonicalStage(current.stage);
+    if (!["failed", "cancelled"].includes(canonical)) return canonical;
+    const previous = [...(record?.phases || [])].reverse().find((phase) => !["failed", "cancelled"].includes(canonicalStage(phase.stage)));
+    return canonicalStage(previous?.stage || "evidence_analysis");
+  }
+
   function phaseTitle(phase) {
     return stageLabels[phase?.stage] || String(phase?.stage || "Processando").replaceAll("_", " ");
   }
@@ -73,12 +101,28 @@
   }
 
   function isRunning(record = activeExecution) {
-    return ["queued", "running"].includes(record?.status);
+    return ["queued", "running", "cancelling"].includes(record?.status);
   }
 
   function saveActiveId(id) {
     if (id) localStorage.setItem(STORAGE_KEY, id);
     else localStorage.removeItem(STORAGE_KEY);
+  }
+
+  function formatDuration(seconds) {
+    const value = Math.max(0, Math.floor(Number(seconds) || 0));
+    const minutes = Math.floor(value / 60);
+    const remainder = value % 60;
+    if (minutes >= 60) return `${Math.floor(minutes / 60)}h ${minutes % 60}min`;
+    if (minutes) return `${minutes}min ${remainder}s`;
+    return `${remainder}s`;
+  }
+
+  function elapsedSeconds(record) {
+    const start = Date.parse(record?.started_at || record?.created_at || "");
+    const end = TERMINAL_STATUSES.has(record?.status) ? Date.parse(record?.completed_at || record?.updated_at || "") : Date.now();
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
+    return Math.max(0, Math.round((end - start) / 1000));
   }
 
   function renderTray(record) {
@@ -92,12 +136,18 @@
       ? "Investigação concluída"
       : record.status === "failed"
         ? "Investigação com falha"
-        : `Analisando ${record.target || "o alvo"}`;
+        : record.status === "cancelled"
+          ? "Investigação cancelada"
+          : record.status === "cancelling"
+            ? "Cancelando investigação"
+            : `Analisando ${record.target || "o alvo"}`;
     tray.querySelector(".execution-tray-copy > span").textContent = record.status === "completed"
       ? "Clique para abrir o resultado."
       : record.status === "failed"
         ? (record.error || phase.detail || "Clique para ver os detalhes.")
-        : `${phaseTitle(phase)} · ${phase.detail || "em andamento"}`;
+        : record.status === "cancelled"
+          ? (phase.detail || "A coleta foi interrompida pelo operador.")
+          : `${phaseTitle(phase)} · ${phase.detail || "em andamento"}`;
     tray.querySelector(".execution-tray-percent").textContent = `${percent}%`;
     tray.querySelector(".execution-tray-progress i").style.width = `${percent}%`;
   }
@@ -107,29 +157,83 @@
     (record.phases || []).forEach((phase) => {
       const stage = canonicalStage(phase.stage);
       const previous = map.get(stage);
-      if (!previous || Number(phase.percent || 0) >= Number(previous.percent || 0)) map.set(stage, { ...phase, stage });
+      if (!previous || Date.parse(phase.updated_at || "") >= Date.parse(previous.updated_at || "")) map.set(stage, { ...phase, stage });
     });
     const current = currentPhase(record);
-    const currentStage = canonicalStage(current.stage);
+    const currentStage = currentCanonicalStage(record);
     const previous = map.get(currentStage);
     map.set(currentStage, { ...(previous || {}), ...current, stage: currentStage });
     return map;
   }
 
+  function commandActivities(record) {
+    const commands = new Map();
+    (record?.events || []).forEach((event) => {
+      if (!COMMAND_STAGES.has(event.stage) || !event.command_id) return;
+      const previous = commands.get(event.command_id) || {};
+      commands.set(event.command_id, { ...previous, ...event });
+    });
+    return [...commands.values()].sort((left, right) => Date.parse(left.updated_at || "") - Date.parse(right.updated_at || ""));
+  }
+
+  function commandStatus(event) {
+    if (event.stage === "command_cancelled" || event.status === "cancelled") return ["cancelled", "Cancelado"];
+    if (event.status === "failed" || Number(event.exit_code) > 0) return ["failed", `Falhou${event.exit_code !== undefined ? ` · código ${event.exit_code}` : ""}`];
+    if (event.stage === "command_completed") return ["completed", `Concluído${event.exit_code !== undefined ? ` · código ${event.exit_code}` : ""}`];
+    return ["running", "Em execução"];
+  }
+
+  function commandMarkup(record) {
+    const commands = commandActivities(record);
+    if (!commands.length) {
+      const phase = currentPhase(record);
+      return `<div class="execution-live-empty"><span></span><div><strong>Nenhum comando iniciado ainda</strong><p>${escapeHtml(phase.detail || "O Agent está preparando a coleta.")}</p></div></div>`;
+    }
+    return commands.slice(-12).reverse().map((event) => {
+      const [status, label] = commandStatus(event);
+      const stdout = String(event.stdout_tail || "").trim();
+      const stderr = String(event.stderr_tail || "").trim();
+      const output = [stdout ? `SAÍDA\n${stdout}` : "", stderr ? `ERRO\n${stderr}` : ""].filter(Boolean).join("\n\n");
+      return `<article class="execution-command" data-status="${status}">
+        <div class="execution-command-head"><span class="execution-command-state"></span><div><strong>${escapeHtml(event.command || "Comando remoto")}</strong><small>${escapeHtml(label)}${event.elapsed_seconds !== undefined ? ` · ${escapeHtml(formatDuration(event.elapsed_seconds))}` : ""}</small></div></div>
+        ${output ? `<pre>${escapeHtml(output)}</pre>` : `<p class="execution-command-wait">Aguardando saída do comando...</p>`}
+      </article>`;
+    }).join("");
+  }
+
+  function livePanelMarkup(record) {
+    const canCancel = ["queued", "running"].includes(record.status);
+    const cancelling = record.status === "cancelling";
+    const worker = currentPhase(record)?.worker || record.worker || "";
+    return `<section class="execution-live-panel">
+      <header class="execution-live-header"><div><p class="eyebrow">AGENT EM TEMPO REAL</p><h3>Coleta e comandos</h3></div><button class="danger-button execution-cancel-button" type="button" data-cancel-execution ${canCancel ? "" : "disabled"}>${cancelling ? "Cancelando..." : record.status === "cancelled" ? "Coleta cancelada" : "Cancelar coleta"}</button></header>
+      <div class="execution-live-meta"><span><b>Tempo</b>${escapeHtml(formatDuration(elapsedSeconds(record)))}</span><span><b>Etapa</b>${escapeHtml(phaseTitle(currentPhase(record)))}</span>${worker ? `<span><b>Worker</b>${escapeHtml(worker)}</span>` : ""}</div>
+      <div class="execution-command-list">${commandMarkup(record)}</div>
+    </section>`;
+  }
+
   function timelineMarkup(record) {
-    const current = currentPhase(record);
-    const currentStage = canonicalStage(current.stage);
+    const currentStage = currentCanonicalStage(record);
     const phases = phaseMap(record);
+    const pipeline = pipelineFor(record);
+    const currentIndex = Math.max(0, pipeline.findIndex((definition) => definition.stage === currentStage));
     const percent = percentValue(record);
-    const rows = PIPELINE.map((definition) => {
+    const rows = pipeline.map((definition, index) => {
       const phase = phases.get(definition.stage) || { stage: definition.stage, detail: "Aguardando a etapa anterior." };
       const failed = record.status === "failed" && currentStage === definition.stage;
-      const completed = record.status === "completed" || phase.status === "completed";
-      const active = !completed && !failed && currentStage === definition.stage;
-      const css = failed ? "failed" : completed ? "completed" : active ? "active" : "pending";
+      const cancelled = record.status === "cancelled" && currentStage === definition.stage;
+      const cancelling = record.status === "cancelling" && currentStage === definition.stage;
+      const inferredCompleted = index < currentIndex && !["queued"].includes(record.status);
+      const completed = record.status === "completed" || phase.status === "completed" || inferredCompleted;
+      const active = !completed && !failed && !cancelled && (currentStage === definition.stage || cancelling);
+      const css = failed ? "failed" : cancelled ? "cancelled" : completed ? "completed" : active ? (cancelling ? "cancelling" : "active") : "pending";
       return `<div class="timeline-item ${css}"><span></span><div><strong>${escapeHtml(definition.label)}</strong><p>${escapeHtml(phase.detail || "Aguardando a etapa anterior.")}</p></div></div>`;
     }).join("");
-    return `<div class="execution-progress-summary"><div class="execution-progress-title"><strong>${escapeHtml(record.target || "Investigação")}</strong><b>${percent}%</b></div><div class="execution-progress-bar"><i style="width:${percent}%"></i></div><p>O acompanhamento continua mesmo com este painel fechado. Abrir uma investigação antiga não interrompe nem substitui esta execução.</p><div class="execution-progress-meta"><span class="mode-badge">${escapeHtml(record.provider || "IA automática")}</span>${record.model ? `<span class="mode-badge">${escapeHtml(record.model)}</span>` : ""}<span class="mode-badge">${escapeHtml(record.execution_mode || "inline")}</span></div></div><div class="execution-timeline">${rows}</div>`;
+    return `<div class="execution-progress-summary"><div class="execution-progress-title"><strong>${escapeHtml(record.target || "Investigação")}</strong><b>${percent}%</b></div><div class="execution-progress-bar"><i style="width:${percent}%"></i></div><p>O acompanhamento continua mesmo com este painel fechado. Clique no card inferior para voltar aos comandos em execução.</p><div class="execution-progress-meta"><span class="mode-badge">${escapeHtml(record.provider || "IA automática")}</span>${record.model ? `<span class="mode-badge">${escapeHtml(record.model)}</span>` : ""}<span class="mode-badge">${escapeHtml(record.execution_mode || "inline")}</span></div></div><div class="execution-progress-layout"><div class="execution-timeline">${rows}</div>${livePanelMarkup(record)}</div>`;
+  }
+
+  function bindProgressActions() {
+    $("[data-cancel-execution]")?.addEventListener("click", cancelTrackedExecution);
   }
 
   function renderProgressDrawer(record, force = false) {
@@ -137,8 +241,15 @@
     if (!drawer || (!force && !drawer.classList.contains("open")) || showingFinalResult) return;
     drawer.classList.add("open");
     drawer.setAttribute("aria-hidden", "false");
-    $("#result-title").textContent = record.status === "failed" ? "Falha na investigação" : "Investigação em andamento";
+    $("#result-title").textContent = record.status === "failed"
+      ? "Falha na investigação"
+      : record.status === "cancelled"
+        ? "Investigação cancelada"
+        : record.status === "cancelling"
+          ? "Cancelando investigação"
+          : "Investigação em andamento";
     $("#result-content").innerHTML = timelineMarkup(record);
+    bindProgressActions();
   }
 
   function invalidateViews() {
@@ -169,9 +280,17 @@
     toast(record.error || "A investigação falhou.", "error");
   }
 
+  function cancelExecutionView(record) {
+    activeExecution = record;
+    renderTray(record);
+    setSubmitting(false);
+    renderProgressDrawer(record);
+    toast("A coleta foi cancelada com segurança.");
+  }
+
   function schedulePoll(id) {
     clearTimeout(pollTimer);
-    pollTimer = setTimeout(() => void pollExecution(id), 1100);
+    pollTimer = setTimeout(() => void pollExecution(id), 900);
   }
 
   async function pollExecution(id) {
@@ -187,6 +306,10 @@
       }
       if (record.status === "failed") {
         failExecution(record);
+        return;
+      }
+      if (record.status === "cancelled") {
+        cancelExecutionView(record);
         return;
       }
       schedulePoll(id);
@@ -248,6 +371,26 @@
     }
   }
 
+  async function cancelTrackedExecution(event) {
+    event?.stopPropagation();
+    if (!activeExecution || !["queued", "running"].includes(activeExecution.status)) return;
+    if (!window.confirm("Cancelar a coleta atual? O Agent interromperá o comando remoto em execução sem reiniciar o servidor.")) return;
+    const button = event?.currentTarget;
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Cancelando...";
+    }
+    try {
+      activeExecution = await api(`/ui/api/executions/${encodeURIComponent(activeExecution.execution_id)}/cancel`, { method: "POST" });
+      renderTray(activeExecution);
+      renderProgressDrawer(activeExecution, true);
+      schedulePoll(activeExecution.execution_id);
+    } catch (error) {
+      if (button) button.disabled = false;
+      toast(error.message, "error");
+    }
+  }
+
   function openTrackedExecution() {
     if (!activeExecution) return;
     if (activeExecution.status === "completed" && activeExecution.result) {
@@ -286,6 +429,12 @@
   function setupExecutionTracking() {
     if (!$("#execution-tray")) document.body.insertAdjacentHTML("beforeend", executionTrayMarkup());
     $("#execution-tray")?.addEventListener("click", openTrackedExecution);
+    $("#execution-tray")?.addEventListener("keydown", (event) => {
+      if (["Enter", " "].includes(event.key)) {
+        event.preventDefault();
+        openTrackedExecution();
+      }
+    });
     $("#execution-tray .execution-tray-dismiss")?.addEventListener("click", dismissTrackedExecution);
     $("#analysis-form")?.addEventListener("submit", startTrackedAnalysis, true);
     void restoreExecution();

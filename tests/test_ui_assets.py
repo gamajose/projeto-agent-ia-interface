@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def test_interface_references_compact_modal_batch_result_tool_and_settings_assets() -> None:
     html = (PROJECT_ROOT / "app" / "ui" / "index.html").read_text(encoding="utf-8")
     script = (PROJECT_ROOT / "app" / "ui" / "app.js").read_text(encoding="utf-8")
+    api_script = (PROJECT_ROOT / "app" / "ui" / "api-resilience.js").read_text(encoding="utf-8")
     batch_script = (PROJECT_ROOT / "app" / "ui" / "batch.js").read_text(encoding="utf-8")
     workspace_script = (PROJECT_ROOT / "app" / "ui" / "workspace.js").read_text(encoding="utf-8")
     tools_script = (PROJECT_ROOT / "app" / "ui" / "tools.js").read_text(encoding="utf-8")
@@ -28,6 +29,7 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     ux_css = (PROJECT_ROOT / "app" / "ui" / "ux-improvements.css").read_text(encoding="utf-8")
     polish_css = (PROJECT_ROOT / "app" / "ui" / "product-polish.css").read_text(encoding="utf-8")
     investigation_css = (PROJECT_ROOT / "app" / "ui" / "investigation-flow.css").read_text(encoding="utf-8")
+    live_css = (PROJECT_ROOT / "app" / "ui" / "execution-live.css").read_text(encoding="utf-8")
 
     for asset in (
         "enhancements.css",
@@ -38,6 +40,8 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
         "ux-improvements.css",
         "product-polish.css",
         "investigation-flow.css",
+        "execution-live.css",
+        "api-resilience.js",
         "batch.js",
         "workspace.js",
         "tools.js",
@@ -49,8 +53,8 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
         "correction-flow.js",
     ):
         assert f"/ui/assets/{asset}" in html
-    assert "v=1.18.0" in html
-    assert "v=1.17.0" not in html
+    assert "v=1.21.0" in html
+    assert "v=1.18.0" not in html
 
     assert 'id="analysis-modal"' in html
     assert 'id="attach-batch-file"' in html
@@ -76,6 +80,10 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "seleção automática, manual ou nenhuma" not in html
     assert "/ui/api/playbooks/import-preview" in ux_script
     assert "importPlaybookFile" in ux_script
+    assert "playbook-import-warning" in ux_script
+    assert "import_warnings" in ux_script
+    assert "await response.text()" in api_script
+    assert "JSON.parse" in api_script
 
     assert 'id="refresh-opencode"' not in html
     assert 'id="refresh-health"' not in html
@@ -93,16 +101,29 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "cleanSettingsStatusHint" in polish_script
     assert "compactAutomaticHealth" in polish_script
     assert "/ui/api/executions" in tracker_script
+    assert "/cancel" in tracker_script
     assert "agent-ui-active-execution" in tracker_script
     assert "startTrackedAnalysis" in tracker_script
     assert "execution-tray" in tracker_script
     assert "execution-tray-percent" in tracker_script
-    assert "PIPELINE" in tracker_script
+    assert "BASE_PIPELINE" in tracker_script
+    assert "QUEUE_PIPELINE" in tracker_script
     assert "showResultWithoutProgressCollision" in tracker_script
+    assert "command_started" in tracker_script
+    assert "command_output" in tracker_script
+    assert "data-cancel-execution" in tracker_script
+    assert "worker_wait" in tracker_script
     assert "completed" in tracker_script
     assert "pending" in tracker_script
     assert "compact-health-grid" in polish_css
     assert "grid-template-columns: repeat(5" in polish_css
+    assert ".timeline-item.completed" in live_css
+    assert ".timeline-item.active" in live_css
+    assert ".timeline-item.failed" in live_css
+    assert ".timeline-item.cancelled" in live_css
+    assert ".execution-live-panel" in live_css
+    assert ".execution-command" in live_css
+    assert ".danger-button" in live_css
 
     assert "/ui/api/inventory/backfill" in investigation_script
     assert "/ui/api/targets/suggestions" in investigation_script
@@ -173,6 +194,7 @@ def test_interface_javascript_has_valid_syntax() -> None:
 
     for path in (
         PROJECT_ROOT / "app" / "ui" / "app.js",
+        PROJECT_ROOT / "app" / "ui" / "api-resilience.js",
         PROJECT_ROOT / "app" / "ui" / "batch.js",
         PROJECT_ROOT / "app" / "ui" / "workspace.js",
         PROJECT_ROOT / "app" / "ui" / "tools.js",

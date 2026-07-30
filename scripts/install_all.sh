@@ -355,6 +355,34 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
+"${SUDO[@]}" tee /etc/systemd/system/agent-ia-worker.service >/dev/null <<EOF
+[Unit]
+Description=Agent IA - Worker operacional
+After=network-online.target agent-ia-infra.service
+Requires=agent-ia-infra.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$TARGET_USER
+Group=$TARGET_GROUP
+WorkingDirectory=$APP_DIR
+Environment=HOME=$TARGET_HOME
+Environment=AGENT_INSTALL_ROOT=$INSTALL_ROOT
+Environment=AGENT_VENV_DIR=$VENV_DIR
+Environment=AGENT_ENV_FILE=$ENV_FILE
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$VENV_DIR/bin/agent-worker run
+Restart=always
+RestartSec=4
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 "${SUDO[@]}" systemctl daemon-reload
 "${SUDO[@]}" systemctl enable --now agent-ia-infra.service omniroute.service
 wait_container agent-ia-postgres 150
@@ -365,7 +393,7 @@ info "Inicializando o schema do PostgreSQL"
 as_target env AGENT_ENV_FILE="$ENV_FILE" AGENT_VENV_DIR="$VENV_DIR" \
   "$VENV_DIR/bin/python" -m app.db.init_db
 
-"${SUDO[@]}" systemctl enable --now agent-ia-web.service
+"${SUDO[@]}" systemctl enable --now agent-ia-worker.service agent-ia-web.service
 
 if [[ "$OPENCODE_MODE" == "yes" ]]; then
   if command -v npm >/dev/null 2>&1; then
@@ -378,6 +406,7 @@ if [[ "$OPENCODE_MODE" == "yes" ]]; then
 fi
 
 sleep 2
+"${SUDO[@]}" systemctl is-active --quiet agent-ia-worker.service || fail "agent-ia-worker não iniciou"
 "${SUDO[@]}" systemctl is-active --quiet agent-ia-web.service || fail "agent-ia-web não iniciou"
 
 UI_PORT="$(awk -F= '$1=="AGENT_UI_PORT" {gsub(/["\r]/, "", $2); print $2; exit}' "$ENV_FILE")"
@@ -404,10 +433,13 @@ Arquivos protegidos:
   $OMNIROUTE_ENV
 
 Serviços:
-  sudo systemctl status agent-ia-infra omniroute agent-ia-web --no-pager -l
+  sudo systemctl status agent-ia-infra omniroute agent-ia-worker agent-ia-web --no-pager -l
 
 Logs da aplicação:
   sudo journalctl -u agent-ia-web -f
+
+Logs do worker:
+  sudo journalctl -u agent-ia-worker -f
 
 O instalador não grava a senha do sudo. Senhas SSH opcionais ficam somente no .env com modo 600.
 Para consultar ou trocar a senha inicial do OmniRoute, edite $OMNIROUTE_ENV com acesso administrativo.
