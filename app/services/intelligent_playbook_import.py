@@ -128,6 +128,36 @@ Documento:
 """
 
 
+def _as_string_list(
+    value: Any,
+    *,
+    item_limit: int,
+    limit: int = 30,
+    split_lines: bool = True,
+) -> list[str]:
+    """Normaliza lista ou texto único sem transformar uma string em caracteres."""
+    if value is None:
+        raw_items: list[Any] = []
+    elif isinstance(value, str):
+        raw_items = value.splitlines() if split_lines else [value]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = [value]
+
+    result: list[str] = []
+    for raw in raw_items:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        text = text[:item_limit]
+        if text not in result:
+            result.append(text)
+        if len(result) >= limit:
+            break
+    return result
+
+
 def _normalize_ai_result(payload: dict[str, Any], filename: str) -> dict[str, Any]:
     title = str(payload.get("title") or Path(filename).stem or "Playbook importado").strip()[:160]
     playbook_id = _slug(str(payload.get("id") or title))[:64]
@@ -135,12 +165,17 @@ def _normalize_ai_result(payload: dict[str, Any], filename: str) -> dict[str, An
         priority = max(0, min(999, int(payload.get("priority", 20))))
     except (TypeError, ValueError):
         priority = 20
-    profiles = _safe_profiles([str(item) for item in (payload.get("profiles") or ["any"])])
-    patterns = _safe_patterns([str(item) for item in (payload.get("patterns") or [])])
+
+    profiles = _safe_profiles(
+        _as_string_list(payload.get("profiles") or ["any"], item_limit=64)
+    )
+    patterns = _safe_patterns(
+        _as_string_list(payload.get("patterns") or [], item_limit=500)
+    )
     steps_raw = payload.get("steps") or []
     steps_yaml = yaml.safe_dump(steps_raw, allow_unicode=True, sort_keys=False, width=110)
     validated_steps = _parse_steps(steps_yaml)
-    warnings = [str(item).strip()[:500] for item in (payload.get("import_warnings") or []) if str(item).strip()]
+
     return {
         "id": playbook_id,
         "title": title,
@@ -149,11 +184,11 @@ def _normalize_ai_result(payload: dict[str, Any], filename: str) -> dict[str, An
         "patterns": patterns,
         "steps_yaml": yaml.safe_dump(validated_steps, allow_unicode=True, sort_keys=False, width=110),
         "source_filename": Path(filename).name[:255],
-        "import_warnings": warnings,
+        "import_warnings": _as_string_list(payload.get("import_warnings"), item_limit=500),
         "extracted_summary": str(payload.get("extracted_summary") or "").strip()[:2000],
-        "required_inputs": [str(item).strip()[:120] for item in (payload.get("required_inputs") or []) if str(item).strip()][:30],
-        "safety_rules": [str(item).strip()[:300] for item in (payload.get("safety_rules") or []) if str(item).strip()][:30],
-        "validation_notes": [str(item).strip()[:300] for item in (payload.get("validation_notes") or []) if str(item).strip()][:30],
+        "required_inputs": _as_string_list(payload.get("required_inputs"), item_limit=120),
+        "safety_rules": _as_string_list(payload.get("safety_rules"), item_limit=300),
+        "validation_notes": _as_string_list(payload.get("validation_notes"), item_limit=300),
         "import_mode": "intelligent",
     }
 
