@@ -38,8 +38,8 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
         "execution-tracker.js", "product-polish.js", "investigation-flow.js", "correction-flow.js",
     ):
         assert f"/ui/assets/{asset}" in html
-    assert "v=1.21.0" in html
-    assert "v=1.18.0" not in html
+    assert "v=1.21.2" in html
+    assert "v=1.21.0" not in html
 
     assert 'id="analysis-modal"' in html
     assert 'id="attach-batch-file"' in html
@@ -69,6 +69,7 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert "playbook-editor-validations" in ux_script
     assert "playbook-import-log" in ux_script
     assert "import_warnings" in ux_script
+    assert 'typeof value === "string"' in ux_script
     assert "await response.text()" in api_script
     assert "JSON.parse" in api_script
 
