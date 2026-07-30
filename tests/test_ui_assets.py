@@ -78,7 +78,7 @@ def test_interface_references_compact_modal_batch_result_tool_and_settings_asset
     assert 'id="import-playbook"' in html
     assert 'id="import-playbook-file"' in html
     assert "seleção automática, manual ou nenhuma" not in html
-    assert "/ui/api/playbooks/import-preview" in ux_script
+    assert "/ui/api/playbooks/intelligent-import-preview" in ux_script
     assert "importPlaybookFile" in ux_script
     assert "playbook-import-warning" in ux_script
     assert "import_warnings" in ux_script
