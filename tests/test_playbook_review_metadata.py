@@ -38,7 +38,8 @@ def test_save_playbook_persists_review_metadata(tmp_path, monkeypatch) -> None:
     assert payload["summary"] == "Resumo editado pelo operador."
     assert payload["required_inputs"] == ["container_name"]
     assert payload["safety_rules"] == ["Não reiniciar servidor"]
-    assert payload["validation"] == ["Confirmar retorno da coleta"]
+    assert payload["validation"] == []
+    assert payload["validation_notes"] == ["Confirmar retorno da coleta"]
     assert payload["import_notes"] == ["Texto revisado manualmente"]
     assert payload["source"]["filename"] == "procedimento.pdf"
 
