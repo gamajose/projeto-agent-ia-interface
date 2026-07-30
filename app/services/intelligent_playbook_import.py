@@ -19,6 +19,7 @@ from app.services.tool_registry import describe_tools
 
 MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
 _ALLOWED_EXTENSIONS = {".yaml", ".yml", ".txt", ".md", ".docx", ".pdf"}
+_AUTO_SELECTIONS = {"", "auto", "automatic", "automatico", "automático", "default", "padrao", "padrão"}
 
 
 def _decode_payload(content_base64: str) -> bytes:
@@ -157,6 +158,13 @@ def _normalize_ai_result(payload: dict[str, Any], filename: str) -> dict[str, An
     }
 
 
+def _automatic_as_none(value: str | None) -> str | None:
+    normalized = str(value or "").strip()
+    if normalized.casefold() in _AUTO_SELECTIONS:
+        return None
+    return normalized
+
+
 def preview_intelligent_import(
     *,
     filename: str,
@@ -176,8 +184,10 @@ def preview_intelligent_import(
         except ValueError:
             pass
 
+    selected_provider = _automatic_as_none(provider)
+    selected_model = _automatic_as_none(model)
     try:
-        ai = get_provider(provider, settings=settings, model_name=model)
+        ai = get_provider(selected_provider, settings=settings, model_name=selected_model)
         result, metadata = ai.generate_json(_prompt(document, filename))
     except ProviderError:
         raise
@@ -186,8 +196,8 @@ def preview_intelligent_import(
 
     draft = _normalize_ai_result(result, filename)
     draft["ai_metadata"] = {
-        "provider": getattr(ai, "name", provider or "automático"),
-        "model": getattr(ai, "model", model or ""),
+        "provider": getattr(ai, "name", selected_provider or "automático"),
+        "model": getattr(ai, "model", selected_model or ""),
         **metadata,
     }
     return draft
