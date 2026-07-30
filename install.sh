@@ -8,6 +8,8 @@ APP_DIR=""
 NON_INTERACTIVE=false
 SKIP_DOCKER=false
 OPENCODE_MODE="ask"
+OLLAMA_MODE="${AGENT_INSTALL_OLLAMA:-true}"
+OLLAMA_MODEL="${AGENT_OLLAMA_MODEL:-auto}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 
 info() { printf '\033[1;34m[INFO]\033[0m %s\n' "$*"; }
@@ -32,10 +34,14 @@ Opções:
   --skip-docker           não instala Docker; exige Docker já funcional
   --with-opencode         prepara também o OpenCode integrado
   --without-opencode      não prepara o OpenCode
+  --with-ollama           instala Ollama e um Llama local; padrão
+  --without-ollama        não instala Ollama/modelo local
+  --ollama-model MODELO   modelo local; padrão auto (1B ou 3B conforme RAM)
   --help                  mostra esta ajuda
 
 Variáveis equivalentes:
-  AGENT_INSTALL_ROOT, AGENT_REPO_URL, AGENT_REPO_REF e PYTHON_BIN
+  AGENT_INSTALL_ROOT, AGENT_REPO_URL, AGENT_REPO_REF, PYTHON_BIN,
+  AGENT_INSTALL_OLLAMA e AGENT_OLLAMA_MODEL
 EOF
 }
 
@@ -48,6 +54,9 @@ while (($#)); do
     --skip-docker) SKIP_DOCKER=true ;;
     --with-opencode) OPENCODE_MODE="yes" ;;
     --without-opencode) OPENCODE_MODE="no" ;;
+    --with-ollama) OLLAMA_MODE="true" ;;
+    --without-ollama) OLLAMA_MODE="false" ;;
+    --ollama-model) shift; [[ $# -gt 0 ]] || fail "informe o modelo após --ollama-model"; OLLAMA_MODEL="$1" ;;
     --help|-h) usage; exit 0 ;;
     *) fail "opção desconhecida: $1" ;;
   esac
@@ -200,6 +209,117 @@ repository_clean() {
     && as_target git -C "$APP_DIR" diff --cached --quiet --
 }
 
+port_available() {
+  "$PYTHON_BIN" - "$1" <<'PY' >/dev/null 2>&1
+import socket
+import sys
+
+port = int(sys.argv[1])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    sock.bind(("0.0.0.0", port))
+except OSError:
+    raise SystemExit(1)
+finally:
+    sock.close()
+PY
+}
+
+read_ui_port() {
+  local env_file="$APP_DIR/.env" value=""
+  if [[ -f "$env_file" ]]; then
+    value="$(awk -F= '$1=="AGENT_UI_PORT" {gsub(/["\r]/, "", $2); print $2; exit}' "$env_file")"
+  fi
+  [[ "$value" =~ ^[0-9]+$ ]] || value=8080
+  printf '%s' "$value"
+}
+
+write_ui_port() {
+  local port="$1" env_file="$APP_DIR/.env"
+  "${SUDO[@]}" env AGENT_UI_ENV_FILE="$env_file" AGENT_UI_SELECTED_PORT="$port" \
+    "$PYTHON_BIN" - <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import tempfile
+from pathlib import Path
+
+path = Path(os.environ["AGENT_UI_ENV_FILE"])
+port = os.environ["AGENT_UI_SELECTED_PORT"]
+path.parent.mkdir(parents=True, exist_ok=True)
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+positions: dict[str, int] = {}
+for index, raw in enumerate(lines):
+    if "=" not in raw or raw.lstrip().startswith("#"):
+        continue
+    key = raw.split("=", 1)[0].strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        positions[key] = index
+
+rendered = f"AGENT_UI_PORT={port}"
+if "AGENT_UI_PORT" in positions:
+    lines[positions["AGENT_UI_PORT"]] = rendered
+else:
+    lines.append(rendered)
+
+fd, temporary = tempfile.mkstemp(prefix=".env.port.", dir=path.parent, text=True)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines).rstrip() + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+    os.chmod(path, 0o600)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+  "${SUDO[@]}" chown "$TARGET_USER:$TARGET_GROUP" "$env_file"
+  "${SUDO[@]}" chmod 600 "$env_file"
+}
+
+prepare_ui_port() {
+  local requested candidate limit
+  "${SUDO[@]}" systemctl stop agent-ia-web.service >/dev/null 2>&1 || true
+  requested="$(read_ui_port)"
+
+  if port_available "$requested"; then
+    return
+  fi
+
+  candidate=$((requested + 1))
+  limit=$((requested + 20))
+  while ((candidate <= limit && candidate <= 65535)); do
+    if port_available "$candidate"; then
+      warn "a porta $requested já está ocupada por outro processo; a interface usará $candidate"
+      write_ui_port "$candidate"
+      return
+    fi
+    candidate=$((candidate + 1))
+  done
+
+  fail "não foi encontrada uma porta livre entre $requested e $limit para a interface"
+}
+
+wait_ui() {
+  local port elapsed=0 code
+  port="$(read_ui_port)"
+  while ((elapsed < 60)); do
+    code="$(curl -sS --max-time 4 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/ui" 2>/dev/null || true)"
+    if [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
+      info "Interface validada em http://127.0.0.1:$port/ui"
+      return
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  "${SUDO[@]}" systemctl status agent-ia-web.service --no-pager -l || true
+  fail "a interface não respondeu na porta $port após 60 segundos"
+}
+
 install_bootstrap_packages
 ensure_supported_python
 "${SUDO[@]}" mkdir -p "$INSTALL_ROOT"
@@ -230,6 +350,8 @@ if [[ -n "$SOURCE_ENV" && ! -f "$APP_DIR/.env" ]]; then
   "${SUDO[@]}" install -o "$TARGET_USER" -g "$TARGET_GROUP" -m 600 "$SOURCE_ENV" "$APP_DIR/.env"
 fi
 
+prepare_ui_port
+
 args=(--install-root "$INSTALL_ROOT" --user "$TARGET_USER")
 $NON_INTERACTIVE && args+=(--non-interactive)
 $SKIP_DOCKER && args+=(--skip-docker)
@@ -238,10 +360,21 @@ $SKIP_DOCKER && args+=(--skip-docker)
 
 bash "$APP_DIR/scripts/install_all.sh" "${args[@]}"
 
+case "${OLLAMA_MODE,,}" in
+  1|true|yes|sim|s)
+    info "Preparando IA local com Ollama"
+    bash "$APP_DIR/scripts/setup_ollama.sh" --install-root "$INSTALL_ROOT" --model "$OLLAMA_MODEL"
+    ;;
+  *)
+    warn "instalação do Ollama foi desativada por configuração"
+    ;;
+esac
+
 # Uma instalação anterior pode manter o processo web ativo no caminho antigo.
-# Reiniciar somente esta unidade faz o systemd carregar WorkingDirectory e
-# ExecStart já gravados para a nova raiz, sem reiniciar host ou containers.
+# Reiniciar somente esta unidade faz o systemd carregar WorkingDirectory,
+# ExecStart, porta e configuração de IA da nova raiz.
 info "Ativando a interface a partir de $APP_DIR"
 "${SUDO[@]}" systemctl restart agent-ia-web.service
 "${SUDO[@]}" systemctl is-active --quiet agent-ia-web.service \
   || fail "agent-ia-web não permaneceu ativo após a migração"
+wait_ui
