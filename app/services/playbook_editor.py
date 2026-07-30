@@ -141,7 +141,8 @@ def save_playbook(
         "safety_rules": _safe_text_list(safety_rules, item_limit=400),
         "steps": _parse_steps(steps_yaml),
         "allowed_corrections": [],
-        "validation": _safe_text_list(validation_notes, item_limit=400),
+        "validation": [],
+        "validation_notes": _safe_text_list(validation_notes, item_limit=400),
         "import_notes": _safe_text_list(import_notes, item_limit=500),
     }
     if source_filename:
