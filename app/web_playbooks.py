@@ -63,6 +63,12 @@ def import_playbook_preview(payload: PlaybookImportPayload, request: Request) ->
         draft = preview_imported_playbook(payload.content, filename=payload.filename)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        raise HTTPException(
+            status_code=500,
+            detail=f"não foi possível processar o YAML importado: {detail[:500]}",
+        ) from exc
     return {
         "draft": draft,
         "message": "Playbook importado para revisão. Nenhum arquivo foi salvo ainda.",
