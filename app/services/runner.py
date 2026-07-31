@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ipaddress
-import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +12,7 @@ from app.services.persistence import resolve_saved_target
 from app.services.playbooks import selected_playbook_ssh_port, use_playbook
 from app.services.provider_preflight import require_selected_provider
 from app.services.provider_router import ProviderResolution, resolve_automatic_provider
+from app.services.runtime_env import runtime_bool, runtime_int, runtime_value
 from app.services.secrets import get_secret
 from app.services.ssh import SSHExecutor
 from app.services.vpn_menu_ssh import VPNMenuSSHExecutor
@@ -81,24 +81,11 @@ def _validate_ssh_port(value: Any, source: str) -> int | None:
     return port
 
 
-def _env_int(name: str, default: int, *, minimum: int = 1, maximum: int = 65535) -> int:
-    raw = str(os.getenv(name, "") or "").strip()
-    if not raw:
-        return int(default)
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} precisa ser um número inteiro") from exc
-    if not minimum <= value <= maximum:
-        raise ValueError(f"{name} precisa estar entre {minimum} e {maximum}")
-    return value
-
-
 def _ssh_access_mode(settings: Settings) -> str:
     configured = str(
-        os.getenv("SSH_ACCESS_MODE")
-        or os.getenv("SSH_BASTION_MODE")
-        or os.getenv("SSH_VPN_ACCESS_MODE")
+        runtime_value("SSH_ACCESS_MODE", "", settings=settings)
+        or runtime_value("SSH_BASTION_MODE", "", settings=settings)
+        or runtime_value("SSH_VPN_ACCESS_MODE", "", settings=settings)
         or ""
     ).strip().casefold()
     if configured in {"direct", "direct-tcpip", "tcp", "jump"}:
@@ -143,18 +130,36 @@ def build_executor(target: ResolvedTarget, *, settings: Settings | None = None) 
         ),
     }
     if settings.ssh_bastion_host and _ssh_access_mode(settings) == "vpn_menu":
+        firewall_password = runtime_value("SSH_FIREWALL_PF_PASSWORD", None, settings=settings)
         return VPNMenuSSHExecutor(
             **common,
-            vpn_command=os.getenv("SSH_VPN_COMMAND", "vpn {host}"),
-            vpn_menu_timeout=_env_int("SSH_VPN_MENU_TIMEOUT", 45, minimum=10, maximum=300),
-            firewall_user=os.getenv("SSH_FIREWALL_PF_USER", "root").strip() or "root",
-            firewall_password=get_secret(
-                "SSH_FIREWALL_PF_PASSWORD",
-                os.getenv("SSH_FIREWALL_PF_PASSWORD"),
+            vpn_command=str(runtime_value("SSH_VPN_COMMAND", "vpn {host}", settings=settings) or "vpn {host}"),
+            vpn_menu_timeout=runtime_int(
+                "SSH_VPN_MENU_TIMEOUT",
+                45,
+                minimum=10,
+                maximum=300,
                 settings=settings,
             ),
-            firewall_port=_env_int("SSH_FIREWALL_PF_PORT", 2224),
-            firewall_shell_option=_env_int("SSH_FIREWALL_PF_SHELL_OPTION", 8, minimum=0, maximum=99),
+            accept_new_target_host_keys=runtime_bool(
+                "SSH_VPN_ACCEPT_NEW_HOST_KEYS",
+                not settings.ssh_strict_host_key_checking,
+                settings=settings,
+            ),
+            firewall_user=str(runtime_value("SSH_FIREWALL_PF_USER", "root", settings=settings) or "root").strip() or "root",
+            firewall_password=get_secret(
+                "SSH_FIREWALL_PF_PASSWORD",
+                str(firewall_password) if firewall_password is not None else None,
+                settings=settings,
+            ),
+            firewall_port=runtime_int("SSH_FIREWALL_PF_PORT", 2224, settings=settings),
+            firewall_shell_option=runtime_int(
+                "SSH_FIREWALL_PF_SHELL_OPTION",
+                8,
+                minimum=0,
+                maximum=99,
+                settings=settings,
+            ),
         )
     return SSHExecutor(**common)
 
