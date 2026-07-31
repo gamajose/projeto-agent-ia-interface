@@ -3,6 +3,8 @@ from unittest.mock import MagicMock, patch
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings
 from app.services.runner import ResolvedTarget, build_executor
+from app.services.ssh import SSHExecutor
+from app.services.vpn_menu_ssh import VPNMenuSSHExecutor
 
 
 def _settings_from_legacy_vpn_env(monkeypatch) -> Settings:
@@ -16,6 +18,16 @@ def _settings_from_legacy_vpn_env(monkeypatch) -> Settings:
     return Settings(_env_file=None)
 
 
+def _target() -> ResolvedTarget:
+    return ResolvedTarget(
+        reference="cliente-vpn",
+        host="172.27.232.205",
+        port=22,
+        environment=EnvironmentType.PRODUCTION,
+        inventory=None,
+    )
+
+
 def test_legacy_vpn_environment_names_configure_bastion(monkeypatch):
     settings = _settings_from_legacy_vpn_env(monkeypatch)
 
@@ -25,16 +37,32 @@ def test_legacy_vpn_environment_names_configure_bastion(monkeypatch):
     assert settings.ssh_bastion_password == "vpn-password"
 
 
-def test_runner_opens_client_connection_through_vpn_server(monkeypatch):
+def test_legacy_vpn_environment_uses_interactive_menu_by_default(monkeypatch):
     settings = _settings_from_legacy_vpn_env(monkeypatch)
-    target = ResolvedTarget(
-        reference="cliente-vpn",
-        host="172.27.232.205",
-        port=22,
-        environment=EnvironmentType.PRODUCTION,
-        inventory=None,
-    )
-    executor = build_executor(target, settings=settings)
+    monkeypatch.setenv("SSH_FIREWALL_PF_USER", "root")
+    monkeypatch.setenv("SSH_FIREWALL_PF_PASSWORD", "pf-password")
+    monkeypatch.setenv("SSH_FIREWALL_PF_PORT", "2224")
+
+    executor = build_executor(_target(), settings=settings)
+
+    assert isinstance(executor, VPNMenuSSHExecutor)
+    assert executor.bastion_host == "10.17.181.1"
+    assert executor.bastion_user == "jose.moraes"
+    assert executor.bastion_password == "vpn-password"
+    assert executor.username == "2com"
+    assert executor.password == "client-password"
+    assert executor.firewall_user == "root"
+    assert executor.firewall_password == "pf-password"
+    assert executor.firewall_port == 2224
+
+
+def test_direct_tcpip_remains_available_when_explicit(monkeypatch):
+    settings = _settings_from_legacy_vpn_env(monkeypatch)
+    monkeypatch.setenv("SSH_ACCESS_MODE", "direct")
+    executor = build_executor(_target(), settings=settings)
+
+    assert isinstance(executor, SSHExecutor)
+    assert not isinstance(executor, VPNMenuSSHExecutor)
 
     bastion_client = MagicMock()
     target_client = MagicMock()
@@ -50,16 +78,10 @@ def test_runner_opens_client_connection_through_vpn_server(monkeypatch):
     ):
         executor.connect()
 
-    assert bastion_client.connect.call_args.kwargs["hostname"] == "10.17.181.1"
-    assert bastion_client.connect.call_args.kwargs["username"] == "jose.moraes"
-    assert bastion_client.connect.call_args.kwargs["password"] == "vpn-password"
     transport.open_channel.assert_called_once_with(
         "direct-tcpip",
         ("172.27.232.205", 22),
         ("127.0.0.1", 0),
         timeout=settings.ssh_connect_timeout,
     )
-    assert target_client.connect.call_args.kwargs["hostname"] == "172.27.232.205"
-    assert target_client.connect.call_args.kwargs["username"] == "2com"
-    assert target_client.connect.call_args.kwargs["password"] == "client-password"
     assert target_client.connect.call_args.kwargs["sock"] is channel
