@@ -121,6 +121,7 @@ jobs:
         run: |
           bash -n deploy/scripts/deploy_release.sh
           bash deploy/scripts/deploy_release.sh --help >/dev/null
+          bash -n deploy/scripts/bootstrap_opencode.sh
 
       - name: Executar testes
         run: pytest -q --junitxml=pytest-results.xml
@@ -177,7 +178,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Criar e publicar tag
+      - name: Criar ou validar tag
         shell: bash
         run: |
           VERSION="$(python - <<'PY'
@@ -189,7 +190,12 @@ jobs:
           TAG="v$VERSION"
           git fetch --tags --force
           if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "::error::A tag $TAG já existe. O merge exige uma nova versão."
+            TAG_SHA="$(git rev-list -n 1 "$TAG")"
+            if [ "$TAG_SHA" = "$RELEASE_SHA" ]; then
+              echo "A tag $TAG já aponta para a release aprovada; continuando."
+              exit 0
+            fi
+            echo "::error::A tag $TAG já existe e aponta para $TAG_SHA, não para $RELEASE_SHA."
             exit 1
           fi
           git config user.name "github-actions[bot]"
@@ -228,3 +234,11 @@ jobs:
           AGENT_DEPLOY_APPROVED_SHA: ${{ env.RELEASE_SHA }}
           AGENT_RELEASE_SHA: ${{ env.RELEASE_SHA }}
         run: bash deploy/scripts/deploy_release.sh --activate
+
+      - name: Instalar e configurar OpenCode integrado
+        env:
+          AGENT_APP_ROOT: /home/jose/agent-ia-production/current
+          AGENT_ENV_FILE: /home/jose/.config/agent-ia/production.env
+          AGENT_VENV: /home/jose/agent-ia-production/current/.venv
+          AGENT_HEALTH_URL: http://127.0.0.1:8080/health
+        run: bash deploy/scripts/bootstrap_opencode.sh
