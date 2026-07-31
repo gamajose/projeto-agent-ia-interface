@@ -12,7 +12,7 @@ from app.services.persistence import resolve_saved_target
 from app.services.playbooks import selected_playbook_ssh_port, use_playbook
 from app.services.provider_preflight import require_selected_provider
 from app.services.provider_router import ProviderResolution, resolve_automatic_provider
-from app.services.runtime_env import runtime_bool, runtime_int, runtime_value
+from app.services.runtime_env import runtime_int, runtime_value
 from app.services.secrets import get_secret
 from app.services.ssh import SSHExecutor
 from app.services.vpn_menu_ssh import VPNMenuSSHExecutor
@@ -92,7 +92,6 @@ def _ssh_access_mode(settings: Settings) -> str:
         return "direct"
     if configured in {"vpn", "vpn-menu", "vpn_menu", "menu", "interactive"}:
         return "vpn_menu"
-    # Os nomes legados SSH_SRV_VPN_* representam o Monitor 1 com o menu `vpn`.
     return "vpn_menu" if settings.ssh_bastion_host else "direct"
 
 
@@ -139,11 +138,6 @@ def build_executor(target: ResolvedTarget, *, settings: Settings | None = None) 
                 45,
                 minimum=10,
                 maximum=300,
-                settings=settings,
-            ),
-            accept_new_target_host_keys=runtime_bool(
-                "SSH_VPN_ACCEPT_NEW_HOST_KEYS",
-                not settings.ssh_strict_host_key_checking,
                 settings=settings,
             ),
             firewall_user=str(runtime_value("SSH_FIREWALL_PF_USER", "root", settings=settings) or "root").strip() or "root",
