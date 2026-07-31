@@ -2,6 +2,8 @@
 
 set -Eeuo pipefail
 
+trap 'status=$?; echo "[opencode-deploy] ERRO na linha ${BASH_LINENO[0]} (código ${status})." >&2; exit "$status"' ERR
+
 log() {
   printf '[opencode-deploy] %s\n' "$*"
 }
@@ -52,7 +54,7 @@ find_node_bin() {
 
 NODE_BIN_DIR="$(find_node_bin || true)"
 [[ -n "$NODE_BIN_DIR" ]] || fail "Node.js e npm não foram encontrados para o usuário $(id -un)"
-export PATH="$NODE_BIN_DIR:$PATH"
+export PATH="$HOME/.local/bin:$NODE_BIN_DIR:$PATH"
 hash -r
 
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || printf '0')"
@@ -60,13 +62,28 @@ NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null 
   || fail "OpenCode requer Node.js 20 ou superior; encontrado: $(node --version 2>/dev/null || echo desconhecido)"
 
 log "Node.js detectado: $(node --version)"
+log "autorizando postinstall do pacote opencode-ai"
+npm config set allow-scripts=opencode-ai --location=user >/dev/null
 log "instalando ou atualizando opencode-ai"
-npm install -g opencode-ai@latest
+npm install -g --allow-scripts=opencode-ai opencode-ai@latest
+hash -r
 
+NPM_PREFIX="$(npm prefix -g 2>/dev/null || true)"
 OPENCODE_BIN="$(command -v opencode || true)"
+for candidate in \
+  "$OPENCODE_BIN" \
+  "${NPM_PREFIX:+${NPM_PREFIX}/bin/opencode}" \
+  "$HOME/.local/bin/opencode"; do
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    OPENCODE_BIN="$(readlink -f "$candidate" 2>/dev/null || printf '%s' "$candidate")"
+    break
+  fi
+done
+
 [[ -n "$OPENCODE_BIN" && -x "$OPENCODE_BIN" ]] \
   || fail "o executável opencode não foi localizado após a instalação"
-OPENCODE_VERSION="$($OPENCODE_BIN --version 2>&1 | head -n 1)"
+OPENCODE_VERSION="$($OPENCODE_BIN --version 2>&1 | head -n 1 || true)"
+[[ -n "$OPENCODE_VERSION" ]] || fail "o OpenCode não respondeu ao comando --version"
 log "OpenCode detectado: $OPENCODE_VERSION em $OPENCODE_BIN"
 
 export APP_ROOT ENV_FILE OPENCODE_BIN HOME
