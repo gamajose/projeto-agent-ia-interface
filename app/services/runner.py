@@ -12,8 +12,10 @@ from app.services.persistence import resolve_saved_target
 from app.services.playbooks import selected_playbook_ssh_port, use_playbook
 from app.services.provider_preflight import require_selected_provider
 from app.services.provider_router import ProviderResolution, resolve_automatic_provider
+from app.services.runtime_env import runtime_int, runtime_value
 from app.services.secrets import get_secret
 from app.services.ssh import SSHExecutor
+from app.services.vpn_menu_ssh import VPNMenuSSHExecutor
 
 
 @dataclass(frozen=True)
@@ -79,39 +81,81 @@ def _validate_ssh_port(value: Any, source: str) -> int | None:
     return port
 
 
+def _ssh_access_mode(settings: Settings) -> str:
+    configured = str(
+        runtime_value("SSH_ACCESS_MODE", "", settings=settings)
+        or runtime_value("SSH_BASTION_MODE", "", settings=settings)
+        or runtime_value("SSH_VPN_ACCESS_MODE", "", settings=settings)
+        or ""
+    ).strip().casefold()
+    if configured in {"direct", "direct-tcpip", "tcp", "jump"}:
+        return "direct"
+    if configured in {"vpn", "vpn-menu", "vpn_menu", "menu", "interactive"}:
+        return "vpn_menu"
+    return "vpn_menu" if settings.ssh_bastion_host else "direct"
+
+
 def build_executor(target: ResolvedTarget, *, settings: Settings | None = None) -> SSHExecutor:
     settings = settings or get_settings()
-    return SSHExecutor(
-        target.host,
-        target.port,
-        settings.ssh_default_user,
-        get_secret("SSH_DEFAULT_PASSWORD", settings.ssh_default_password, settings=settings),
-        settings.ssh_connect_timeout,
-        private_key_path=settings.ssh_private_key_path,
-        private_key_passphrase=get_secret(
+    common: dict[str, Any] = {
+        "host": target.host,
+        "port": target.port,
+        "username": settings.ssh_default_user,
+        "password": get_secret("SSH_DEFAULT_PASSWORD", settings.ssh_default_password, settings=settings),
+        "connect_timeout": settings.ssh_connect_timeout,
+        "private_key_path": settings.ssh_private_key_path,
+        "private_key_passphrase": get_secret(
             "SSH_PRIVATE_KEY_PASSPHRASE",
             settings.ssh_private_key_passphrase,
             settings=settings,
         ),
-        allow_agent=settings.ssh_allow_agent,
-        look_for_keys=settings.ssh_look_for_keys,
-        strict_host_key_checking=settings.ssh_strict_host_key_checking,
-        known_hosts_path=settings.ssh_known_hosts_path,
-        bastion_host=settings.ssh_bastion_host,
-        bastion_port=settings.ssh_bastion_port,
-        bastion_user=settings.ssh_bastion_user,
-        bastion_password=get_secret(
+        "allow_agent": settings.ssh_allow_agent,
+        "look_for_keys": settings.ssh_look_for_keys,
+        "strict_host_key_checking": settings.ssh_strict_host_key_checking,
+        "known_hosts_path": settings.ssh_known_hosts_path,
+        "bastion_host": settings.ssh_bastion_host,
+        "bastion_port": settings.ssh_bastion_port,
+        "bastion_user": settings.ssh_bastion_user,
+        "bastion_password": get_secret(
             "SSH_BASTION_PASSWORD",
             settings.ssh_bastion_password,
             settings=settings,
         ),
-        bastion_private_key_path=settings.ssh_bastion_private_key_path,
-        bastion_private_key_passphrase=get_secret(
+        "bastion_private_key_path": settings.ssh_bastion_private_key_path,
+        "bastion_private_key_passphrase": get_secret(
             "SSH_BASTION_PRIVATE_KEY_PASSPHRASE",
             settings.ssh_bastion_private_key_passphrase,
             settings=settings,
         ),
-    )
+    }
+    if settings.ssh_bastion_host and _ssh_access_mode(settings) == "vpn_menu":
+        firewall_password = runtime_value("SSH_FIREWALL_PF_PASSWORD", None, settings=settings)
+        return VPNMenuSSHExecutor(
+            **common,
+            vpn_command=str(runtime_value("SSH_VPN_COMMAND", "vpn {host}", settings=settings) or "vpn {host}"),
+            vpn_menu_timeout=runtime_int(
+                "SSH_VPN_MENU_TIMEOUT",
+                45,
+                minimum=10,
+                maximum=300,
+                settings=settings,
+            ),
+            firewall_user=str(runtime_value("SSH_FIREWALL_PF_USER", "root", settings=settings) or "root").strip() or "root",
+            firewall_password=get_secret(
+                "SSH_FIREWALL_PF_PASSWORD",
+                str(firewall_password) if firewall_password is not None else None,
+                settings=settings,
+            ),
+            firewall_port=runtime_int("SSH_FIREWALL_PF_PORT", 2224, settings=settings),
+            firewall_shell_option=runtime_int(
+                "SSH_FIREWALL_PF_SHELL_OPTION",
+                8,
+                minimum=0,
+                maximum=99,
+                settings=settings,
+            ),
+        )
+    return SSHExecutor(**common)
 
 
 def _explicit_provider_resolution(
@@ -161,6 +205,8 @@ def _automation_summary(
     proposed_actions = list((result.get("analysis") or {}).get("proposed_actions") or [])
     approval_token = result.get("approval_token")
     intelligence = result.get("intelligence") or {}
+    connection = dict(result.get("connection") or {})
+    connection_port = int(connection.get("ssh_port") or target.port)
     return {
         "mode": "safe_autopilot" if selection.automatic else "guided",
         "status": "completed",
@@ -168,8 +214,9 @@ def _automation_summary(
         "connection": {
             "target": target.reference,
             "resolved_host": target.host,
-            "port": target.port,
+            "port": connection_port,
             "through_bastion": bool(get_settings().ssh_bastion_host),
+            **connection,
         },
         "environment": environment,
         "playbook": {
@@ -189,8 +236,16 @@ def _automation_summary(
         "phases": [
             {"name": "provider_selection", "status": "completed", "detail": selection.detail},
             {"name": "mission_interpretation", "status": "completed", "detail": "Objetivo convertido em missão e critérios verificáveis."},
-            {"name": "target_resolution", "status": "completed", "detail": f"{target.host}:{target.port}"},
-            {"name": "ssh_access", "status": "completed", "detail": "Acesso autenticado e chave de host validada."},
+            {"name": "target_resolution", "status": "completed", "detail": f"{target.host}:{connection_port}"},
+            {
+                "name": "ssh_access",
+                "status": "completed",
+                "detail": (
+                    f"Acesso via menu VPN: {connection.get('client_name')}."
+                    if connection.get("client_name")
+                    else "Acesso autenticado e chave de host validada."
+                ),
+            },
             {"name": "environment_classification", "status": "completed", "detail": environment},
             {"name": "adaptive_reasoning", "status": "completed", "detail": "Planejamento, execução, observação, reflexão e replanejamento."},
             {"name": "evidence_collection", "status": "completed", "detail": f"{evidence_count} evidência(s) coletada(s)."},
@@ -270,6 +325,7 @@ def run_target(
                 mode=effective_mode,
                 approve=effective_approve,
             )
+            result["connection"] = dict(getattr(executor, "connection_metadata", {}) or {})
         finally:
             executor.close()
 

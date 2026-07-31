@@ -1,9 +1,9 @@
 name: vpn-access-inventory
-version: 2
-description: Inventário declarativo para acesso manual e auditável ao servidor que controla as VPNs.
+version: 3
+description: Inventário declarativo para acesso automatizado e auditável pelo menu VPN do Monitor 1.
 safety:
-  connect_automatically: false
-  execute_remote_commands: false
+  connect_automatically: true
+  execute_remote_commands: read_only
   access_localhost: false
   print_secrets: false
 target:
@@ -16,10 +16,17 @@ target:
 workflow:
   - validate_required_environment
   - connect_to_vpn_control_server
-  - open_direct_tcpip_channel_to_client_vpn_ip
-  - authenticate_on_client_server
+  - execute_vpn_command_with_target_ip
+  - parse_client_inventory_and_select_matching_line
+  - confirm_client_access
+  - authenticate_with_target_specific_credentials
+  - enter_pfsense_shell_option_8_when_required
   - collect_only_operator_approved_read_only_evidence
 notes:
-  - O Agent entra primeiro no servidor de controle das VPNs e abre a conexão ao IP VPN do cliente por esse canal SSH.
-  - A senha permanece exclusivamente no ambiente e nunca deve ser registrada em logs.
-  - Os aliases SSH_BASTION_* continuam aceitos para compatibilidade.
+  - O Agent entra primeiro no Monitor 1 e executa `vpn <IP>` no terminal interativo.
+  - A linha é escolhida pelo IP, sem assumir que o cliente estará sempre na posição 1.
+  - Servidores usam SSH_DEFAULT_USER e SSH_DEFAULT_PASSWORD.
+  - pfSense usa SSH_FIREWALL_PF_USER, SSH_FIREWALL_PF_PASSWORD e seleciona a opção 8 para abrir o shell.
+  - O nome retornado em NOME_CLIENTE é salvo como nome exibido no inventário e no histórico.
+  - Senhas permanecem exclusivamente no ambiente e nunca são registradas nos logs.
+  - SSH_ACCESS_MODE=direct preserva o salto direct-tcpip em ambientes que realmente usam um bastion convencional.
