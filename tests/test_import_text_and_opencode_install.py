@@ -57,8 +57,14 @@ def test_installer_enables_opencode_and_supports_nvm() -> None:
     assert 'bash "$APP_DIR/scripts/setup_opencode.sh"' in full_installer
     assert ".nvm/versions/node" in setup
     assert "NODE_MAJOR" in setup
-    assert "npm install -g opencode-ai@latest" in setup
-    assert "npm install -g opencode-ai@latest" in deploy_bootstrap
+    assert "allow-scripts=opencode-ai" in setup
+    assert "--allow-scripts=opencode-ai" in setup
+    assert "npm prefix -g" in setup
+    assert '"OPENCODE_ENABLED": "true"' in setup
+    assert "Falha ao configurar o OpenCode na linha" in setup
+    assert "allow-scripts=opencode-ai" in deploy_bootstrap
+    assert "--allow-scripts=opencode-ai" in deploy_bootstrap
+    assert "npm prefix -g" in deploy_bootstrap
     assert '"OPENCODE_ENABLED": "true"' in deploy_bootstrap
     assert "systemctl --user restart agent-ia-api.service" in deploy_bootstrap
     assert "Instalar e configurar OpenCode integrado" in workflow
