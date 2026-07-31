@@ -77,6 +77,56 @@ def test_learn_result_inventory_records_resolved_host(monkeypatch) -> None:
     }
 
 
+def test_vpn_client_name_becomes_display_name_and_updates_history(monkeypatch) -> None:
+    captured = {}
+    synced = {}
+
+    def fake_upsert(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            id="host-vpn",
+            vpn_ip=kwargs["vpn_ip"],
+            ssh_port=kwargs["ssh_port"],
+            hostname=kwargs["hostname"],
+            environment=kwargs["environment"],
+        )
+
+    def fake_sync(vpn_ip: str, client_name: str) -> int:
+        synced.update({"vpn_ip": vpn_ip, "client_name": client_name})
+        return 3
+
+    monkeypatch.setattr(inventory_learning, "ensure_database_schema", lambda: [])
+    monkeypatch.setattr(inventory_learning, "_upsert_host", fake_upsert)
+    monkeypatch.setattr(inventory_learning, "_sync_investigation_display_name", fake_sync)
+
+    learned = inventory_learning.learn_result_inventory(
+        {
+            "target": "172.27.232.109",
+            "hostname": "2com-monitor",
+            "profile": "checkmk",
+            "identity": {
+                "hostname": "2com-monitor",
+                "os_name": "Oracle Linux 8",
+            },
+            "connection": {
+                "mode": "vpn_menu",
+                "client_name": "HOTBEL MONITOR",
+                "ssh_port": 22,
+            },
+            "environment_classification": {"environment": "monitoring"},
+        },
+        resolved_host="172.27.232.109",
+        ssh_port=22,
+        settings=_settings(),
+    )
+
+    assert captured["hostname"] == "HOTBEL MONITOR"
+    assert learned["client_name"] == "HOTBEL MONITOR"
+    assert learned["system_hostname"] == "2com-monitor"
+    assert learned["history_updated"] == 3
+    assert synced == {"vpn_ip": "172.27.232.109", "client_name": "HOTBEL MONITOR"}
+
+
 def test_learning_failure_is_returned_without_raising(monkeypatch) -> None:
     monkeypatch.setattr(inventory_learning, "ensure_database_schema", lambda: [])
     monkeypatch.setattr(
