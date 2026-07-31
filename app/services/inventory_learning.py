@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.settings import Settings, get_settings
@@ -67,6 +67,32 @@ def _internal_ips(identity: dict[str, Any]) -> list[str]:
         if normalized not in result:
             result.append(normalized)
     return result
+
+
+def _connection_client_name(result: dict[str, Any]) -> str:
+    connection = dict(result.get("connection") or {})
+    if not connection:
+        connection = dict((result.get("automation") or {}).get("connection") or {})
+    return _clean_text(connection.get("client_name"), 255)
+
+
+def _sync_investigation_display_name(vpn_ip: str, client_name: str) -> int:
+    """Atualiza o histórico antigo do mesmo IP com o nome vindo do menu VPN."""
+    if not vpn_ip or not client_name:
+        return 0
+    with SessionLocal() as session:
+        result = session.execute(
+            update(InvestigationORM)
+            .where(
+                or_(
+                    InvestigationORM.target == vpn_ip,
+                    InvestigationORM.target.like(f"{vpn_ip}:%"),
+                )
+            )
+            .values(hostname=client_name)
+        )
+        session.commit()
+        return int(result.rowcount or 0)
 
 
 def _upsert_host(
@@ -135,31 +161,40 @@ def learn_result_inventory(
     ensure_database_schema()
     identity = dict(result.get("identity") or {})
     connection = dict((result.get("automation") or {}).get("connection") or {})
+    if not connection:
+        connection = dict(result.get("connection") or {})
     classification = dict(result.get("environment_classification") or {})
     candidate = str(resolved_host or connection.get("resolved_host") or result.get("target") or "").strip()
     parsed_host, parsed_port = _extract_host_port(candidate, int(ssh_port or connection.get("port") or settings.ssh_default_port))
     host = parsed_host or candidate
-    port = int(ssh_port or connection.get("port") or parsed_port or settings.ssh_default_port)
+    port = int(ssh_port or connection.get("ssh_port") or connection.get("port") or parsed_port or settings.ssh_default_port)
     if not host:
         return {"saved": False, "detail": "O endereço resolvido do alvo não estava disponível."}
 
+    client_name = _connection_client_name(result)
+    system_hostname = _clean_text(identity.get("hostname") or result.get("hostname"), 255)
+    display_name = client_name or system_hostname or host
     try:
         row = _upsert_host(
             vpn_ip=host,
             ssh_port=port,
-            hostname=str(identity.get("hostname") or result.get("hostname") or host),
+            hostname=display_name,
             os_name=str(identity.get("os_name") or "desconhecido"),
             environment=str(classification.get("environment") or result.get("environment") or "unknown"),
             host_type=str(result.get("profile") or "server"),
             internal_ips=_internal_ips(identity),
         )
+        history_updated = _sync_investigation_display_name(host, client_name) if client_name else 0
         return {
             "saved": True,
             "id": str(row.id),
             "vpn_ip": row.vpn_ip,
             "ssh_port": row.ssh_port,
             "hostname": row.hostname,
+            "client_name": client_name or None,
+            "system_hostname": system_hostname or None,
             "environment": row.environment,
+            "history_updated": history_updated,
         }
     except Exception as exc:
         return {
