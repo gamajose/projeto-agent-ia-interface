@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+trap 'status=$?; echo "Falha ao configurar o OpenCode na linha ${BASH_LINENO[0]} (código ${status})." >&2; exit "$status"' ERR
 
 if [[ "${EUID}" -eq 0 ]]; then
   echo "Execute este script como o usuário da aplicação, sem sudo. Ele solicitará sudo apenas para o serviço systemd." >&2
@@ -28,13 +30,11 @@ find_node_bin() {
   local direct candidate selected=""
 
   direct="$(command -v npm 2>/dev/null || true)"
-  if [[ -n "${direct}" && -x "${direct}" ]]; then
+  if [[ -n "${direct}" && -x "${direct}" ]] && command -v node >/dev/null 2>&1; then
     dirname "${direct}"
     return 0
   fi
 
-  # Instalações feitas pelo NVM não entram no PATH de processos iniciados por
-  # systemd ou por instaladores não interativos. Procura a versão mais recente.
   while IFS= read -r candidate; do
     [[ -x "${candidate}/npm" && -x "${candidate}/node" ]] || continue
     selected="${candidate}"
@@ -45,7 +45,6 @@ find_node_bin() {
     return 0
   fi
 
-  # Também cobre instalações locais mantidas no diretório do usuário.
   for candidate in \
     "${TARGET_HOME}/.local/bin" \
     "${TARGET_HOME}/bin" \
@@ -70,7 +69,7 @@ EOF
   exit 1
 fi
 
-export PATH="${NODE_BIN_DIR}:${PATH}"
+export PATH="${TARGET_HOME}/.local/bin:${NODE_BIN_DIR}:${PATH}"
 hash -r
 
 if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
@@ -85,22 +84,40 @@ if [[ ! "${NODE_MAJOR}" =~ ^[0-9]+$ || "${NODE_MAJOR}" -lt 20 ]]; then
 fi
 
 echo "Node.js detectado: $(node --version) em ${NODE_BIN_DIR}"
+echo "Autorizando o postinstall do pacote opencode-ai..."
+npm config set allow-scripts=opencode-ai --location=user >/dev/null
+
 echo "Instalando ou atualizando OpenCode..."
-npm install -g opencode-ai@latest
+npm install -g --allow-scripts=opencode-ai opencode-ai@latest
+hash -r
+
+NPM_PREFIX="$(npm prefix -g 2>/dev/null || true)"
 CURRENT_OPENCODE="$(command -v opencode || true)"
+for candidate in \
+  "${CURRENT_OPENCODE}" \
+  "${NPM_PREFIX:+${NPM_PREFIX}/bin/opencode}" \
+  "${TARGET_HOME}/.local/bin/opencode"; do
+  if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+    CURRENT_OPENCODE="$(readlink -f "${candidate}" 2>/dev/null || printf '%s' "${candidate}")"
+    break
+  fi
+done
 
 if [[ -z "${CURRENT_OPENCODE}" || ! -x "${CURRENT_OPENCODE}" ]]; then
   echo "O executável opencode não foi localizado após a instalação." >&2
   exit 1
 fi
 
-OPENCODE_BIN_DIR="$(dirname "${CURRENT_OPENCODE}")"
-if [[ ! -x "${OPENCODE_BIN_DIR}/node" ]] && ! command -v node >/dev/null 2>&1; then
-  echo "Node.js não foi localizado para executar o OpenCode." >&2
+OPENCODE_VERSION="$(${CURRENT_OPENCODE} --version 2>&1 | head -n 1 || true)"
+if [[ -z "${OPENCODE_VERSION}" ]]; then
+  echo "O OpenCode foi localizado, mas não respondeu ao comando --version: ${CURRENT_OPENCODE}" >&2
   exit 1
 fi
 
-DETECTED_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+echo "OpenCode detectado: ${OPENCODE_VERSION} em ${CURRENT_OPENCODE}"
+
+OPENCODE_BIN_DIR="$(dirname "${CURRENT_OPENCODE}")"
+DETECTED_HOST="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
 DETECTED_HOST="${DETECTED_HOST:-IP_DA_VM}"
 TUNNEL_HOST="${OPENCODE_TUNNEL_HOST:-${DETECTED_HOST}}"
 TUNNEL_SSH_PORT="${OPENCODE_TUNNEL_SSH_PORT:-22}"
@@ -138,51 +155,47 @@ values = {
     "OPENCODE_WORKDIR": os.environ["ROOT_DIR"],
     "OPENCODE_CONFIG_PATH": f'{os.environ["TARGET_HOME"]}/.config/opencode/opencode.json',
     "OPENCODE_MODEL": existing.get("OMNIROUTE_DEFAULT_ROUTE") or "auto/coding",
-    "OPENCODE_SMALL_MODEL": "auto/fast",
-    "OPENCODE_DEFAULT_AGENT": "plan",
-    "OPENCODE_WEB_HOST": "127.0.0.1",
-    "OPENCODE_WEB_PORT": "4096",
-    "OPENCODE_WEB_URL": "http://127.0.0.1:4096",
-    "OPENCODE_SERVER_USERNAME": "opencode",
-    "OPENCODE_SERVER_PASSWORD": os.environ["GENERATED_PASSWORD"],
-    "OPENCODE_TUNNEL_HOST": os.environ["TUNNEL_HOST"],
-    "OPENCODE_TUNNEL_SSH_PORT": os.environ["TUNNEL_SSH_PORT"],
-    "OPENCODE_TUNNEL_USER": os.environ["TUNNEL_USER"],
+    "OPENCODE_SMALL_MODEL": existing.get("OPENCODE_SMALL_MODEL") or "auto/fast",
+    "OPENCODE_DEFAULT_AGENT": existing.get("OPENCODE_DEFAULT_AGENT") or "plan",
+    "OPENCODE_WEB_HOST": existing.get("OPENCODE_WEB_HOST") or "127.0.0.1",
+    "OPENCODE_WEB_PORT": existing.get("OPENCODE_WEB_PORT") or "4096",
+    "OPENCODE_WEB_URL": existing.get("OPENCODE_WEB_URL") or "http://127.0.0.1:4096",
+    "OPENCODE_SERVER_USERNAME": existing.get("OPENCODE_SERVER_USERNAME") or "opencode",
+    "OPENCODE_SERVER_PASSWORD": existing.get("OPENCODE_SERVER_PASSWORD") or os.environ["GENERATED_PASSWORD"],
+    "OPENCODE_TUNNEL_HOST": existing.get("OPENCODE_TUNNEL_HOST") or os.environ["TUNNEL_HOST"],
+    "OPENCODE_TUNNEL_SSH_PORT": existing.get("OPENCODE_TUNNEL_SSH_PORT") or os.environ["TUNNEL_SSH_PORT"],
+    "OPENCODE_TUNNEL_USER": existing.get("OPENCODE_TUNNEL_USER") or os.environ["TUNNEL_USER"],
     "OPENCODE_INTERFACE_ENABLED": "true",
     "OPENCODE_INTERFACE_ALLOW_BUILD": "true",
-    "OPENCODE_RUN_TIMEOUT_SECONDS": "900",
-    "OPENCODE_RUN_MAX_PROMPT_CHARS": "12000",
-    "OPENCODE_RUN_MAX_OUTPUT_CHARS": "250000",
-    "OPENCODE_RUN_CONCURRENCY": "1",
+    "OPENCODE_RUN_TIMEOUT_SECONDS": existing.get("OPENCODE_RUN_TIMEOUT_SECONDS") or "900",
+    "OPENCODE_RUN_MAX_PROMPT_CHARS": existing.get("OPENCODE_RUN_MAX_PROMPT_CHARS") or "12000",
+    "OPENCODE_RUN_MAX_OUTPUT_CHARS": existing.get("OPENCODE_RUN_MAX_OUTPUT_CHARS") or "250000",
+    "OPENCODE_RUN_CONCURRENCY": existing.get("OPENCODE_RUN_CONCURRENCY") or "1",
 }
 
-append: list[str] = []
 for key, value in values.items():
-    if key not in positions:
-        append.append(f"{key}={value}")
-        continue
-    if not existing.get(key):
-        lines[positions[key]] = f"{key}={value}"
-
-if append:
-    if lines and lines[-1].strip():
-        lines.append("")
-    lines.append("# OpenCode via OmniRoute")
-    lines.extend(append)
+    rendered = f"{key}={value}"
+    if key in positions:
+        lines[positions[key]] = rendered
+    else:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(rendered)
 
 path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 PY
 
 chmod 600 "${ENV_FILE}"
 cd "${ROOT_DIR}"
-"${PYTHON_BIN}" -m app.services.opencode_cli --configure >/dev/null
+AGENT_ENV_FILE="${ENV_FILE}" "${PYTHON_BIN}" -m app.services.opencode_cli --configure >/dev/null
 
 if [[ ! -x "${SERVICE_BIN}" ]]; then
-  echo "Entrada agent-opencode-web ainda não existe. Rode novamente: bash scripts/setup_wsl.sh" >&2
+  echo "Entrada agent-opencode-web ainda não existe. Execute: ${VENV_DIR}/bin/pip install -e ${ROOT_DIR}" >&2
   exit 1
 fi
 
 SERVICE_FILE="/etc/systemd/system/opencode-web.service"
+sudo -v
 sudo tee "${SERVICE_FILE}" >/dev/null <<EOF
 [Unit]
 Description=OpenCode Web via OmniRoute
@@ -195,7 +208,8 @@ User=${TARGET_USER}
 Group=$(id -gn "${TARGET_USER}")
 WorkingDirectory=${ROOT_DIR}
 Environment=HOME=${TARGET_HOME}
-Environment=PATH=${OPENCODE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=AGENT_ENV_FILE=${ENV_FILE}
+Environment=PATH=${TARGET_HOME}/.local/bin:${NODE_BIN_DIR}:${OPENCODE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=${SERVICE_BIN}
 Restart=on-failure
 RestartSec=5
@@ -211,15 +225,9 @@ sudo systemctl enable --now opencode-web.service
 
 echo
 echo "OpenCode instalado: ${CURRENT_OPENCODE}"
+echo "Versão: ${OPENCODE_VERSION}"
 echo "Workspace integrado: disponível no menu OpenCode do Agent IA"
 echo "Interface original: http://127.0.0.1:4096"
 echo "Usuário: opencode"
-if grep -q "^OPENCODE_SERVER_PASSWORD=${GENERATED_PASSWORD}$" "${ENV_FILE}"; then
-  echo "Senha inicial: ${GENERATED_PASSWORD}"
-else
-  echo "A senha existente no .env foi preservada."
-fi
-echo "Túnel: ssh -N -L 4096:127.0.0.1:4096 ${TUNNEL_USER}@${TUNNEL_HOST} -p ${TUNNEL_SSH_PORT}"
-echo
 echo "Status: sudo systemctl status opencode-web --no-pager -l"
 echo "Logs:   sudo journalctl -u opencode-web -f"
