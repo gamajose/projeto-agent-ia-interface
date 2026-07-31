@@ -116,17 +116,29 @@ def run_target_tracked(
         )
 
         executor = build_executor(target, settings=settings)
+        connection: dict[str, Any] = {}
+        effective_ssh_port = target.port
         try:
             report_progress(
                 "ssh_connection",
-                detail="Abrindo a conexão SSH e validando a identidade do host.",
+                detail="Entrando no Monitor 1 e abrindo o cliente pelo menu VPN.",
                 percent=35,
             )
             executor.connect()
+            connection = dict(getattr(executor, "connection_metadata", {}) or {})
+            effective_ssh_port = int(connection.get("ssh_port") or executor.port or target.port)
+            client_name = str(connection.get("client_name") or "").strip()
             report_progress(
                 "ssh_connection",
                 status="completed",
-                detail="Conexão autenticada. Nenhuma correção foi executada.",
+                detail=(
+                    f"Conectado via menu VPN em {client_name} ({target.host}:{effective_ssh_port})."
+                    if client_name
+                    else "Conexão autenticada. Nenhuma correção foi executada."
+                ),
+                client_name=client_name or None,
+                vpn_ip=target.host,
+                ssh_port=effective_ssh_port,
                 percent=42,
             )
             report_progress(
@@ -142,6 +154,7 @@ def run_target_tracked(
                 mode=effective_mode,
                 approve=effective_approve,
             )
+            result["connection"] = connection
             report_progress(
                 "evidence_analysis",
                 status="completed",
@@ -167,7 +180,7 @@ def run_target_tracked(
     persist_result_inventory(
         result,
         resolved_host=target.host,
-        ssh_port=target.port,
+        ssh_port=effective_ssh_port,
         saved_inventory=target.inventory,
         settings=settings,
     )
