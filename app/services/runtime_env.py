@@ -37,12 +37,7 @@ def runtime_value(
     *,
     settings: Settings | None = None,
 ) -> Any:
-    """Lê uma opção operacional sem depender do PATH/ambiente do systemd.
-
-    Variáveis exportadas no processo têm precedência. Depois são consultados o
-    arquivo indicado por ``AGENT_ENV_FILE``, o arquivo de configuração dinâmica
-    de IA e, por fim, o ``.env`` do projeto. O valor nunca é registrado em log.
-    """
+    """Lê uma opção operacional sem depender do ambiente exportado pelo systemd."""
     direct = os.getenv(name)
     if direct is not None:
         return direct
@@ -73,3 +68,20 @@ def runtime_int(
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} precisa estar entre {minimum} e {maximum}")
     return value
+
+
+def runtime_bool(
+    name: str,
+    default: bool,
+    *,
+    settings: Settings | None = None,
+) -> bool:
+    raw = runtime_value(name, None, settings=settings)
+    if raw is None or str(raw).strip() == "":
+        return bool(default)
+    normalized = str(raw).strip().casefold()
+    if normalized in {"1", "true", "yes", "on", "sim", "s"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "nao", "não", "n"}:
+        return False
+    raise ValueError(f"{name} precisa ser true/false")
