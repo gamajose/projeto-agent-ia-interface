@@ -48,6 +48,8 @@ def test_installer_enables_opencode_and_supports_nvm() -> None:
     main_installer = (PROJECT_ROOT / "install.sh").read_text(encoding="utf-8")
     full_installer = (PROJECT_ROOT / "scripts" / "install_all.sh").read_text(encoding="utf-8")
     setup = (PROJECT_ROOT / "scripts" / "setup_opencode.sh").read_text(encoding="utf-8")
+    deploy_bootstrap = (PROJECT_ROOT / "deploy" / "scripts" / "bootstrap_opencode.sh").read_text(encoding="utf-8")
+    workflow = (PROJECT_ROOT / ".github" / "workflows" / "ci-release.yml").read_text(encoding="utf-8")
 
     assert 'OPENCODE_MODE="yes"' in main_installer
     assert "--with-opencode" in main_installer
@@ -56,6 +58,11 @@ def test_installer_enables_opencode_and_supports_nvm() -> None:
     assert ".nvm/versions/node" in setup
     assert "NODE_MAJOR" in setup
     assert "npm install -g opencode-ai@latest" in setup
+    assert "npm install -g opencode-ai@latest" in deploy_bootstrap
+    assert '"OPENCODE_ENABLED": "true"' in deploy_bootstrap
+    assert "systemctl --user restart agent-ia-api.service" in deploy_bootstrap
+    assert "Instalar e configurar OpenCode integrado" in workflow
+    assert "bootstrap_opencode.sh" in workflow
 
 
 def test_install_scripts_have_valid_bash_syntax() -> None:
@@ -67,6 +74,7 @@ def test_install_scripts_have_valid_bash_syntax() -> None:
         PROJECT_ROOT / "install.sh",
         PROJECT_ROOT / "scripts" / "install_all.sh",
         PROJECT_ROOT / "scripts" / "setup_opencode.sh",
+        PROJECT_ROOT / "deploy" / "scripts" / "bootstrap_opencode.sh",
     ):
         result = subprocess.run(
             [bash, "-n", str(path)],
