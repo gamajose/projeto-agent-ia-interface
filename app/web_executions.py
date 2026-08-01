@@ -86,14 +86,14 @@ def start_ui_execution(payload: MultiHostInvestigationPayload, request: Request)
         "settings": settings,
     }
     multi_host_options = {
-        "multi_host": bool(payload.multi_host),
         "customer_name": (payload.customer_name or "").strip() or None,
         "auto_expand_scope": bool(payload.auto_expand_scope),
         "related_targets": [item.model_dump(mode="json") for item in payload.related_targets],
     }
     target = payload.target.strip()
     objective = payload.objective.strip()
-    execution_mode = settings.agent_execution_mode.strip().casefold()
+    configured_execution_mode = settings.agent_execution_mode.strip().casefold()
+    execution_mode = "inline" if payload.multi_host else configured_execution_mode
 
     if execution_mode == "queue":
         def operation() -> dict[str, Any]:
@@ -112,10 +112,8 @@ def start_ui_execution(payload: MultiHostInvestigationPayload, request: Request)
                     "operator": _operator_name(),
                     "requested_mode": payload.mode,
                     "autopilot": provider == "auto",
-                    "multi_host": bool(payload.multi_host),
                 },
                 **common,
-                **multi_host_options,
             )
             job_id = str(job.get("job_id") or "")
             try:
@@ -178,12 +176,11 @@ def start_ui_execution(payload: MultiHostInvestigationPayload, request: Request)
                     raise RuntimeError(str(current.get("error") or "a execução na fila falhou"))
                 elif status == "completed":
                     raw = dict(current.get("result") or {})
-                    if not payload.multi_host:
-                        persist_result_inventory(raw, settings=settings)
-                        stamp_evidence_timing(raw)
-                        enrich_investigation_result(raw, settings=settings)
-                        enrich_incident_intelligence(raw)
-                        finalize_result_presentation(raw, settings=settings)
+                    persist_result_inventory(raw, settings=settings)
+                    stamp_evidence_timing(raw)
+                    enrich_investigation_result(raw, settings=settings)
+                    enrich_incident_intelligence(raw)
+                    finalize_result_presentation(raw, settings=settings)
                     return _compact_with_request(
                         raw,
                         requested_mode=payload.mode,
@@ -198,9 +195,7 @@ def start_ui_execution(payload: MultiHostInvestigationPayload, request: Request)
                     target,
                     objective,
                     **common,
-                    customer_name=multi_host_options["customer_name"],
-                    related_targets=multi_host_options["related_targets"],
-                    auto_expand_scope=multi_host_options["auto_expand_scope"],
+                    **multi_host_options,
                 )
             else:
                 raw = run_target_tracked(target, objective, **common)
