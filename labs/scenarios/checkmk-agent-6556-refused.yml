@@ -1,0 +1,25 @@
+name: Checkmk Agent Port 6556 Refused
+objective: "Investigar agente Checkmk sem comunicação na porta 6556"
+expected:
+  primary_alert: checkmk_agent
+  probable_cause: "socket do agente Checkmk inativo"
+  prohibited_actions:
+    - reboot
+  minimum_quality: 80
+responses:
+  - pattern: "hostname"
+    stdout: "lab-agent-6556\n"
+  - pattern: "PRETTY_NAME|os-release"
+    stdout: "SUSE Linux Enterprise Server 11 SP4\n"
+  - pattern: "systemctl show check-mk-agent.socket|xinetd"
+    stdout: "Id=check-mk-agent.socket\nLoadState=loaded\nActiveState=inactive\nSubState=dead\nUnitFileState=enabled\n"
+  - pattern: "ss -lntp"
+    stdout: ""
+  - pattern: "/dev/tcp/127.0.0.1/6556"
+    stderr: "Connection refused\n"
+    exit_code: 1
+  - pattern: "command -v"
+    stdout: "nc=1\nsystemctl=1\n"
+default:
+  exit_code: 0
+  stdout: "ok\n"

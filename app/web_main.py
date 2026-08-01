@@ -9,12 +9,17 @@ from app.web import register_ui
 from app.web_batch import router as batch_router
 from app.web_executions import router as executions_router
 from app.web_flow import router as flow_router
+from app.web_incidents import router as incidents_router
 from app.web_playbooks import router as playbooks_router
 from app.web_settings import enable_dynamic_provider_payload, router as settings_router
 from app.web_tools import router as tools_router
+from app.web_ui_cache import router as ui_cache_router
 
 
 enable_dynamic_provider_payload()
+if not getattr(app.state, "agent_ui_cache_registered", False):
+    app.include_router(ui_cache_router)
+    app.state.agent_ui_cache_registered = True
 register_ui(app)
 if not getattr(app.state, "agent_ui_batch_registered", False):
     app.include_router(batch_router)
@@ -34,6 +39,9 @@ if not getattr(app.state, "agent_ui_playbooks_registered", False):
 if not getattr(app.state, "agent_ui_flow_registered", False):
     app.include_router(flow_router)
     app.state.agent_ui_flow_registered = True
+if not getattr(app.state, "agent_ui_incidents_registered", False):
+    app.include_router(incidents_router)
+    app.state.agent_ui_incidents_registered = True
 
 
 def main() -> None:

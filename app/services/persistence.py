@@ -8,7 +8,15 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import aliased
 
 from app.db.base import SessionLocal
-from app.db.models import ApprovalExecutionORM, HostORM, IncidentORM, InvestigationORM, MonitoringMappingORM
+from app.db.models import (
+    ApprovalExecutionORM,
+    HostORM,
+    IncidentORM,
+    InvestigationFeedbackORM,
+    InvestigationORM,
+    MonitoringMappingORM,
+    PlaybookDraftORM,
+)
 from app.services.operational_memory import build_operational_memory, search_operational_cases
 
 
@@ -125,6 +133,37 @@ def save_incident(*, affected_host_id, site_name: str | None, checkmk_host: str,
         return str(incident.id)
 
 
+def _feedback_dict(row: InvestigationFeedbackORM) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "investigation_id": str(row.investigation_id),
+        "operator": row.operator,
+        "verdict": row.verdict,
+        "comment": row.comment,
+        "confirmed_cause": row.confirmed_cause,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _draft_dict(row: PlaybookDraftORM) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "investigation_id": str(row.investigation_id),
+        "playbook_id": row.playbook_id,
+        "title": row.title,
+        "status": row.status,
+        "yaml_content": row.yaml_content,
+        "generated_by": row.generated_by,
+        "reviewed_by": row.reviewed_by,
+        "review_notes": row.review_notes,
+        "activated_path": row.activated_path,
+        "metadata": row.metadata_payload,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
+    }
+
+
 def _investigation_dict(row: InvestigationORM, *, include_evidence: bool = False) -> dict[str, Any]:
     result = {
         "id": str(row.id), "target": row.target, "hostname": row.hostname,
@@ -178,7 +217,20 @@ def get_investigation(investigation_id: str, *, include_evidence: bool = True) -
         return None
     with SessionLocal() as session:
         row = session.get(InvestigationORM, identifier)
-        return _investigation_dict(row, include_evidence=include_evidence) if row else None
+        if not row:
+            return None
+        result = _investigation_dict(row, include_evidence=include_evidence)
+        feedback_rows = session.scalars(
+            select(InvestigationFeedbackORM)
+            .where(InvestigationFeedbackORM.investigation_id == identifier)
+            .order_by(InvestigationFeedbackORM.updated_at.desc())
+        ).all()
+        draft = session.scalar(
+            select(PlaybookDraftORM).where(PlaybookDraftORM.investigation_id == identifier)
+        )
+        result["operator_feedback"] = [_feedback_dict(item) for item in feedback_rows]
+        result["playbook_draft"] = _draft_dict(draft) if draft else None
+        return result
 
 
 def update_investigation_analysis(investigation_id: str, analysis: dict[str, Any]) -> bool:
@@ -193,6 +245,131 @@ def update_investigation_analysis(investigation_id: str, analysis: dict[str, Any
         row.analysis = analysis
         session.commit()
         return True
+
+
+def save_investigation_feedback(
+    investigation_id: str,
+    *,
+    operator: str,
+    verdict: str,
+    comment: str | None = None,
+    confirmed_cause: str | None = None,
+) -> dict[str, Any]:
+    identifier = uuid.UUID(str(investigation_id))
+    normalized_verdict = verdict.strip().casefold()
+    if normalized_verdict not in {"confirmed", "partial", "rejected"}:
+        raise ValueError("verdict deve ser confirmed, partial ou rejected")
+    normalized_operator = operator.strip() or "Operador Agent IA"
+    with SessionLocal() as session:
+        if not session.get(InvestigationORM, identifier):
+            raise LookupError("investigação não encontrada")
+        row = session.scalar(
+            select(InvestigationFeedbackORM).where(
+                InvestigationFeedbackORM.investigation_id == identifier,
+                InvestigationFeedbackORM.operator == normalized_operator,
+            )
+        )
+        if row is None:
+            row = InvestigationFeedbackORM(
+                investigation_id=identifier,
+                operator=normalized_operator,
+                verdict=normalized_verdict,
+            )
+            session.add(row)
+        row.verdict = normalized_verdict
+        row.comment = (comment or "").strip()[:4000] or None
+        row.confirmed_cause = (confirmed_cause or "").strip()[:4000] or None
+        row.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(row)
+        return _feedback_dict(row)
+
+
+def list_investigation_feedback(investigation_id: str) -> list[dict[str, Any]]:
+    identifier = uuid.UUID(str(investigation_id))
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(InvestigationFeedbackORM)
+            .where(InvestigationFeedbackORM.investigation_id == identifier)
+            .order_by(InvestigationFeedbackORM.updated_at.desc())
+        ).all()
+        return [_feedback_dict(row) for row in rows]
+
+
+def save_playbook_draft(
+    investigation_id: str,
+    *,
+    playbook_id: str,
+    title: str,
+    yaml_content: str,
+    generated_by: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    identifier = uuid.UUID(str(investigation_id))
+    with SessionLocal() as session:
+        if not session.get(InvestigationORM, identifier):
+            raise LookupError("investigação não encontrada")
+        row = session.scalar(
+            select(PlaybookDraftORM).where(PlaybookDraftORM.investigation_id == identifier)
+        )
+        if row is None:
+            row = PlaybookDraftORM(
+                investigation_id=identifier,
+                playbook_id=playbook_id,
+                title=title,
+                yaml_content=yaml_content,
+                generated_by=generated_by,
+            )
+            session.add(row)
+        row.playbook_id = playbook_id
+        row.title = title
+        row.yaml_content = yaml_content
+        row.generated_by = generated_by
+        row.metadata_payload = metadata or {}
+        row.status = "draft"
+        row.reviewed_by = None
+        row.review_notes = None
+        row.activated_path = None
+        row.reviewed_at = None
+        session.commit()
+        session.refresh(row)
+        return _draft_dict(row)
+
+
+def get_playbook_draft(draft_id: str) -> dict[str, Any] | None:
+    try:
+        identifier = uuid.UUID(str(draft_id))
+    except ValueError:
+        return None
+    with SessionLocal() as session:
+        row = session.get(PlaybookDraftORM, identifier)
+        return _draft_dict(row) if row else None
+
+
+def review_playbook_draft(
+    draft_id: str,
+    *,
+    status: str,
+    reviewed_by: str,
+    review_notes: str | None = None,
+    activated_path: str | None = None,
+) -> dict[str, Any]:
+    identifier = uuid.UUID(str(draft_id))
+    normalized = status.strip().casefold()
+    if normalized not in {"approved", "rejected"}:
+        raise ValueError("status deve ser approved ou rejected")
+    with SessionLocal() as session:
+        row = session.get(PlaybookDraftORM, identifier)
+        if not row:
+            raise LookupError("rascunho de playbook não encontrado")
+        row.status = normalized
+        row.reviewed_by = reviewed_by.strip() or "Operador Agent IA"
+        row.review_notes = (review_notes or "").strip()[:4000] or None
+        row.activated_path = activated_path
+        row.reviewed_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(row)
+        return _draft_dict(row)
 
 
 def _playbook_id_from_plans(plans: list[dict[str, Any]]) -> str | None:
@@ -262,10 +439,14 @@ def operational_metrics() -> dict[str, Any]:
         status_rows = session.execute(select(InvestigationORM.status, func.count(InvestigationORM.id)).group_by(InvestigationORM.status)).all()
         mode_rows = session.execute(select(InvestigationORM.mode, func.count(InvestigationORM.id)).group_by(InvestigationORM.mode)).all()
         approval_rows = session.execute(select(ApprovalExecutionORM.status, func.count(ApprovalExecutionORM.id)).group_by(ApprovalExecutionORM.status)).all()
+        feedback_rows = session.execute(select(InvestigationFeedbackORM.verdict, func.count(InvestigationFeedbackORM.id)).group_by(InvestigationFeedbackORM.verdict)).all()
+        draft_rows = session.execute(select(PlaybookDraftORM.status, func.count(PlaybookDraftORM.id)).group_by(PlaybookDraftORM.status)).all()
         return {
             "investigations_total": total,
             "average_duration_ms": round(average_duration, 2),
             "by_status": {status: int(count) for status, count in status_rows},
             "by_mode": {mode: int(count) for mode, count in mode_rows},
             "approval_executions": {status: int(count) for status, count in approval_rows},
+            "operator_feedback": {verdict: int(count) for verdict, count in feedback_rows},
+            "playbook_drafts": {status: int(count) for status, count in draft_rows},
         }
