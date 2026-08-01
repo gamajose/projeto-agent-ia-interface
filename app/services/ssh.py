@@ -11,6 +11,8 @@ import paramiko
 from app.core.policies import EnvironmentType, classify_command, evaluate_action
 from app.services.cancellation import ExecutionCancelled, raise_if_cancelled
 from app.services.correction_policy import validate_correction
+from app.services.investigation_budget import reserve_command
+from app.services.metrics import increment, observe
 from app.services.progress import report_progress
 from app.services.redaction import redact_text
 
@@ -86,45 +88,54 @@ class SSHExecutor:
 
     def connect(self) -> None:
         raise_if_cancelled("Conexão SSH cancelada pelo operador.")
+        started = time.monotonic()
+        labels = {"mode": "bastion" if self.bastion_host else "direct"}
         sock = None
-        if self.bastion_host:
-            bastion = paramiko.SSHClient()
-            self._configure_host_keys(bastion)
-            bastion.connect(
-                hostname=self.bastion_host,
-                port=self.bastion_port,
-                username=self.bastion_user or self.username,
-                password=self.bastion_password or None,
-                key_filename=self.bastion_private_key_path,
-                passphrase=self.bastion_private_key_passphrase,
+        try:
+            if self.bastion_host:
+                bastion = paramiko.SSHClient()
+                self._configure_host_keys(bastion)
+                bastion.connect(
+                    hostname=self.bastion_host,
+                    port=self.bastion_port,
+                    username=self.bastion_user or self.username,
+                    password=self.bastion_password or None,
+                    key_filename=self.bastion_private_key_path,
+                    passphrase=self.bastion_private_key_passphrase,
+                    **self._common_connect_args(),
+                )
+                transport = bastion.get_transport()
+                if transport is None or not transport.is_active():
+                    bastion.close()
+                    raise paramiko.SSHException("transporte do bastion não ficou ativo")
+                sock = transport.open_channel(
+                    "direct-tcpip",
+                    (self.host, self.port),
+                    ("127.0.0.1", 0),
+                    timeout=self.connect_timeout,
+                )
+                self.bastion_client = bastion
+
+            raise_if_cancelled("Conexão SSH cancelada pelo operador.")
+            client = paramiko.SSHClient()
+            self._configure_host_keys(client)
+            client.connect(
+                hostname=self.host,
+                port=self.port,
+                username=self.username,
+                password=self.password or None,
+                key_filename=self.private_key_path,
+                passphrase=self.private_key_passphrase,
+                sock=sock,
                 **self._common_connect_args(),
             )
-            transport = bastion.get_transport()
-            if transport is None or not transport.is_active():
-                bastion.close()
-                raise paramiko.SSHException("transporte do bastion não ficou ativo")
-            sock = transport.open_channel(
-                "direct-tcpip",
-                (self.host, self.port),
-                ("127.0.0.1", 0),
-                timeout=self.connect_timeout,
-            )
-            self.bastion_client = bastion
-
-        raise_if_cancelled("Conexão SSH cancelada pelo operador.")
-        client = paramiko.SSHClient()
-        self._configure_host_keys(client)
-        client.connect(
-            hostname=self.host,
-            port=self.port,
-            username=self.username,
-            password=self.password or None,
-            key_filename=self.private_key_path,
-            passphrase=self.private_key_passphrase,
-            sock=sock,
-            **self._common_connect_args(),
-        )
-        self.client = client
+            self.client = client
+            increment("agent_ssh_connections", labels={**labels, "status": "success"})
+        except Exception:
+            increment("agent_ssh_connections", labels={**labels, "status": "failed"})
+            raise
+        finally:
+            observe("agent_ssh_connection_duration_seconds", time.monotonic() - started, labels=labels)
 
     def close(self) -> None:
         if self.client:
@@ -162,9 +173,11 @@ class SSHExecutor:
         if not self.client:
             raise RuntimeError("Conexão SSH não iniciada.")
 
+        timeout = reserve_command(self.host, timeout)
         command_id = str(uuid4())
         safe_command = redact_text(command)
         started = time.monotonic()
+        increment("agent_tool_executions", labels={"transport": "ssh", "host": self.host})
         report_progress(
             "command_started",
             detail=f"Executando: {safe_command}",
@@ -216,6 +229,7 @@ class SSHExecutor:
                         command=safe_command,
                         stdout_tail=self._tail("".join(stdout_chunks)),
                         stderr_tail=self._tail("".join(stderr_chunks)),
+                        host=self.host,
                         elapsed_seconds=round(elapsed, 1),
                     )
                     last_report = now
@@ -228,6 +242,10 @@ class SSHExecutor:
             exit_code = channel.recv_exit_status()
             stdout_text = "".join(stdout_chunks)
             stderr_text = "".join(stderr_chunks)
+            increment(
+                "agent_tool_results",
+                labels={"transport": "ssh", "status": "success" if exit_code == 0 else "failed"},
+            )
             report_progress(
                 "command_completed",
                 status="completed" if exit_code == 0 else "failed",
@@ -237,11 +255,13 @@ class SSHExecutor:
                 exit_code=exit_code,
                 stdout_tail=self._tail(stdout_text),
                 stderr_tail=self._tail(stderr_text),
+                host=self.host,
                 elapsed_seconds=round(time.monotonic() - started, 1),
             )
             return CommandResult(command, exit_code, stdout_text, stderr_text)
         except ExecutionCancelled:
             channel.close()
+            increment("agent_tool_results", labels={"transport": "ssh", "status": "cancelled"})
             report_progress(
                 "command_cancelled",
                 status="cancelled",
@@ -250,9 +270,19 @@ class SSHExecutor:
                 command=safe_command,
                 stdout_tail=self._tail("".join(stdout_chunks)),
                 stderr_tail=self._tail("".join(stderr_chunks)),
+                host=self.host,
                 elapsed_seconds=round(time.monotonic() - started, 1),
             )
             raise
+        except Exception:
+            increment("agent_tool_results", labels={"transport": "ssh", "status": "exception"})
+            raise
+        finally:
+            observe(
+                "agent_tool_duration_seconds",
+                time.monotonic() - started,
+                labels={"transport": "ssh"},
+            )
 
     def run(self, command: str, environment: EnvironmentType, approved: bool = False, timeout: int = 60) -> CommandResult:
         if not self.client:
