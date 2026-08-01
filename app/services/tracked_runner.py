@@ -7,6 +7,7 @@ from app.core.settings import Settings, get_settings
 from app.services.ai_providers import use_provider
 from app.services.intelligent_agent import run_dynamic_investigation
 from app.services.inventory_learning import learn_result_inventory
+from app.services.investigation_insights import enrich_investigation_result
 from app.services.playbooks import selected_playbook_ssh_port, use_playbook
 from app.services.progress import report_progress
 from app.services.provider_router import resolve_automatic_provider
@@ -122,7 +123,8 @@ def run_target_tracked(
             report_progress(
                 "ssh_connection",
                 detail="Entrando no Monitor 1 e abrindo o cliente pelo menu VPN.",
-                percent=35,
+                access_step="bastion",
+                percent=32,
             )
             executor.connect()
             connection = dict(getattr(executor, "connection_metadata", {}) or {})
@@ -136,10 +138,11 @@ def run_target_tracked(
                     if client_name
                     else "Conexão autenticada. Nenhuma correção foi executada."
                 ),
+                access_step="target_shell",
                 client_name=client_name or None,
                 vpn_ip=target.host,
                 ssh_port=effective_ssh_port,
-                percent=42,
+                percent=46,
             )
             report_progress(
                 "evidence_analysis",
@@ -158,7 +161,8 @@ def run_target_tracked(
             report_progress(
                 "evidence_analysis",
                 status="completed",
-                detail=f"Coleta e análise concluídas com {len(result.get('evidence') or [])} evidência(s).",
+                detail=f"Coleta adaptativa concluída com {len(result.get('evidence') or [])} evidência(s).",
+                adaptive_rounds=len(result.get("round_assessments") or []),
                 percent=88,
             )
         finally:
@@ -166,7 +170,7 @@ def run_target_tracked(
 
     report_progress(
         "result_persistence",
-        detail="Persistindo investigação e atualizando o inventário aprendido.",
+        detail="Persistindo investigação, explicabilidade e inventário aprendido.",
         percent=92,
     )
     result["provider_selection"] = selection.as_dict()
@@ -184,24 +188,28 @@ def run_target_tracked(
         saved_inventory=target.inventory,
         settings=settings,
     )
+    enrich_investigation_result(result, settings=settings)
     finalize_result_presentation(result, settings=settings)
     inventory = dict(result.get("inventory") or {})
+    quality = dict((result.get("analysis") or {}).get("quality") or {})
     report_progress(
         "result_persistence",
         status="completed",
         detail=(
-            "Resultado salvo e alvo incluído no inventário aprendido."
+            "Resultado salvo com fatos, hipóteses, qualidade e inventário atualizado."
             if inventory.get("saved")
             else f"Resultado salvo; inventário pendente: {inventory.get('detail') or 'falha não detalhada'}."
         ),
         inventory_saved=bool(inventory.get("saved")),
+        quality_overall=quality.get("overall"),
         percent=98,
     )
     report_progress(
         "completed",
         status="completed",
-        detail="Investigação concluída, registrada no histórico e disponível para revisão.",
+        detail="Investigação concluída, registrada no histórico e disponível para revisão explicável.",
         investigation_id=result.get("investigation_id"),
+        display_target=result.get("display_target"),
         percent=100,
     )
     return result
