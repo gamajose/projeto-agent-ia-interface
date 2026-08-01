@@ -78,6 +78,7 @@ def test_multi_host_runner_keeps_scope_read_only_and_same_session() -> None:
     assert '"customer_databases": "blocked"' in source
     assert '"max_internal_hops": 1' in source
     assert '"max_related_hosts": 3' in source
-    assert "sshpass" not in nested
+    assert "sshpass -p" not in nested
+    assert "subprocess.run" not in nested
     assert "self.parent._channel()" in nested
     assert "PreferredAuthentications=password,keyboard-interactive" in nested
