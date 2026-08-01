@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from app.core.policies import EnvironmentType
 from app.services.adaptive_tools import describe_adaptive_tools, execute_adaptive_tool
+from app.services.operational_tools import describe_operational_tools
 from app.services.redaction import redact_object
 from app.services.ssh import SSHExecutor
 from app.services.tool_registry import describe_tools
@@ -136,10 +137,14 @@ def combined_tool_catalog(runtime_context: dict[str, Any] | None = None) -> list
     runtime_context = runtime_context or {}
     binaries = set(runtime_context.get("binaries") or [])
     rows: list[dict[str, Any]] = []
-    for item in [*describe_tools(), *describe_adaptive_tools()]:
+    for item in [*describe_tools(), *describe_adaptive_tools(), *describe_operational_tools()]:
         row = dict(item)
         requirements = tuple(row.get("requires_any") or ())
-        row["available"] = not requirements or any(binary in binaries for binary in requirements)
+        # Ferramentas HTTP são executadas no Agent e não dependem de binários do alvo.
+        if row.get("transport") == "http":
+            row["available"] = True
+        else:
+            row["available"] = not requirements or any(binary in binaries for binary in requirements)
         if requirements and not row["available"]:
             row["unavailable_reason"] = f"requer uma destas ferramentas: {', '.join(requirements)}"
         rows.append(row)
@@ -230,6 +235,8 @@ def recommend_tools(
         score += min(8.0, float(successful_history.get(name, 0) * 2))
         if item.get("adaptive"):
             score += 0.5
+        if item.get("operational"):
+            score += 1.0
         if name in failed:
             score -= 12
         if name == "runtime.snapshot":
