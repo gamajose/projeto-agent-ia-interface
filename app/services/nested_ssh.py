@@ -28,9 +28,9 @@ _PERMISSION_DENIED = re.compile(r"Permission denied|Authentication failed", re.I
 class NestedSSHExecutor(SSHExecutor):
     """Executa comandos internos reutilizando a sessão do servidor de entrada.
 
-    Quando habilitado, o primeiro login cria um ControlMaster temporário no host
-    de entrada. Os comandos seguintes reutilizam a conexão autenticada e o
-    socket é encerrado e removido ao final da coleta.
+    Quando habilitado, o primeiro login tenta criar um ControlMaster temporário
+    no host de entrada. Se o OpenSSH remoto não suportar multiplexação, o Agent
+    volta automaticamente ao modo compatível, com um SSH controlado por comando.
     """
 
     def __init__(
@@ -204,11 +204,11 @@ class NestedSSHExecutor(SSHExecutor):
         command = (
             f"rm -f {shlex.quote(self.control_path)}; "
             f"ssh -M -fNT {options} -p {int(self.port)} {shlex.quote(self.destination)}; "
-            f"__master_rc=$?; printf '\\n{marker}:%s\\n' \"$__master_rc\""
+            f"__master_rc=$?; printf '\n{marker}:%s\n' \"$__master_rc\""
         )
         _body, exit_code = self._interactive_command(
             command,
-            timeout=max(15, self.connect_timeout + 10),
+            timeout=max(2, min(8, self.connect_timeout + 2)),
             marker=marker,
             allow_login_password=True,
         )
@@ -221,7 +221,32 @@ class NestedSSHExecutor(SSHExecutor):
         self.connection_metadata["control_persist_seconds"] = (
             self.performance.nested_ssh_control_persist_seconds
         )
+        self.connection_metadata.pop("persistent_channel_fallback", None)
         increment("agent_nested_ssh_master", labels={"status": "created"})
+
+    def _fallback_from_master(self, exc: Exception) -> None:
+        self.master_active = False
+        self.connection_metadata["persistent_channel"] = False
+        self.connection_metadata["persistent_channel_fallback"] = (
+            f"{type(exc).__name__}: {redact_text(str(exc))}"
+        )
+        increment("agent_nested_ssh_master", labels={"status": "fallback"})
+        report_progress(
+            "ssh_connection",
+            detail=(
+                "O servidor de entrada não confirmou a multiplexação SSH. "
+                "Continuando em modo compatível, sem interromper a investigação."
+            ),
+            access_step="nested_ssh_fallback",
+            host=self.host,
+            via_host=self.parent.host,
+            persistent_channel=False,
+        )
+        try:
+            self.parent._send_line(f"rm -f {shlex.quote(self.control_path)}")
+            self.parent._drain(quiet_seconds=0.05, limit_seconds=0.5)
+        except Exception:
+            pass
 
     def _execute_nested(
         self,
@@ -263,9 +288,9 @@ class NestedSSHExecutor(SSHExecutor):
         else:
             remote_command = command
         remote_payload = (
-            f"printf '\\n{remote_start}\\n'; "
+            f"printf '\n{remote_start}\n'; "
             f"{remote_command}; __nested_rc=$?; "
-            f"printf '\\n{remote_done}:%s\\n' \"$__nested_rc\""
+            f"printf '\n{remote_done}:%s\n' \"$__nested_rc\""
         )
         ssh_command = (
             f"ssh -tt {self._ssh_options(use_master=self.master_active)} -p {int(self.port)} "
@@ -273,7 +298,7 @@ class NestedSSHExecutor(SSHExecutor):
         )
         outer_payload = (
             f"{ssh_command}; __route_rc=$?; "
-            f"printf '\\n{route_done}:%s\\n' \"$__route_rc\""
+            f"printf '\n{route_done}:%s\n' \"$__route_rc\""
         )
 
         try:
@@ -350,9 +375,14 @@ class NestedSSHExecutor(SSHExecutor):
         )
         try:
             if self.performance.nested_ssh_master_enabled:
-                self._start_master()
+                try:
+                    self._start_master()
+                except ExecutionCancelled:
+                    raise
+                except (TimeoutError, paramiko.SSHException, OSError) as exc:
+                    self._fallback_from_master(exc)
             probe = self._execute_nested(
-                "printf 'nested-ready\\n'",
+                "printf 'nested-ready\n'",
                 timeout=max(10, self.connect_timeout),
                 count_budget=False,
             )
@@ -371,7 +401,7 @@ class NestedSSHExecutor(SSHExecutor):
                 detail=(
                     f"Host interno {self.host}:{self.port} acessível por canal SSH persistente."
                     if self.master_active
-                    else f"Host interno {self.host}:{self.port} acessível pela sessão já aberta."
+                    else f"Host interno {self.host}:{self.port} acessível em modo SSH compatível."
                 ),
                 access_step="nested_ssh",
                 host=self.host,
@@ -396,7 +426,7 @@ class NestedSSHExecutor(SSHExecutor):
             command = (
                 f"ssh -S {shlex.quote(self.control_path)} -O exit {shlex.quote(self.destination)} "
                 f">/dev/null 2>&1; __close_rc=$?; rm -f {shlex.quote(self.control_path)}; "
-                f"printf '\\n{marker}:%s\\n' \"$__close_rc\""
+                f"printf '\n{marker}:%s\n' \"$__close_rc\""
             )
             try:
                 self._interactive_command(
@@ -410,6 +440,7 @@ class NestedSSHExecutor(SSHExecutor):
                 increment("agent_nested_ssh_master", labels={"status": "cleanup_failed"})
             finally:
                 self.master_active = False
+                self.connection_metadata["persistent_channel"] = False
         self.connected = False
 
     def run(
