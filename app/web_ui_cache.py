@@ -11,8 +11,20 @@ from app.web import _require_access
 
 
 router = APIRouter(tags=["interface-cache"])
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _UI_DIR = Path(__file__).resolve().parent / "ui"
-_ASSET_VERSION = importlib.metadata.version("agent-ia-infra")
+
+
+def _asset_version() -> str:
+    try:
+        return importlib.metadata.version("agent-ia-infra")
+    except importlib.metadata.PackageNotFoundError:
+        pyproject = (_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, flags=re.MULTILINE)
+        return match.group(1) if match else "dev"
+
+
+_ASSET_VERSION = _asset_version()
 
 
 @router.get("/ui", include_in_schema=False, response_class=HTMLResponse)
