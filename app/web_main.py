@@ -10,6 +10,7 @@ from app.web_batch import router as batch_router
 from app.web_executions import router as executions_router
 from app.web_flow import router as flow_router
 from app.web_incidents import router as incidents_router
+from app.web_observability import router as observability_router
 from app.web_playbooks import router as playbooks_router
 from app.web_settings import enable_dynamic_provider_payload, router as settings_router
 from app.web_tools import router as tools_router
@@ -46,6 +47,9 @@ if not getattr(app.state, "agent_ui_incidents_registered", False):
 if not getattr(app.state, "agent_ui_topology_registered", False):
     app.include_router(topology_router)
     app.state.agent_ui_topology_registered = True
+if not getattr(app.state, "agent_observability_registered", False):
+    app.include_router(observability_router)
+    app.state.agent_observability_registered = True
 
 
 def main() -> None:
