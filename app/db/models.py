@@ -26,6 +26,70 @@ class HostORM(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class CustomerORM(Base):
+    __tablename__ = "customers"
+    __table_args__ = (UniqueConstraint("key", name="uq_customer_key"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    key: Mapped[str] = mapped_column(String(160), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    aliases: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CustomerNodeORM(Base):
+    __tablename__ = "customer_nodes"
+    __table_args__ = (
+        UniqueConstraint("customer_id", "address", "ssh_port", name="uq_customer_node_address_port"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    inventory_host_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("hosts.id", ondelete="SET NULL"), index=True
+    )
+    address: Mapped[str] = mapped_column(String(255), nullable=False)
+    ssh_port: Mapped[int] = mapped_column(Integer, nullable=False, default=22)
+    hostname: Mapped[str | None] = mapped_column(String(255))
+    label: Mapped[str | None] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(40), nullable=False, default="other")
+    environment: Mapped[str] = mapped_column(String(30), nullable=False, default="unknown")
+    direct_vpn: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    metadata_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CustomerRouteORM(Base):
+    __tablename__ = "customer_routes"
+    __table_args__ = (
+        UniqueConstraint("source_node_id", "destination_node_id", "route_type", name="uq_customer_route_nodes_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    customer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_node_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customer_nodes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    destination_node_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customer_nodes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    route_type: Mapped[str] = mapped_column(String(30), nullable=False, default="ssh")
+    username: Mapped[str | None] = mapped_column(String(255))
+    credential_ref: Mapped[str] = mapped_column(String(120), nullable=False, default="SSH_DEFAULT_PASSWORD")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    metadata_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class MonitoringMappingORM(Base):
     __tablename__ = "monitoring_mappings"
     __table_args__ = (UniqueConstraint("affected_host_id", name="uq_mapping_affected_host"),)
