@@ -5,6 +5,7 @@ from typing import Any
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
 from app.services.ai_providers import use_provider
+from app.services.incident_intelligence import classify_access_failure, enrich_incident_intelligence
 from app.services.intelligent_agent import run_dynamic_investigation
 from app.services.inventory_learning import learn_result_inventory
 from app.services.investigation_insights import enrich_investigation_result
@@ -126,7 +127,27 @@ def run_target_tracked(
                 access_step="bastion",
                 percent=32,
             )
-            executor.connect()
+            try:
+                executor.connect()
+            except Exception as exc:
+                connection = dict(getattr(executor, "connection_metadata", {}) or {})
+                journey = [item for item in connection.get("access_journey") or [] if isinstance(item, dict)]
+                failure = classify_access_failure(exc, journey)
+                connection["access_failure"] = failure
+                setattr(executor, "connection_metadata", connection)
+                report_progress(
+                    "ssh_connection",
+                    status="failed",
+                    detail=f"{failure['summary']} Próximo passo: {failure['next_step']}",
+                    access_step=failure.get("stage"),
+                    access_failure=failure,
+                    access_journey=journey,
+                    percent=44,
+                )
+                raise RuntimeError(
+                    f"{failure['code']}: {failure['summary']} Próximo passo: {failure['next_step']}"
+                ) from exc
+
             connection = dict(getattr(executor, "connection_metadata", {}) or {})
             effective_ssh_port = int(connection.get("ssh_port") or executor.port or target.port)
             client_name = str(connection.get("client_name") or "").strip()
@@ -170,7 +191,7 @@ def run_target_tracked(
 
     report_progress(
         "result_persistence",
-        detail="Persistindo investigação, explicabilidade e inventário aprendido.",
+        detail="Persistindo investigação, inteligência do incidente e inventário aprendido.",
         percent=92,
     )
     result["provider_selection"] = selection.as_dict()
@@ -189,25 +210,29 @@ def run_target_tracked(
         settings=settings,
     )
     enrich_investigation_result(result, settings=settings)
+    enrich_incident_intelligence(result)
     finalize_result_presentation(result, settings=settings)
     inventory = dict(result.get("inventory") or {})
-    quality = dict((result.get("analysis") or {}).get("quality") or {})
+    analysis = dict(result.get("analysis") or {})
+    quality = dict(analysis.get("quality") or {})
+    correlation = dict((analysis.get("incident_intelligence") or {}).get("alert_correlation") or {})
     report_progress(
         "result_persistence",
         status="completed",
         detail=(
-            "Resultado salvo com fatos, hipóteses, qualidade e inventário atualizado."
+            "Resultado salvo com fatos, hipóteses, correlação de alertas e inventário atualizado."
             if inventory.get("saved")
             else f"Resultado salvo; inventário pendente: {inventory.get('detail') or 'falha não detalhada'}."
         ),
         inventory_saved=bool(inventory.get("saved")),
         quality_overall=quality.get("overall"),
+        alerts_grouped=bool(correlation.get("grouped")),
         percent=98,
     )
     report_progress(
         "completed",
         status="completed",
-        detail="Investigação concluída, registrada no histórico e disponível para revisão explicável.",
+        detail="Investigação concluída, correlacionada e disponível para validação do operador.",
         investigation_id=result.get("investigation_id"),
         display_target=result.get("display_target"),
         percent=100,
