@@ -18,6 +18,10 @@
     ssh_connected: "ssh_connection",
     queue_submission: "worker_wait",
     queue_wait: "worker_wait",
+    multi_host_scope: "target_resolution",
+    multi_host_triage: "evidence_analysis",
+    multi_host_primary: "evidence_analysis",
+    multi_host_handoff: "evidence_analysis",
     command_started: "evidence_analysis",
     command_output: "evidence_analysis",
     command_completed: "evidence_analysis",
@@ -27,6 +31,8 @@
   const COMMAND_STAGES = new Set(["command_started", "command_output", "command_completed", "command_cancelled"]);
   let activeExecution = null;
   let pollTimer = null;
+  let eventStream = null;
+  let streamFailures = 0;
   let showingFinalResult = false;
 
   const stageLabels = {
@@ -39,6 +45,10 @@
     target_resolved: "Alvo resolvido",
     ssh_connection: "Conectando por SSH",
     ssh_connected: "SSH validado",
+    multi_host_scope: "Preparando escopo multi-host",
+    multi_host_triage: "Triagem rápida dos hosts",
+    multi_host_primary: "Investigando servidor de entrada",
+    multi_host_handoff: "Mudando para host relacionado",
     evidence_analysis: "Coletando e analisando evidências",
     command_started: "Executando comando",
     command_output: "Recebendo saída do comando",
@@ -194,8 +204,9 @@
       const stdout = String(event.stdout_tail || "").trim();
       const stderr = String(event.stderr_tail || "").trim();
       const output = [stdout ? `SAÍDA\n${stdout}` : "", stderr ? `ERRO\n${stderr}` : ""].filter(Boolean).join("\n\n");
+      const host = event.host ? ` · ${event.host}` : "";
       return `<article class="execution-command" data-status="${status}">
-        <div class="execution-command-head"><span class="execution-command-state"></span><div><strong>${escapeHtml(event.command || "Comando remoto")}</strong><small>${escapeHtml(label)}${event.elapsed_seconds !== undefined ? ` · ${escapeHtml(formatDuration(event.elapsed_seconds))}` : ""}</small></div></div>
+        <div class="execution-command-head"><span class="execution-command-state"></span><div><strong>${escapeHtml(event.command || "Comando remoto")}</strong><small>${escapeHtml(label)}${escapeHtml(host)}${event.elapsed_seconds !== undefined ? ` · ${escapeHtml(formatDuration(event.elapsed_seconds))}` : ""}</small></div></div>
         ${output ? `<pre>${escapeHtml(output)}</pre>` : `<p class="execution-command-wait">Aguardando saída do comando...</p>`}
       </article>`;
     }).join("");
@@ -205,9 +216,10 @@
     const canCancel = ["queued", "running"].includes(record.status);
     const cancelling = record.status === "cancelling";
     const worker = currentPhase(record)?.worker || record.worker || "";
+    const transport = record.store_backend ? `<span><b>Eventos</b>${escapeHtml(record.store_backend === "redis" ? "SSE · Redis" : "SSE · memória")}</span>` : "";
     return `<section class="execution-live-panel">
       <header class="execution-live-header"><div><p class="eyebrow">AGENT EM TEMPO REAL</p><h3>Coleta e comandos</h3></div><button class="danger-button execution-cancel-button" type="button" data-cancel-execution ${canCancel ? "" : "disabled"}>${cancelling ? "Cancelando..." : record.status === "cancelled" ? "Coleta cancelada" : "Cancelar coleta"}</button></header>
-      <div class="execution-live-meta"><span><b>Tempo</b>${escapeHtml(formatDuration(elapsedSeconds(record)))}</span><span><b>Etapa</b>${escapeHtml(phaseTitle(currentPhase(record)))}</span>${worker ? `<span><b>Worker</b>${escapeHtml(worker)}</span>` : ""}</div>
+      <div class="execution-live-meta"><span><b>Tempo</b>${escapeHtml(formatDuration(elapsedSeconds(record)))}</span><span><b>Etapa</b>${escapeHtml(phaseTitle(currentPhase(record)))}</span>${worker ? `<span><b>Worker</b>${escapeHtml(worker)}</span>` : ""}${transport}</div>
       <div class="execution-command-list">${commandMarkup(record)}</div>
     </section>`;
   }
@@ -260,7 +272,14 @@
     if ($("#view-investigations")?.classList.contains("active")) void loadInvestigations();
   }
 
+  function closeEventStream() {
+    if (eventStream) eventStream.close();
+    eventStream = null;
+  }
+
   function completeExecution(record) {
+    closeEventStream();
+    clearTimeout(pollTimer);
     activeExecution = record;
     renderTray(record);
     setSubmitting(false);
@@ -273,6 +292,7 @@
   }
 
   function failExecution(record) {
+    closeEventStream();
     activeExecution = record;
     renderTray(record);
     setSubmitting(false);
@@ -281,6 +301,7 @@
   }
 
   function cancelExecutionView(record) {
+    closeEventStream();
     activeExecution = record;
     renderTray(record);
     setSubmitting(false);
@@ -288,31 +309,51 @@
     toast("A coleta foi cancelada com segurança.");
   }
 
+  function applyExecutionRecord(record) {
+    if (!record || !activeExecution || activeExecution.execution_id !== record.execution_id) return;
+    activeExecution = record;
+    renderTray(record);
+    renderProgressDrawer(record);
+    if (record.status === "completed") return completeExecution(record);
+    if (record.status === "failed") return failExecution(record);
+    if (record.status === "cancelled") return cancelExecutionView(record);
+  }
+
+  function mergeProgressEvent(event) {
+    if (!activeExecution || !event) return;
+    const phase = {
+      ...event,
+      updated_at: event.updated_at || new Date().toISOString(),
+    };
+    const phases = [...(activeExecution.phases || [])];
+    const index = phases.findIndex((item) => item.stage === phase.stage);
+    if (index >= 0) phases[index] = { ...phases[index], ...phase };
+    else phases.push(phase);
+    const events = [...(activeExecution.events || []), phase].slice(-500);
+    activeExecution = {
+      ...activeExecution,
+      status: phase.status === "cancelling" ? "cancelling" : activeExecution.status,
+      percent: Math.max(percentValue(activeExecution), Number(phase.percent || 0)),
+      current_phase: phase,
+      phases,
+      events,
+      updated_at: phase.updated_at,
+    };
+    renderTray(activeExecution);
+    renderProgressDrawer(activeExecution);
+  }
+
   function schedulePoll(id) {
     clearTimeout(pollTimer);
-    pollTimer = setTimeout(() => void pollExecution(id), 900);
+    pollTimer = setTimeout(() => void pollExecution(id), 1200);
   }
 
   async function pollExecution(id) {
     try {
       const record = await api(`/ui/api/executions/${encodeURIComponent(id)}`);
       if (!activeExecution || activeExecution.execution_id !== id) return;
-      activeExecution = record;
-      renderTray(record);
-      renderProgressDrawer(record);
-      if (record.status === "completed") {
-        completeExecution(record);
-        return;
-      }
-      if (record.status === "failed") {
-        failExecution(record);
-        return;
-      }
-      if (record.status === "cancelled") {
-        cancelExecutionView(record);
-        return;
-      }
-      schedulePoll(id);
+      applyExecutionRecord(record);
+      if (isRunning(record)) schedulePoll(id);
     } catch (error) {
       if (activeExecution?.execution_id !== id) return;
       activeExecution = {
@@ -323,6 +364,38 @@
       };
       failExecution(activeExecution);
     }
+  }
+
+  function startEventStream(id) {
+    closeEventStream();
+    clearTimeout(pollTimer);
+    if (!window.EventSource) {
+      schedulePoll(id);
+      return;
+    }
+    const source = new EventSource(`/ui/api/executions/${encodeURIComponent(id)}/events`);
+    eventStream = source;
+    source.addEventListener("progress", (message) => {
+      streamFailures = 0;
+      try {
+        mergeProgressEvent(JSON.parse(message.data));
+      } catch {
+        schedulePoll(id);
+      }
+    });
+    source.addEventListener("snapshot", (message) => {
+      streamFailures = 0;
+      try {
+        applyExecutionRecord(JSON.parse(message.data));
+      } catch {
+        schedulePoll(id);
+      }
+    });
+    source.onerror = () => {
+      streamFailures += 1;
+      closeEventStream();
+      if (activeExecution?.execution_id === id && isRunning()) schedulePoll(id);
+    };
   }
 
   function analysisPayload() {
@@ -363,7 +436,7 @@
       saveActiveId(record.execution_id);
       renderTray(record);
       renderProgressDrawer(record, true);
-      schedulePoll(record.execution_id);
+      startEventStream(record.execution_id);
     } catch (error) {
       setSubmitting(false);
       toast(error.message, "error");
@@ -384,7 +457,7 @@
       activeExecution = await api(`/ui/api/executions/${encodeURIComponent(activeExecution.execution_id)}/cancel`, { method: "POST" });
       renderTray(activeExecution);
       renderProgressDrawer(activeExecution, true);
-      schedulePoll(activeExecution.execution_id);
+      startEventStream(activeExecution.execution_id);
     } catch (error) {
       if (button) button.disabled = false;
       toast(error.message, "error");
@@ -404,6 +477,7 @@
   function dismissTrackedExecution(event) {
     event.stopPropagation();
     if (isRunning()) return;
+    closeEventStream();
     activeExecution = null;
     showingFinalResult = false;
     saveActiveId(null);
@@ -418,7 +492,7 @@
       renderTray(activeExecution);
       if (isRunning()) {
         setSubmitting(true);
-        schedulePoll(id);
+        startEventStream(id);
       }
     } catch {
       activeExecution = null;
@@ -440,5 +514,6 @@
     void restoreExecution();
   }
 
+  window.addEventListener("beforeunload", closeEventStream);
   document.addEventListener("DOMContentLoaded", setupExecutionTracking);
 })();
