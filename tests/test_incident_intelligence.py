@@ -3,14 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from app.services.correction_comparison import build_before_after_comparison
+from app.services.incident_correlation import correlate_alerts
 from app.services.incident_intelligence import (
     build_dependency_map,
     classify_access_failure,
-    correlate_alerts,
-    enrich_incident_intelligence,
     evidence_freshness,
     validate_conclusion,
 )
+from app.services.incident_orchestration import enrich_incident_intelligence
 
 
 def _base_result() -> dict:
@@ -108,7 +108,8 @@ def test_correlates_checkmk_alerts_and_prioritizes_internal_process() -> None:
     assert correlation["grouped"] is True
     assert correlation["site"] == "sf5"
     assert correlation["primary_alert"]["kind"] == "automation_helper"
-    assert {item["kind"] for item in correlation["related_alerts"]} == {"container_health"}
+    assert {item["kind"] for item in correlation["related_alerts"]} == {"omd_status", "container_health"}
+    assert correlation["detected_kinds"] == ["automation_helper", "container_health", "omd_status"]
 
 
 def test_does_not_group_alerts_from_different_sites() -> None:
@@ -118,6 +119,7 @@ def test_does_not_group_alerts_from_different_sites() -> None:
     correlation = correlate_alerts(result)
 
     assert all(item.get("site") != "frj" for item in correlation["related_alerts"])
+    assert correlation["primary_alert"]["kind"] == "omd_status"
 
 
 def test_conclusion_validator_detects_vpn_and_container_contradictions() -> None:
