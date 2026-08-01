@@ -118,7 +118,7 @@ def test_enriches_result_with_explainability_quality_and_recurrence(monkeypatch)
     assert analysis["hypotheses"] == []
     assert any("tcpdump" in item for item in analysis["missing_information"])
     assert analysis["recurrence"]["total"] == 2
-    assert analysis["recurrence"]["repeated_cause"] == "Serviço Checkmk parado"
+    assert "Serviço Checkmk parado" in analysis["recurrence"]["previous_probable_causes"]
     assert analysis["playbook_match"]["score"] == 84
     assert analysis["playbook_match"]["selected"] is True
     assert analysis["execution_controls"]["duplicate_requests_ignored"] == 1
