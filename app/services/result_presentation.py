@@ -16,9 +16,14 @@ from app.services.redaction import redact_object
 _USER_FIELDS = (
     "summary",
     "facts",
+    "hypotheses",
+    "confirmed_hypotheses",
+    "discarded_hypotheses",
+    "missing_information",
     "probable_cause",
     "conclusion",
     "recommendations",
+    "next_safe_step",
     "evidence_map",
 )
 _ENGLISH_WORDS = {
@@ -80,6 +85,26 @@ def _localization_payload(analysis: dict[str, Any]) -> dict[str, Any]:
             )
             if key in critic
         }
+    recurrence = dict(analysis.get("recurrence") or {})
+    if recurrence:
+        payload["recurrence"] = {
+            "summary": recurrence.get("summary"),
+            "previous_probable_causes": recurrence.get("previous_probable_causes"),
+            "repeated_cause": recurrence.get("repeated_cause"),
+        }
+    playbook = dict(analysis.get("playbook_match") or {})
+    if playbook:
+        payload["playbook_match"] = {"reasons": playbook.get("reasons")}
+    explainability = dict(analysis.get("explainability") or {})
+    if explainability:
+        payload["explainability"] = explainability
+    access = analysis.get("access_journey")
+    if isinstance(access, list):
+        payload["access_journey"] = [
+            {"label": item.get("label"), "detail": item.get("detail")}
+            for item in access
+            if isinstance(item, dict)
+        ]
     return payload
 
 
@@ -102,6 +127,17 @@ def _translation_provider(
         selection = resolve_automatic_provider(settings)
         return selection.provider, selection.model or model
     return provider_name, model
+
+
+def _merge_nested_translation(
+    merged: dict[str, Any],
+    translated: dict[str, Any],
+    key: str,
+) -> None:
+    if isinstance(translated.get(key), dict):
+        merged[key] = {**dict(merged.get(key) or {}), **translated[key]}
+    elif isinstance(translated.get(key), list):
+        merged[key] = translated[key]
 
 
 def _translate_user_fields(
@@ -132,10 +168,20 @@ def _translate_user_fields(
         for key in _USER_FIELDS:
             if key in translated:
                 merged[key] = translated[key]
-        if isinstance(translated.get("review"), dict):
-            merged["review"] = {**dict(merged.get("review") or {}), **translated["review"]}
-        if isinstance(translated.get("critic"), dict):
-            merged["critic"] = {**dict(merged.get("critic") or {}), **translated["critic"]}
+        for key in (
+            "review",
+            "critic",
+            "recurrence",
+            "playbook_match",
+            "explainability",
+        ):
+            _merge_nested_translation(merged, translated, key)
+        if isinstance(translated.get("access_journey"), list):
+            original = [dict(item) for item in merged.get("access_journey") or [] if isinstance(item, dict)]
+            for index, translated_item in enumerate(translated["access_journey"]):
+                if index < len(original) and isinstance(translated_item, dict):
+                    original[index].update(translated_item)
+            merged["access_journey"] = original
         return merged
     except Exception:
         return analysis
@@ -150,22 +196,48 @@ def _status_label(status: str) -> str:
     }.get(status, status or "Inconclusivo")
 
 
+def _clean_list(value: Any) -> list[str]:
+    return [str(item).strip() for item in value or [] if str(item).strip()]
+
+
 def build_ticket_report_ptbr(analysis: dict[str, Any]) -> str:
     confidence = max(0, min(100, int(analysis.get("confidence") or 0)))
     status = str(analysis.get("status") or "inconclusive")
-    facts = [str(item).strip() for item in analysis.get("facts") or [] if str(item).strip()]
-    recommendations = [
-        str(item).strip()
-        for item in analysis.get("recommendations") or []
-        if str(item).strip()
-    ]
+    facts = _clean_list(analysis.get("facts"))
+    hypotheses = _clean_list(analysis.get("hypotheses"))
+    discarded = _clean_list(analysis.get("discarded_hypotheses"))
+    missing = _clean_list(analysis.get("missing_information"))
+    recommendations = _clean_list(analysis.get("recommendations"))
+    target = dict(analysis.get("target_context") or {})
+    recurrence = dict(analysis.get("recurrence") or {})
+    playbook = dict(analysis.get("playbook_match") or {})
+    quality = dict(analysis.get("quality") or {})
+    access = [item for item in analysis.get("access_journey") or [] if isinstance(item, dict)]
+
+    display_target = target.get("client_name") or target.get("hostname") or target.get("vpn_ip")
     rows = [
+        f"Alvo: {display_target or 'não identificado'}",
+        f"IP: {target.get('vpn_ip') or 'não informado'}",
+        f"Ambiente: {target.get('environment') or 'unknown'}",
         f"Status da análise: {_status_label(status)}",
         f"Confiança validada: {confidence}%",
-        "",
-        "Resumo:",
-        str(analysis.get("summary") or "A investigação foi concluída sem resumo textual.").strip(),
     ]
+    if quality:
+        rows.append(f"Qualidade geral da investigação: {int(quality.get('overall') or 0)}%")
+    rows.extend(
+        [
+            "",
+            "Resumo operacional:",
+            str(analysis.get("summary") or "A investigação foi concluída sem resumo textual.").strip(),
+        ]
+    )
+
+    if access:
+        rows.extend(["", "Caminho de acesso:"])
+        for item in access:
+            marker = "OK" if item.get("status") == "completed" else str(item.get("status") or "pendente").upper()
+            rows.append(f"- [{marker}] {item.get('label')}: {item.get('detail')}")
+
     probable_cause = str(analysis.get("probable_cause") or "").strip()
     if probable_cause:
         rows.extend(["", "Causa provável:", probable_cause])
@@ -173,9 +245,32 @@ def build_ticket_report_ptbr(analysis: dict[str, Any]) -> str:
     if conclusion:
         rows.extend(["", "Conclusão:", conclusion])
     if facts:
-        rows.extend(["", "Fatos confirmados:", *[f"- {item}" for item in facts[:12]]])
+        rows.extend(["", "Fatos comprovados:", *[f"- {item}" for item in facts[:12]]])
+    if hypotheses:
+        rows.extend(["", "Hipóteses ainda em avaliação:", *[f"- {item}" for item in hypotheses[:8]]])
+    if discarded:
+        rows.extend(["", "Hipóteses descartadas:", *[f"- {item}" for item in discarded[:8]]])
+    if missing:
+        rows.extend(["", "Evidências ainda necessárias:", *[f"- {item}" for item in missing[:8]]])
+
+    if playbook.get("selected"):
+        rows.extend(
+            [
+                "",
+                "Playbook selecionado:",
+                f"- {playbook.get('title') or playbook.get('id')} · compatibilidade {int(playbook.get('score') or 0)}%",
+            ]
+        )
+        rows.extend(f"- {item}" for item in _clean_list(playbook.get("reasons"))[:5])
+
+    if recurrence.get("total"):
+        rows.extend(["", "Recorrência:", f"- {recurrence.get('summary')}"])
     if recommendations:
         rows.extend(["", "Recomendações:", *[f"- {item}" for item in recommendations[:12]]])
+
+    next_step = str(analysis.get("next_safe_step") or "").strip()
+    if next_step:
+        rows.extend(["", "Próximo passo mais seguro:", next_step])
     return "\n".join(rows).strip()
 
 
@@ -206,7 +301,7 @@ def finalize_result_presentation(
     *,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Garante pt-BR e uma única confiança para tela, histórico e texto do ticket."""
+    """Garante pt-BR, explicabilidade e uma única confiança para tela e histórico."""
     settings = settings or get_settings()
     analysis = dict(result.get("analysis") or {})
     analysis = _translate_user_fields(analysis, result, settings)

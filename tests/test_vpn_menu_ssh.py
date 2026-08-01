@@ -85,11 +85,22 @@ def _executor(channel: FakeInteractiveChannel) -> tuple[VPNMenuSSHExecutor, Magi
     return executor, bastion
 
 
+def _access_steps(progress: MagicMock) -> list[str]:
+    return [
+        str(call.kwargs["access_step"])
+        for call in progress.call_args_list
+        if call.args and call.args[0] == "ssh_connection" and call.kwargs.get("access_step")
+    ]
+
+
 def test_connects_through_menu_selects_matching_line_and_runs_command() -> None:
     channel = FakeInteractiveChannel()
     executor, bastion = _executor(channel)
 
-    with patch("app.services.vpn_menu_ssh.paramiko.SSHClient", return_value=bastion):
+    with (
+        patch("app.services.vpn_menu_ssh.paramiko.SSHClient", return_value=bastion),
+        patch("app.services.vpn_menu_ssh.report_progress") as progress,
+    ):
         executor.connect()
         result = executor.run("uname -s", EnvironmentType.MONITORING)
 
@@ -104,12 +115,25 @@ def test_connects_through_menu_selects_matching_line_and_runs_command() -> None:
     assert "server-secret\n" in channel.sent
     bastion.connect.assert_called_once()
 
+    steps = _access_steps(progress)
+    assert steps.index("bastion") < steps.index("inventory")
+    assert steps.index("inventory") < steps.index("selection")
+    assert steps.index("selection") < steps.index("confirmation")
+    assert steps.index("confirmation") < steps.index("authentication")
+    assert steps.index("authentication") < steps.index("target_shell")
+    journey = executor.connection_metadata["access_journey"]
+    assert journey[-1]["step"] == "target_shell"
+    assert journey[-1]["status"] == "completed"
+
 
 def test_pfsense_uses_firewall_password_and_enters_shell_option_8() -> None:
     channel = FakeInteractiveChannel(pfsense=True)
     executor, bastion = _executor(channel)
 
-    with patch("app.services.vpn_menu_ssh.paramiko.SSHClient", return_value=bastion):
+    with (
+        patch("app.services.vpn_menu_ssh.paramiko.SSHClient", return_value=bastion),
+        patch("app.services.vpn_menu_ssh.report_progress") as progress,
+    ):
         executor.connect()
         result = executor.run_sudo("uname -s", EnvironmentType.MONITORING)
 
@@ -122,3 +146,8 @@ def test_pfsense_uses_firewall_password_and_enters_shell_option_8() -> None:
     assert "pf-secret\n" in channel.sent
     assert "8\n" in channel.sent
     assert not any("sudo -S" in item for item in channel.sent)
+    assert "pfsense_shell" in _access_steps(progress)
+    assert any(
+        item["step"] == "pfsense_shell" and item["status"] == "completed"
+        for item in executor.connection_metadata["access_journey"]
+    )
