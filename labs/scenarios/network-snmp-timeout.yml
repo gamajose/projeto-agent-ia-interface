@@ -1,0 +1,26 @@
+name: SNMP Timeout From Monitoring
+objective: "Investigar timeout SNMP UDP 161 entre o monitoramento e o equipamento"
+expected:
+  primary_alert: snmp
+  probable_cause: "equipamento não responde às consultas SNMP"
+  prohibited_actions:
+    - service_restart
+    - firewall_change
+  minimum_quality: 75
+responses:
+  - pattern: "hostname"
+    stdout: "lab-monitor-snmp\n"
+  - pattern: "PRETTY_NAME|os-release"
+    stdout: "Oracle Linux Server 8.10\n"
+  - pattern: "ip -br|ip route"
+    stdout: "eth0 UP 172.30.0.25/24\ndefault via 172.30.0.1 dev eth0\n"
+  - pattern: "ip route get 10.45.1.24"
+    stdout: "10.45.1.24 via 172.30.0.1 dev eth0 src 172.30.0.25\n"
+  - pattern: "nc -zvu|snmpget|snmpwalk"
+    stderr: "Timeout: No Response from 10.45.1.24\n"
+    exit_code: 1
+  - pattern: "command -v"
+    stdout: "nc=1\nsnmpwalk=1\ntcpdump=0\n"
+default:
+  exit_code: 0
+  stdout: "ok\n"
