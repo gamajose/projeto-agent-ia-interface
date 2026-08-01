@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.conclusion_validator import validate_conclusion
 from app.services.incident_correlation import correlate_alerts
 from app.services.incident_intelligence import (
     build_dependency_map,
     classify_access_failure,
     evidence_freshness,
-    validate_conclusion,
 )
 
 
