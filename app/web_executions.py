@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.cancellation import ExecutionCancelled, raise_if_cancelled
+from app.services.evidence_timing import stamp_evidence_timing
 from app.services.incident_intelligence import enrich_incident_intelligence
 from app.services.investigation_insights import enrich_investigation_result
 from app.services.jobs import cancel_job, enqueue_investigation, get_job
@@ -167,6 +168,7 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
                 elif status == "completed":
                     raw = dict(current.get("result") or {})
                     persist_result_inventory(raw, settings=settings)
+                    stamp_evidence_timing(raw)
                     enrich_investigation_result(raw, settings=settings)
                     enrich_incident_intelligence(raw)
                     finalize_result_presentation(raw, settings=settings)
