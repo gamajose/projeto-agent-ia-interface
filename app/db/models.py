@@ -106,3 +106,38 @@ class ApprovalExecutionORM(Base):
     results: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class InvestigationFeedbackORM(Base):
+    __tablename__ = "investigation_feedback"
+    __table_args__ = (
+        UniqueConstraint("investigation_id", "operator", name="uq_investigation_feedback_operator"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investigation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True)
+    operator: Mapped[str] = mapped_column(String(255), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(20), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text)
+    confirmed_cause: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PlaybookDraftORM(Base):
+    __tablename__ = "playbook_drafts"
+    __table_args__ = (UniqueConstraint("investigation_id", name="uq_playbook_draft_investigation"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    investigation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("investigations.id", ondelete="CASCADE"), nullable=False, index=True)
+    playbook_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
+    yaml_content: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_by: Mapped[str | None] = mapped_column(String(255))
+    reviewed_by: Mapped[str | None] = mapped_column(String(255))
+    review_notes: Mapped[str | None] = mapped_column(Text)
+    activated_path: Mapped[str | None] = mapped_column(String(1024))
+    metadata_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
