@@ -1,7 +1,7 @@
 # Laboratório de incidentes
 
 O laboratório simula hosts SSH e respostas operacionais sem acessar servidores de clientes.
-Ele existe para comparar provedores, validar playbooks, reproduzir falhas e testar políticas.
+Ele existe para comparar provedores, validar playbooks, reproduzir falhas, testar políticas e medir a qualidade da inteligência de incidentes.
 
 ## Subir o cenário padrão
 
@@ -41,10 +41,16 @@ Cenários disponíveis:
 
 - `checkmk-systemd-socket.yml`
 - `checkmk-container-unhealthy.yml`
+- `checkmk-automation-helper-stopped.yml`
+- `checkmk-omd-partial.yml`
+- `checkmk-agent-6556-refused.yml`
 - `linux-filesystem-high.yml`
 - `linux-swap-high.yml`
 - `network-ssh-reset-peer.yml`
 - `network-vpn-down.yml`
+- `network-snmp-timeout.yml`
+
+Os cenários novos podem incluir um bloco `expected`. Ele documenta a classificação esperada, causa provável, ações proibidas e qualidade mínima. O servidor SSH ignora esse bloco durante a simulação; ele serve como contrato para testes de regressão e avaliação da IA.
 
 ## Comparar modelos sem abrir SSH
 
