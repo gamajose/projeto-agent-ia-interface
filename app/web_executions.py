@@ -12,6 +12,7 @@ from app.services.evidence_timing import stamp_evidence_timing
 from app.services.incident_orchestration import enrich_incident_intelligence
 from app.services.investigation_insights import enrich_investigation_result
 from app.services.jobs import cancel_job, enqueue_investigation, get_job
+from app.services.multi_host_runner import run_multi_host_tracked
 from app.services.progress import report_progress
 from app.services.result_presentation import finalize_result_presentation
 from app.services.tracked_runner import persist_result_inventory, run_target_tracked
@@ -21,13 +22,13 @@ from app.services.ui_executions import (
     submit_ui_execution,
 )
 from app.web import (
-    InvestigationPayload,
     _compact_result,
     _operator_name,
     _require_access,
     _require_mutation,
     _validate_selection,
 )
+from app.web_topology import MultiHostInvestigationPayload
 
 
 router = APIRouter(tags=["interface-executions"])
@@ -48,6 +49,8 @@ def _compact_with_request(
     compact["inventory"] = result.get("inventory")
     compact["status"] = (result.get("analysis") or {}).get("status") or result.get("status")
     compact["confidence"] = (result.get("analysis") or {}).get("confidence") or result.get("confidence")
+    compact["multi_host"] = result.get("multi_host") or (result.get("analysis") or {}).get("multi_host")
+    compact["child_investigations"] = result.get("child_investigations") or []
     return compact
 
 
@@ -63,7 +66,7 @@ def _forward_worker_event(event: dict[str, Any], *, job_id: str, worker: str | N
 
 
 @router.post("/ui/api/executions")
-def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[str, Any]:
+def start_ui_execution(payload: MultiHostInvestigationPayload, request: Request) -> dict[str, Any]:
     _require_mutation(request)
     settings = get_settings()
     ensure_database_schema()
@@ -81,6 +84,12 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
         "playbook_mode": "auto" if provider == "auto" else payload.playbook_mode,
         "playbook_id": None if provider == "auto" else (payload.playbook_id or "").strip() or None,
         "settings": settings,
+    }
+    multi_host_options = {
+        "multi_host": bool(payload.multi_host),
+        "customer_name": (payload.customer_name or "").strip() or None,
+        "auto_expand_scope": bool(payload.auto_expand_scope),
+        "related_targets": [item.model_dump(mode="json") for item in payload.related_targets],
     }
     target = payload.target.strip()
     objective = payload.objective.strip()
@@ -103,8 +112,10 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
                     "operator": _operator_name(),
                     "requested_mode": payload.mode,
                     "autopilot": provider == "auto",
+                    "multi_host": bool(payload.multi_host),
                 },
                 **common,
+                **multi_host_options,
             )
             job_id = str(job.get("job_id") or "")
             try:
@@ -167,11 +178,12 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
                     raise RuntimeError(str(current.get("error") or "a execução na fila falhou"))
                 elif status == "completed":
                     raw = dict(current.get("result") or {})
-                    persist_result_inventory(raw, settings=settings)
-                    stamp_evidence_timing(raw)
-                    enrich_investigation_result(raw, settings=settings)
-                    enrich_incident_intelligence(raw)
-                    finalize_result_presentation(raw, settings=settings)
+                    if not payload.multi_host:
+                        persist_result_inventory(raw, settings=settings)
+                        stamp_evidence_timing(raw)
+                        enrich_investigation_result(raw, settings=settings)
+                        enrich_incident_intelligence(raw)
+                        finalize_result_presentation(raw, settings=settings)
                     return _compact_with_request(
                         raw,
                         requested_mode=payload.mode,
@@ -181,7 +193,17 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
                 time.sleep(1.0)
     else:
         def operation() -> dict[str, Any]:
-            raw = run_target_tracked(target, objective, **common)
+            if payload.multi_host:
+                raw = run_multi_host_tracked(
+                    target,
+                    objective,
+                    **common,
+                    customer_name=multi_host_options["customer_name"],
+                    related_targets=multi_host_options["related_targets"],
+                    auto_expand_scope=multi_host_options["auto_expand_scope"],
+                )
+            else:
+                raw = run_target_tracked(target, objective, **common)
             return _compact_with_request(
                 raw,
                 requested_mode=payload.mode,
