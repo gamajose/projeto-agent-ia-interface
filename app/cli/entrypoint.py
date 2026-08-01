@@ -16,8 +16,15 @@ from app.cli.help_screen import (
 console = Console()
 
 
+def _install_operational_runtime() -> None:
+    from app.services.operational_tool_instrumentation import install_operational_tools
+
+    install_operational_tools()
+
+
 def _run_menu() -> None:
     """Carrega dependências operacionais apenas quando o menu for solicitado."""
+    _install_operational_runtime()
     from app.cli.agent import _prepare_database, _show_result
     from app.cli.interactive_menu import run_main_menu
     from app.cli.menu_control import MenuExitRequested, global_menu_exit
@@ -40,6 +47,7 @@ def _run_menu() -> None:
 
 def _run_legacy_cli() -> None:
     """Carrega o CLI operacional somente para comandos que realmente precisam dele."""
+    _install_operational_runtime()
     from app.cli.agent import main as legacy_main
 
     legacy_main()
@@ -47,6 +55,7 @@ def _run_legacy_cli() -> None:
 
 def _run_ai_doctor() -> None:
     """Executa o diagnóstico antes do parser legado com alvo posicional variável."""
+    _install_operational_runtime()
     from app.cli.agent import doctor_ai
 
     doctor_ai()
