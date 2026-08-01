@@ -140,7 +140,6 @@ def combined_tool_catalog(runtime_context: dict[str, Any] | None = None) -> list
     for item in [*describe_tools(), *describe_adaptive_tools(), *describe_operational_tools()]:
         row = dict(item)
         requirements = tuple(row.get("requires_any") or ())
-        # Ferramentas HTTP são executadas no Agent e não dependem de binários do alvo.
         if row.get("transport") == "http":
             row["available"] = True
         else:
@@ -194,6 +193,74 @@ def tool_feedback(evidence: Iterable[dict[str, Any]]) -> dict[str, Any]:
         key: list(dict.fromkeys(values))
         for key, values in by_status.items()
     } | {"reasons": reasons[-20:]}
+
+
+def _diversify_recommendations(
+    rows: list[dict[str, Any]],
+    *,
+    objective_tokens: set[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Evita que muitas ferramentas de um único domínio ocultem alternativas úteis."""
+    limit = max(1, int(limit))
+    selected = list(rows[:limit])
+    selected_names = {str(item.get("tool") or "") for item in selected}
+
+    priority_groups: list[tuple[set[str], tuple[str, ...]]] = []
+    if objective_tokens & {"servico", "service", "unidade", "unit", "systemd"}:
+        priority_groups.append(({"service"}, ("service.search", "systemd.inspect_unit", "systemd.list_failed")))
+    if objective_tokens & {"erro", "erros", "error", "errors", "log", "logs", "journal"}:
+        priority_groups.append(({"logs"}, ("logs.search", "journal.read_unit")))
+    if objective_tokens & {"porta", "port", "socket", "listener", "listeners"}:
+        priority_groups.append(({"network"}, ("network.listeners", "network.test_port")))
+
+    for categories, preferred_names in priority_groups:
+        if any(str(item.get("category") or "") in categories for item in selected):
+            continue
+        candidate = next(
+            (
+                item
+                for preferred in preferred_names
+                for item in rows
+                if item.get("tool") == preferred and item.get("tool") not in selected_names
+            ),
+            None,
+        )
+        if candidate is None:
+            candidate = next(
+                (
+                    item
+                    for item in rows
+                    if str(item.get("category") or "") in categories
+                    and item.get("tool") not in selected_names
+                ),
+                None,
+            )
+        if candidate is None:
+            continue
+        if len(selected) >= limit:
+            replace_index = next(
+                (
+                    index
+                    for index in range(len(selected) - 1, -1, -1)
+                    if str(selected[index].get("category") or "") not in categories
+                    and sum(
+                        1
+                        for existing in selected
+                        if existing.get("category") == selected[index].get("category")
+                    ) > 1
+                ),
+                len(selected) - 1,
+            )
+            selected_names.discard(str(selected[replace_index].get("tool") or ""))
+            selected[replace_index] = candidate
+        else:
+            selected.append(candidate)
+        selected_names.add(str(candidate.get("tool") or ""))
+
+    order = {str(item.get("tool") or ""): index for index, item in enumerate(rows)}
+    selected.sort(key=lambda item: order.get(str(item.get("tool") or ""), len(rows)))
+    return selected[:limit]
 
 
 def recommend_tools(
@@ -262,9 +329,12 @@ def recommend_tools(
 
     ranked.sort(key=lambda pair: (-pair[0], pair[1]["tool"]))
     positive = [row for score, row in ranked if score > 0]
-    if positive:
-        return positive[: max(1, limit)]
-    return [row for _, row in ranked[: max(1, min(limit, 6))]]
+    candidates = positive if positive else [row for _, row in ranked[: max(1, min(limit, 12))]]
+    return _diversify_recommendations(
+        candidates,
+        objective_tokens=objective_tokens,
+        limit=limit,
+    )
 
 
 def _recommendation_reason(
