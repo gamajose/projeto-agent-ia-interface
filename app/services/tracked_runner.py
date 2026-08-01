@@ -6,7 +6,7 @@ from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
 from app.services.ai_providers import use_provider
 from app.services.evidence_timing import stamp_evidence_timing
-from app.services.incident_intelligence import classify_access_failure, enrich_incident_intelligence
+from app.services.incident_orchestration import classify_access_failure, enrich_incident_intelligence
 from app.services.intelligent_agent import run_dynamic_investigation
 from app.services.inventory_learning import learn_result_inventory
 from app.services.investigation_insights import enrich_investigation_result
