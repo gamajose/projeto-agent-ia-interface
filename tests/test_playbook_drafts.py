@@ -23,8 +23,8 @@ def _investigation() -> dict:
             }
         ],
         "evidence": [
-            {"tool": "checkmk.find_omd_service", "exit_code": 0},
-            {"tool": "docker.inspect_health", "exit_code": 0},
+            {"tool": "checkmk.find_omd_service", "arguments": {"service": "automation-helper"}, "exit_code": 0},
+            {"tool": "docker.inspect_health", "arguments": {"container": "checkmk-sf5-25"}, "exit_code": 0},
         ],
     }
 
@@ -47,8 +47,13 @@ def test_generates_reviewable_yaml_only_after_validated_action(monkeypatch) -> N
     assert draft is not None
     payload = yaml.safe_load(stored["yaml_content"])
     assert payload["metadata"]["requires_human_review"] is True
+    assert payload["metadata"]["validation_is_read_only"] is True
     assert payload["allowed_corrections"] == ["checkmk.recover_omd_service"]
     assert payload["profiles"] == ["checkmk"]
+    assert {item["tool"] for item in payload["validation"]} == {
+        "checkmk.find_omd_service",
+        "docker.inspect_health",
+    }
     assert len(stored["yaml_content"].encode("utf-8")) < 100 * 1024
 
 
@@ -69,8 +74,10 @@ def test_activation_requires_review_marker_and_writes_inside_catalog(tmp_path: P
             "match": {"any": ["automation-helper"]},
             "steps": [],
             "allowed_corrections": ["checkmk.recover_omd_service"],
-            "validation": [],
-            "metadata": {"requires_human_review": True},
+            "validation": [
+                {"tool": "checkmk.find_omd_service", "arguments": {"service": "automation-helper"}}
+            ],
+            "metadata": {"requires_human_review": True, "validation_is_read_only": True},
         },
         allow_unicode=True,
         sort_keys=False,
@@ -129,3 +136,35 @@ def test_activation_rejects_yaml_without_human_review_marker(tmp_path: Path, mon
         assert "revisão humana" in str(exc)
     else:
         raise AssertionError("rascunho sem revisão humana não pode ser ativado")
+
+
+def test_activation_rejects_corrective_validation(tmp_path: Path, monkeypatch) -> None:
+    content = yaml.safe_dump(
+        {
+            "id": "unsafe-validation",
+            "validation": [{"tool": "checkmk.recover_omd_service", "arguments": {}}],
+            "metadata": {"requires_human_review": True, "validation_is_read_only": True},
+        },
+        sort_keys=False,
+    )
+    monkeypatch.setattr(
+        playbook_drafts,
+        "get_playbook_draft",
+        lambda _draft_id: {
+            "id": "draft",
+            "playbook_id": "unsafe-validation",
+            "status": "draft",
+            "yaml_content": content,
+        },
+    )
+
+    try:
+        playbook_drafts.activate_playbook_draft(
+            "draft",
+            reviewed_by="jose",
+            settings=SimpleNamespace(agent_playbook_dir=str(tmp_path)),
+        )
+    except ValueError as exc:
+        assert "ferramenta corretiva" in str(exc)
+    else:
+        raise AssertionError("validação corretiva não pode ser ativada")
