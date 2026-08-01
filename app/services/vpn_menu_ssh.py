@@ -22,6 +22,15 @@ _PERMISSION_DENIED = re.compile(r"Permission denied|Authentication failed", re.I
 _PFSENSE_MENU_PROMPT = re.compile(r"Enter an option\s*:", re.I)
 _SELECTION_PROMPT = re.compile(r"Qual o N[uú]mero do Servidor Para Acesso", re.I)
 _CONFIRMATION_PROMPT = re.compile(r"Deseja Acessar o Servidor|\[Y\|N]", re.I)
+_ACCESS_LABELS = {
+    "bastion": "Monitor 1",
+    "inventory": "Inventário VPN",
+    "selection": "Seleção da linha",
+    "confirmation": "Confirmação de acesso",
+    "authentication": "Autenticação no destino",
+    "pfsense_shell": "Shell do pfSense",
+    "target_shell": "Shell do alvo",
+}
 
 
 class VPNMenuSSHExecutor(SSHExecutor):
@@ -53,7 +62,11 @@ class VPNMenuSSHExecutor(SSHExecutor):
         self.firewall_shell_option = int(firewall_shell_option)
         self.interactive_channel: paramiko.Channel | None = None
         self.remote_username = self.username
-        self.connection_metadata: dict[str, object] = {"mode": "vpn_menu"}
+        self.access_journey: list[dict[str, object]] = []
+        self.connection_metadata: dict[str, object] = {
+            "mode": "vpn_menu",
+            "access_journey": self.access_journey,
+        }
 
     def _channel(self) -> paramiko.Channel:
         if self.interactive_channel is None or self.interactive_channel.closed:
@@ -63,6 +76,42 @@ class VPNMenuSSHExecutor(SSHExecutor):
     @staticmethod
     def _matches(value: str, patterns: tuple[Pattern[str], ...]) -> bool:
         return any(pattern.search(value) for pattern in patterns)
+
+    def _access_progress(
+        self,
+        step: str,
+        *,
+        status: str,
+        detail: str,
+        percent: int,
+        **metadata: object,
+    ) -> None:
+        item = {
+            "step": step,
+            "label": _ACCESS_LABELS.get(step, step.replace("_", " ").title()),
+            "status": status,
+            "detail": detail,
+            **metadata,
+        }
+        index = next(
+            (position for position, current in enumerate(self.access_journey) if current.get("step") == step),
+            None,
+        )
+        if index is None:
+            self.access_journey.append(item)
+        else:
+            self.access_journey[index] = {**self.access_journey[index], **item}
+        self.connection_metadata["access_journey"] = [dict(current) for current in self.access_journey]
+        report_progress(
+            "ssh_connection",
+            status=status,
+            detail=detail,
+            access_step=step,
+            access_label=item["label"],
+            access_journey=[dict(current) for current in self.access_journey],
+            percent=percent,
+            **metadata,
+        )
 
     def _receive_until(
         self,
@@ -149,7 +198,6 @@ class VPNMenuSSHExecutor(SSHExecutor):
             timeout=self.vpn_menu_timeout,
             purpose="confirmação do shell remoto",
         )
-        # Evita que os comandos e a senha de sudo sejam devolvidos pelo TTY.
         self._send_line("stty -echo 2>/dev/null || true")
         self._drain(quiet_seconds=0.2, limit_seconds=1.0)
 
@@ -172,61 +220,193 @@ class VPNMenuSSHExecutor(SSHExecutor):
 
     def connect(self) -> None:
         raise_if_cancelled("Conexão SSH cancelada pelo operador.")
-        bastion = self._connect_bastion()
-        channel = bastion.invoke_shell(term="xterm", width=160, height=48)
-        self.interactive_channel = channel
-        self._drain(quiet_seconds=0.25, limit_seconds=2.0)
-
-        command = self.vpn_command.format(host=self.host)
-        self._send_line(command)
-        menu_output = self._receive_until(
-            (_SELECTION_PROMPT,),
-            purpose="inventário e seleção do cliente no menu VPN",
-        )
-        entry = select_vpn_menu_entry(
-            menu_output,
-            self.host,
-            default_port=self.port,
-            pfsense_port=self.firewall_port,
-        )
-        self._send_line(str(entry.index))
-        self._receive_until(
-            (_CONFIRMATION_PROMPT,),
-            purpose="confirmação de acesso ao cliente",
-        )
-        self._send_line("y")
-
-        prompted_user, _ = self._wait_for_password_prompt()
-        use_firewall_credentials = entry.is_pfsense or prompted_user == self.firewall_user
-        password = self.firewall_password if use_firewall_credentials else self.password
-        if not password:
-            variable = "SSH_FIREWALL_PF_PASSWORD" if use_firewall_credentials else "SSH_DEFAULT_PASSWORD"
-            raise ValueError(f"{variable} não está configurada para autenticar no alvo")
-        self.remote_username = prompted_user
-        self._send_line(password)
-
-        if use_firewall_credentials:
-            self._receive_until(
-                (_PFSENSE_MENU_PROMPT,),
-                purpose="menu do pfSense",
+        current_step = "bastion"
+        current_percent = 32
+        try:
+            self._access_progress(
+                current_step,
+                status="running",
+                detail=f"Conectando ao Monitor 1 em {self.bastion_host}:{self.bastion_port}.",
+                percent=current_percent,
+                bastion_host=self.bastion_host,
             )
-            self._send_line(str(self.firewall_shell_option))
+            bastion = self._connect_bastion()
+            channel = bastion.invoke_shell(term="xterm", width=160, height=48)
+            self.interactive_channel = channel
+            self._drain(quiet_seconds=0.25, limit_seconds=2.0)
+            self._access_progress(
+                current_step,
+                status="completed",
+                detail="Monitor 1 autenticado e terminal interativo aberto.",
+                percent=34,
+                bastion_host=self.bastion_host,
+            )
 
-        self._probe_target_shell()
-        self.port = entry.ssh_port
-        self.connection_metadata = {
-            "mode": "vpn_menu",
-            "bastion_host": self.bastion_host,
-            "vpn_index": entry.index,
-            "vpn_ip": entry.vpn_ip,
-            "client_name": entry.display_name,
-            "raw_client_name": entry.raw_name,
-            "client_code": entry.client_code,
-            "port_spec": entry.port_spec,
-            "ssh_port": entry.ssh_port,
-            "username": prompted_user,
-            "is_pfsense": bool(use_firewall_credentials),
-        }
+            current_step = "inventory"
+            current_percent = 35
+            command = self.vpn_command.format(host=self.host)
+            self._access_progress(
+                current_step,
+                status="running",
+                detail=f"Executando {redact_text(command)} e aguardando o inventário VPN.",
+                percent=current_percent,
+                vpn_ip=self.host,
+            )
+            self._send_line(command)
+            menu_output = self._receive_until(
+                (_SELECTION_PROMPT,),
+                purpose="inventário e seleção do cliente no menu VPN",
+            )
+            entry = select_vpn_menu_entry(
+                menu_output,
+                self.host,
+                default_port=self.port,
+                pfsense_port=self.firewall_port,
+            )
+            self._access_progress(
+                current_step,
+                status="completed",
+                detail=f"Cliente identificado: {entry.display_name} ({entry.vpn_ip}).",
+                percent=37,
+                client_name=entry.display_name,
+                vpn_ip=entry.vpn_ip,
+                vpn_index=entry.index,
+            )
+
+            current_step = "selection"
+            current_percent = 38
+            self._access_progress(
+                current_step,
+                status="running",
+                detail=f"Selecionando a linha {entry.index} do cliente {entry.display_name}.",
+                percent=current_percent,
+                client_name=entry.display_name,
+                vpn_index=entry.index,
+            )
+            self._send_line(str(entry.index))
+            self._receive_until(
+                (_CONFIRMATION_PROMPT,),
+                purpose="confirmação de acesso ao cliente",
+            )
+            self._access_progress(
+                current_step,
+                status="completed",
+                detail=f"Linha {entry.index} selecionada e confirmação solicitada.",
+                percent=39,
+                client_name=entry.display_name,
+                vpn_index=entry.index,
+            )
+
+            current_step = "confirmation"
+            current_percent = 40
+            self._access_progress(
+                current_step,
+                status="running",
+                detail="Confirmando o acesso ao servidor cliente com y.",
+                percent=current_percent,
+            )
+            self._send_line("y")
+            self._access_progress(
+                current_step,
+                status="completed",
+                detail="Acesso confirmado no menu VPN.",
+                percent=41,
+            )
+
+            current_step = "authentication"
+            current_percent = 42
+            self._access_progress(
+                current_step,
+                status="running",
+                detail="Aguardando o prompt de senha do servidor cliente.",
+                percent=current_percent,
+                client_name=entry.display_name,
+            )
+            prompted_user, _ = self._wait_for_password_prompt()
+            use_firewall_credentials = entry.is_pfsense or prompted_user == self.firewall_user
+            password = self.firewall_password if use_firewall_credentials else self.password
+            if not password:
+                variable = "SSH_FIREWALL_PF_PASSWORD" if use_firewall_credentials else "SSH_DEFAULT_PASSWORD"
+                raise ValueError(f"{variable} não está configurada para autenticar no alvo")
+            self.remote_username = prompted_user
+            self._send_line(password)
+            self._access_progress(
+                current_step,
+                status="completed",
+                detail=f"Credencial enviada para o usuário {prompted_user}; aguardando o shell remoto.",
+                percent=43,
+                username=prompted_user,
+                is_pfsense=bool(use_firewall_credentials),
+            )
+
+            if use_firewall_credentials:
+                current_step = "pfsense_shell"
+                current_percent = 44
+                self._access_progress(
+                    current_step,
+                    status="running",
+                    detail="Aguardando o menu do pfSense para selecionar a opção 8.",
+                    percent=current_percent,
+                    shell_option=self.firewall_shell_option,
+                )
+                self._receive_until(
+                    (_PFSENSE_MENU_PROMPT,),
+                    purpose="menu do pfSense",
+                )
+                self._send_line(str(self.firewall_shell_option))
+                self._access_progress(
+                    current_step,
+                    status="completed",
+                    detail=f"Opção {self.firewall_shell_option} selecionada no pfSense.",
+                    percent=45,
+                    shell_option=self.firewall_shell_option,
+                )
+
+            current_step = "target_shell"
+            current_percent = 45
+            self._access_progress(
+                current_step,
+                status="running",
+                detail="Validando se o shell do alvo aceita comandos de coleta.",
+                percent=current_percent,
+                client_name=entry.display_name,
+            )
+            self._probe_target_shell()
+            self.port = entry.ssh_port
+            self._access_progress(
+                current_step,
+                status="completed",
+                detail=f"Shell de {entry.display_name} validado e pronto para a investigação.",
+                percent=46,
+                client_name=entry.display_name,
+                ssh_port=entry.ssh_port,
+            )
+            self.connection_metadata.update(
+                {
+                    "mode": "vpn_menu",
+                    "bastion_host": self.bastion_host,
+                    "vpn_index": entry.index,
+                    "vpn_ip": entry.vpn_ip,
+                    "client_name": entry.display_name,
+                    "raw_client_name": entry.raw_name,
+                    "client_code": entry.client_code,
+                    "port_spec": entry.port_spec,
+                    "ssh_port": entry.ssh_port,
+                    "username": prompted_user,
+                    "is_pfsense": bool(use_firewall_credentials),
+                    "access_journey": [dict(item) for item in self.access_journey],
+                }
+            )
+        except Exception as exc:
+            detail = f"Falha em {_ACCESS_LABELS.get(current_step, current_step)}: {type(exc).__name__}: {exc}"
+            self._access_progress(
+                current_step,
+                status="failed",
+                detail=redact_text(detail),
+                percent=current_percent,
+                vpn_ip=self.host,
+            )
+            raise
 
     def close(self) -> None:
         if self.interactive_channel is not None:
@@ -368,7 +548,6 @@ class VPNMenuSSHExecutor(SSHExecutor):
                 timeout=timeout,
                 sudo_password=self.password,
             )
-        # Sem senha configurada, exige sudo sem prompt; o retorno mostrará a falha.
         return self._execute_interactive(command=f"sudo -n sh -lc {shlex.quote(command)}", timeout=timeout)
 
 
