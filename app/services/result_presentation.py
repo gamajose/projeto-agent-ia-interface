@@ -213,6 +213,12 @@ def build_ticket_report_ptbr(analysis: dict[str, Any]) -> str:
     playbook = dict(analysis.get("playbook_match") or {})
     quality = dict(analysis.get("quality") or {})
     access = [item for item in analysis.get("access_journey") or [] if isinstance(item, dict)]
+    incident = dict(analysis.get("incident_intelligence") or {})
+    correlation = dict(incident.get("alert_correlation") or {})
+    conclusion_validation = dict(incident.get("conclusion_validation") or {})
+    freshness = dict(incident.get("evidence_freshness") or {})
+    dependency_map = dict(incident.get("dependency_map") or {})
+    correction_validation = dict(analysis.get("correction_validation") or {})
 
     display_target = target.get("client_name") or target.get("hostname") or target.get("vpn_ip")
     rows = [
@@ -238,12 +244,39 @@ def build_ticket_report_ptbr(analysis: dict[str, Any]) -> str:
             marker = "OK" if item.get("status") == "completed" else str(item.get("status") or "pendente").upper()
             rows.append(f"- [{marker}] {item.get('label')}: {item.get('detail')}")
 
+    if correlation:
+        primary = dict(correlation.get("primary_alert") or {})
+        rows.extend(["", "Correlação de alertas:"])
+        rows.append(f"- Alerta primário: {primary.get('label') or 'não classificado'}")
+        for item in correlation.get("related_alerts") or []:
+            if isinstance(item, dict):
+                rows.append(f"- Alerta relacionado: {item.get('label') or item.get('objective')}")
+        rows.append(f"- Avaliação: {correlation.get('reason')}")
+
     probable_cause = str(analysis.get("probable_cause") or "").strip()
     if probable_cause:
         rows.extend(["", "Causa provável:", probable_cause])
     conclusion = str(analysis.get("conclusion") or "").strip()
     if conclusion:
         rows.extend(["", "Conclusão:", conclusion])
+
+    if conclusion_validation:
+        rows.extend(["", "Validação independente da conclusão:"])
+        rows.append(f"- Veredito: {conclusion_validation.get('verdict') or 'não disponível'}")
+        for item in conclusion_validation.get("contradictions") or []:
+            rows.append(f"- Contradição: {item}")
+        rows.append(f"- Recomendação: {conclusion_validation.get('recommendation')}")
+
+    if dependency_map.get("nodes"):
+        chain = " -> ".join(str(item.get("label")) for item in dependency_map["nodes"] if isinstance(item, dict))
+        rows.extend(["", "Mapa de dependências:", f"- {chain}"])
+        if dependency_map.get("missing_layers"):
+            rows.append(f"- Camadas não identificadas: {', '.join(dependency_map['missing_layers'])}")
+
+    if freshness:
+        rows.extend(["", "Validade das evidências:", f"- {freshness.get('summary')}"])
+        rows.append(f"- Cobertura de horário: {freshness.get('timestamp_coverage', 0)}%")
+
     if facts:
         rows.extend(["", "Fatos comprovados:", *[f"- {item}" for item in facts[:12]]])
     if hypotheses:
@@ -265,6 +298,9 @@ def build_ticket_report_ptbr(analysis: dict[str, Any]) -> str:
 
     if recurrence.get("total"):
         rows.extend(["", "Recorrência:", f"- {recurrence.get('summary')}"])
+    if correction_validation:
+        rows.extend(["", "Comparação antes e depois:", f"- {correction_validation.get('summary')}"])
+        rows.append(f"- Status da pós-validação: {correction_validation.get('status')}")
     if recommendations:
         rows.extend(["", "Recomendações:", *[f"- {item}" for item in recommendations[:12]]])
 
@@ -291,6 +327,14 @@ def _sync_investigation(result: dict[str, Any], analysis: dict[str, Any]) -> Non
             row.analysis = redact_object(analysis)
             row.status = str(analysis.get("status") or row.status or "inconclusive")
             row.confidence = max(0, min(100, int(analysis.get("confidence") or 0)))
+            if isinstance(result.get("evidence"), list):
+                row.evidence = redact_object(result["evidence"])
+            if isinstance(result.get("plans"), list):
+                row.plans = redact_object(result["plans"])
+            if isinstance(result.get("round_assessments"), list):
+                row.assessments = redact_object(result["round_assessments"])
+            if isinstance(result.get("ai_diagnostics"), list):
+                row.diagnostics = redact_object(result["ai_diagnostics"])
             session.commit()
     except Exception:
         return
@@ -301,7 +345,7 @@ def finalize_result_presentation(
     *,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Garante pt-BR, explicabilidade e uma única confiança para tela e histórico."""
+    """Garante pt-BR, explicabilidade, inteligência do incidente e uma única confiança."""
     settings = settings or get_settings()
     analysis = dict(result.get("analysis") or {})
     analysis = _translate_user_fields(analysis, result, settings)
