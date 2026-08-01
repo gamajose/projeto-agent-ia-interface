@@ -6,6 +6,11 @@ import uvicorn
 
 from app.main import app
 from app.services.ai_instrumentation import install_ai_instrumentation
+from app.services.multi_host_instrumentation import install_multi_host_instrumentation
+
+install_ai_instrumentation()
+install_multi_host_instrumentation()
+
 from app.web import register_ui
 from app.web_batch import router as batch_router
 from app.web_executions import router as executions_router
@@ -19,7 +24,6 @@ from app.web_topology import router as topology_router
 from app.web_ui_cache import router as ui_cache_router
 
 
-install_ai_instrumentation()
 enable_dynamic_provider_payload()
 if not getattr(app.state, "agent_ui_cache_registered", False):
     app.include_router(ui_cache_router)
