@@ -6,9 +6,11 @@ import uvicorn
 
 from app.main import app
 from app.services.ai_instrumentation import install_ai_instrumentation
+from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.multi_host_instrumentation import install_multi_host_instrumentation
 
 install_ai_instrumentation()
+install_operational_tools()
 install_multi_host_instrumentation()
 
 from app.web import register_ui
