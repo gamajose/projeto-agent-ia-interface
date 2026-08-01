@@ -19,7 +19,9 @@ from app.web_executions import router as executions_router
 from app.web_flow import router as flow_router
 from app.web_incidents import router as incidents_router
 from app.web_observability import router as observability_router
+from app.web_operator_experience import router as operator_experience_router
 from app.web_playbooks import router as playbooks_router
+from app.web_replay import router as replay_router
 from app.web_settings import enable_dynamic_provider_payload, router as settings_router
 from app.web_tools import router as tools_router
 from app.web_topology import router as topology_router
@@ -58,6 +60,12 @@ if not getattr(app.state, "agent_ui_topology_registered", False):
 if not getattr(app.state, "agent_observability_registered", False):
     app.include_router(observability_router)
     app.state.agent_observability_registered = True
+if not getattr(app.state, "agent_replay_registered", False):
+    app.include_router(replay_router)
+    app.state.agent_replay_registered = True
+if not getattr(app.state, "agent_operator_experience_registered", False):
+    app.include_router(operator_experience_router)
+    app.state.agent_operator_experience_registered = True
 
 
 def main() -> None:
