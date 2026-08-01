@@ -1,6 +1,6 @@
 # Arquitetura de performance
 
-Este documento descreve o pacote experimental da versão 1.26.0. A branch permanece fora da `main` enquanto a interface e o comportamento são avaliados no WSL.
+Este documento descreve o pacote experimental da versão 1.26.0. A branch permanece fora da `main` enquanto a interface e o comportamento são avaliados no WSL. A abertura da pull request serve apenas para CI; nenhum merge ou deployment faz parte desta etapa.
 
 ## Execuções
 
