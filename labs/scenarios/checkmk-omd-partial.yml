@@ -1,0 +1,25 @@
+name: Checkmk OMD Partially Running
+objective: "OMD frj status CRITICAL e Docker Container Health CRITICAL"
+expected:
+  primary_alert: omd_status
+  related_alerts:
+    - container_health
+  probable_cause: "site frj parcialmente iniciado"
+  minimum_quality: 80
+responses:
+  - pattern: "hostname"
+    stdout: "lab-checkmk-frj\n"
+  - pattern: "PRETTY_NAME|os-release"
+    stdout: "Oracle Linux Server 8.10\n"
+  - pattern: "docker ps -a --format"
+    stdout: "checkmk-frj-25|local/checkmk-ol8:2.5.0|Up 6 hours (unhealthy)\n"
+  - pattern: "omd sites"
+    stdout: "frj\n"
+  - pattern: "omd status"
+    stdout: "apache: running\nrrdcached: running\nautomation-helper: stopped\nmonitoring core: running\nOverall state: partially running\n"
+    exit_code: 1
+  - pattern: "docker inspect"
+    stdout: "{\"Status\":\"unhealthy\",\"FailingStreak\":2}\n"
+default:
+  exit_code: 0
+  stdout: "ok\n"
