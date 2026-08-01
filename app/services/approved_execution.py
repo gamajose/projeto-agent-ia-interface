@@ -5,11 +5,14 @@ from typing import Any
 from app.core.policies import EnvironmentType, environment_allows_correction
 from app.core.settings import Settings, get_settings
 from app.services.approvals import token_digest, verify_approval_token
+from app.services.correction_comparison import build_before_after_comparison
 from app.services.persistence import (
     complete_approval_execution,
     create_approval_execution,
     get_investigation,
+    update_investigation_analysis,
 )
+from app.services.playbook_drafts import generate_playbook_draft
 from app.services.runner import build_executor, resolve_target
 from app.services.tool_registry import execute_tool
 
@@ -62,6 +65,9 @@ def execute_approved_investigation(
     )
     executor = build_executor(target, settings=settings)
     results: list[dict[str, Any]] = []
+    comparison: dict[str, Any] = {}
+    playbook_draft: dict[str, Any] | None = None
+    playbook_draft_error: str | None = None
     try:
         executor.connect()
         for item in actions:
@@ -78,6 +84,30 @@ def execute_approved_investigation(
                 }
             )
         status = "validated" if results and all(item.get("status") == "validated" for item in results) else "failed"
+        comparison = build_before_after_comparison(results)
+        updated_analysis = dict(analysis)
+        updated_analysis["correction_validation"] = comparison
+        updated_analysis["correction_status"] = status
+
+        if status == "validated":
+            try:
+                playbook_draft = generate_playbook_draft(
+                    investigation_id,
+                    results,
+                    generated_by=requested_by,
+                )
+                if playbook_draft:
+                    updated_analysis["playbook_draft"] = {
+                        "id": playbook_draft.get("id"),
+                        "playbook_id": playbook_draft.get("playbook_id"),
+                        "title": playbook_draft.get("title"),
+                        "status": playbook_draft.get("status"),
+                    }
+            except Exception as exc:
+                playbook_draft_error = f"{type(exc).__name__}: {exc}"
+                updated_analysis["playbook_draft_error"] = playbook_draft_error
+
+        update_investigation_analysis(investigation_id, updated_analysis)
         complete_approval_execution(execution_id, status=status, results=results)
         return {
             "execution_id": execution_id,
@@ -86,9 +116,18 @@ def execute_approved_investigation(
             "environment": environment.value,
             "status": status,
             "results": results,
+            "before_after": comparison,
+            "playbook_draft": playbook_draft,
+            "playbook_draft_error": playbook_draft_error,
         }
     except Exception:
+        comparison = build_before_after_comparison(results)
         complete_approval_execution(execution_id, status="failed", results=results)
+        if comparison:
+            updated_analysis = dict(analysis)
+            updated_analysis["correction_validation"] = comparison
+            updated_analysis["correction_status"] = "failed"
+            update_investigation_analysis(investigation_id, updated_analysis)
         raise
     finally:
         executor.close()
