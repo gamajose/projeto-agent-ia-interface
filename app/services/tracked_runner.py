@@ -5,6 +5,7 @@ from typing import Any
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
 from app.services.ai_providers import use_provider
+from app.services.evidence_timing import stamp_evidence_timing
 from app.services.incident_intelligence import classify_access_failure, enrich_incident_intelligence
 from app.services.intelligent_agent import run_dynamic_investigation
 from app.services.inventory_learning import learn_result_inventory
@@ -30,7 +31,7 @@ def persist_result_inventory(
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     """Registra o alvo descoberto sem invalidar a investigação em caso de falha."""
-    del saved_inventory  # compatibilidade com chamadas anteriores
+    del saved_inventory
     inventory = learn_result_inventory(
         result,
         resolved_host=resolved_host,
@@ -58,16 +59,11 @@ def run_target_tracked(
     playbook_id: str | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Executa o motor operacional emitindo etapas canônicas para a interface."""
     settings = settings or get_settings()
     requested_provider = str(provider_name or settings.ai_provider or "gemini").strip().lower()
     automatic = requested_provider == "auto"
 
-    report_progress(
-        "provider_validation",
-        detail="Validando credencial, endpoint e modelo da IA selecionada.",
-        percent=8,
-    )
+    report_progress("provider_validation", detail="Validando credencial, endpoint e modelo da IA selecionada.", percent=8)
     if automatic:
         selection = resolve_automatic_provider(settings)
         effective_mode = "propose" if mode == "correct" else mode
@@ -82,39 +78,24 @@ def run_target_tracked(
         effective_playbook_id = playbook_id
 
     report_progress(
-        "provider_validation",
-        status="completed",
+        "provider_validation", status="completed",
         detail=f"{selection.label} · {selection.model or 'modelo padrão'}",
-        provider=selection.provider,
-        model=selection.model,
-        percent=18,
+        provider=selection.provider, model=selection.model, percent=18,
     )
 
-    with use_provider(selection.provider, selection.model), use_playbook(
-        effective_playbook_mode,
-        effective_playbook_id,
-    ):
-        report_progress(
-            "target_resolution",
-            detail="Resolvendo inventário, porta SSH e playbook aplicável.",
-            percent=22,
-        )
+    with use_provider(selection.provider, selection.model), use_playbook(effective_playbook_mode, effective_playbook_id):
+        report_progress("target_resolution", detail="Resolvendo inventário, porta SSH e playbook aplicável.", percent=22)
         playbook_ssh_port, selected_playbook_id = selected_playbook_ssh_port(
             objective.strip() or "validar a saúde geral do servidor"
         )
         target = resolve_target(
-            reference,
-            environment,
-            ssh_port,
-            playbook_ssh_port=playbook_ssh_port,
-            settings=settings,
+            reference, environment, ssh_port,
+            playbook_ssh_port=playbook_ssh_port, settings=settings,
         )
         report_progress(
-            "target_resolution",
-            status="completed",
+            "target_resolution", status="completed",
             detail=f"Alvo resolvido em {target.host}:{target.port}.",
-            playbook_id=selected_playbook_id,
-            percent=30,
+            playbook_id=selected_playbook_id, percent=30,
         )
 
         executor = build_executor(target, settings=settings)
@@ -122,10 +103,8 @@ def run_target_tracked(
         effective_ssh_port = target.port
         try:
             report_progress(
-                "ssh_connection",
-                detail="Entrando no Monitor 1 e abrindo o cliente pelo menu VPN.",
-                access_step="bastion",
-                percent=32,
+                "ssh_connection", detail="Entrando no Monitor 1 e abrindo o cliente pelo menu VPN.",
+                access_step="bastion", percent=32,
             )
             try:
                 executor.connect()
@@ -136,13 +115,10 @@ def run_target_tracked(
                 connection["access_failure"] = failure
                 setattr(executor, "connection_metadata", connection)
                 report_progress(
-                    "ssh_connection",
-                    status="failed",
+                    "ssh_connection", status="failed",
                     detail=f"{failure['summary']} Próximo passo: {failure['next_step']}",
-                    access_step=failure.get("stage"),
-                    access_failure=failure,
-                    access_journey=journey,
-                    percent=44,
+                    access_step=failure.get("stage"), access_failure=failure,
+                    access_journey=journey, percent=44,
                 )
                 raise RuntimeError(
                     f"{failure['code']}: {failure['summary']} Próximo passo: {failure['next_step']}"
@@ -152,63 +128,42 @@ def run_target_tracked(
             effective_ssh_port = int(connection.get("ssh_port") or executor.port or target.port)
             client_name = str(connection.get("client_name") or "").strip()
             report_progress(
-                "ssh_connection",
-                status="completed",
+                "ssh_connection", status="completed",
                 detail=(
                     f"Conectado via menu VPN em {client_name} ({target.host}:{effective_ssh_port})."
-                    if client_name
-                    else "Conexão autenticada. Nenhuma correção foi executada."
+                    if client_name else "Conexão autenticada. Nenhuma correção foi executada."
                 ),
-                access_step="target_shell",
-                client_name=client_name or None,
-                vpn_ip=target.host,
-                ssh_port=effective_ssh_port,
-                percent=46,
+                access_step="target_shell", client_name=client_name or None,
+                vpn_ip=target.host, ssh_port=effective_ssh_port, percent=46,
             )
             report_progress(
-                "evidence_analysis",
-                detail="Descobrindo o host, coletando evidências e replanejando a análise.",
-                percent=48,
+                "evidence_analysis", detail="Descobrindo o host, coletando evidências e replanejando a análise.", percent=48,
             )
             result = run_dynamic_investigation(
-                executor=executor,
-                target=reference,
-                context=objective,
-                environment=target.environment,
-                mode=effective_mode,
-                approve=effective_approve,
+                executor=executor, target=reference, context=objective,
+                environment=target.environment, mode=effective_mode, approve=effective_approve,
             )
             result["connection"] = connection
             report_progress(
-                "evidence_analysis",
-                status="completed",
+                "evidence_analysis", status="completed",
                 detail=f"Coleta adaptativa concluída com {len(result.get('evidence') or [])} evidência(s).",
-                adaptive_rounds=len(result.get("round_assessments") or []),
-                percent=88,
+                adaptive_rounds=len(result.get("round_assessments") or []), percent=88,
             )
         finally:
             executor.close()
 
     report_progress(
-        "result_persistence",
-        detail="Persistindo investigação, inteligência do incidente e inventário aprendido.",
-        percent=92,
+        "result_persistence", detail="Persistindo investigação, inteligência do incidente e inventário aprendido.", percent=92,
     )
     result["provider_selection"] = selection.as_dict()
     result["selected_provider"] = selection.provider
     result["selected_model"] = selection.model
-    result["automation"] = _automation_summary(
-        selection=selection,
-        target=target,
-        result=result,
-    )
+    result["automation"] = _automation_summary(selection=selection, target=target, result=result)
     persist_result_inventory(
-        result,
-        resolved_host=target.host,
-        ssh_port=effective_ssh_port,
-        saved_inventory=target.inventory,
-        settings=settings,
+        result, resolved_host=target.host, ssh_port=effective_ssh_port,
+        saved_inventory=target.inventory, settings=settings,
     )
+    stamp_evidence_timing(result)
     enrich_investigation_result(result, settings=settings)
     enrich_incident_intelligence(result)
     finalize_result_presentation(result, settings=settings)
@@ -217,24 +172,18 @@ def run_target_tracked(
     quality = dict(analysis.get("quality") or {})
     correlation = dict((analysis.get("incident_intelligence") or {}).get("alert_correlation") or {})
     report_progress(
-        "result_persistence",
-        status="completed",
+        "result_persistence", status="completed",
         detail=(
             "Resultado salvo com fatos, hipóteses, correlação de alertas e inventário atualizado."
             if inventory.get("saved")
             else f"Resultado salvo; inventário pendente: {inventory.get('detail') or 'falha não detalhada'}."
         ),
-        inventory_saved=bool(inventory.get("saved")),
-        quality_overall=quality.get("overall"),
-        alerts_grouped=bool(correlation.get("grouped")),
-        percent=98,
+        inventory_saved=bool(inventory.get("saved")), quality_overall=quality.get("overall"),
+        alerts_grouped=bool(correlation.get("grouped")), percent=98,
     )
     report_progress(
-        "completed",
-        status="completed",
+        "completed", status="completed",
         detail="Investigação concluída, correlacionada e disponível para validação do operador.",
-        investigation_id=result.get("investigation_id"),
-        display_target=result.get("display_target"),
-        percent=100,
+        investigation_id=result.get("investigation_id"), display_target=result.get("display_target"), percent=100,
     )
     return result
