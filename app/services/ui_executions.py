@@ -1,23 +1,26 @@
 from __future__ import annotations
 
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Callable
 from uuid import uuid4
 
 from app.services.cancellation import ExecutionCancelled, raise_if_cancelled, use_cancellation
+from app.services.execution_store import get_execution_store
+from app.services.performance_config import get_performance_config
 from app.services.progress import use_progress
 
 
-_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="agent-ui-execution")
+_CONFIG = get_performance_config()
+_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_CONFIG.execution_thread_workers,
+    thread_name_prefix="agent-ui-execution",
+)
 _LOCK = RLock()
-_RECORDS: OrderedDict[str, dict[str, Any]] = OrderedDict()
-_TTL = timedelta(hours=24)
-_MAX_RECORDS = 200
-_MAX_EVENTS = 300
+_STORE = get_execution_store()
+_MAX_EVENTS_IN_SNAPSHOT = min(500, _CONFIG.execution_event_maxlen)
 _TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 _STAGE_PERCENT = {
     "queued": 0,
@@ -29,6 +32,10 @@ _STAGE_PERCENT = {
     "target_resolved": 30,
     "ssh_connection": 36,
     "ssh_connected": 42,
+    "multi_host_scope": 20,
+    "multi_host_triage": 44,
+    "multi_host_primary": 50,
+    "multi_host_handoff": 62,
     "evidence_analysis": 55,
     "command_started": 55,
     "command_output": 65,
@@ -49,19 +56,6 @@ def _iso(value: datetime | None = None) -> str:
     return (value or _now()).isoformat()
 
 
-def _prune() -> None:
-    threshold = _now() - _TTL
-    expired = [
-        execution_id
-        for execution_id, record in _RECORDS.items()
-        if datetime.fromisoformat(record["updated_at"]) < threshold
-    ]
-    for execution_id in expired:
-        _RECORDS.pop(execution_id, None)
-    while len(_RECORDS) > _MAX_RECORDS:
-        _RECORDS.popitem(last=False)
-
-
 def _bounded_percent(value: Any, fallback: int) -> int:
     try:
         number = int(value)
@@ -70,17 +64,23 @@ def _bounded_percent(value: Any, fallback: int) -> int:
     return max(0, min(100, number))
 
 
-def _append_event(record: dict[str, Any], phase: dict[str, Any]) -> None:
+def _append_snapshot_event(record: dict[str, Any], phase: dict[str, Any]) -> dict[str, Any]:
     event = {**phase, "event_id": str(phase.get("event_id") or uuid4())}
     events = record.setdefault("events", [])
     events.append(event)
-    if len(events) > _MAX_EVENTS:
-        del events[:-_MAX_EVENTS]
+    if len(events) > _MAX_EVENTS_IN_SNAPSHOT:
+        del events[:-_MAX_EVENTS_IN_SNAPSHOT]
+    return event
+
+
+def _save(execution_id: str, record: dict[str, Any]) -> None:
+    record["store_backend"] = _STORE.backend_name()
+    _STORE.save(execution_id, record)
 
 
 def _phase(execution_id: str, event: dict[str, Any]) -> None:
     with _LOCK:
-        record = _RECORDS.get(execution_id)
+        record = _STORE.get(execution_id)
         if not record:
             return
         stage = str(event.get("stage") or "processing")
@@ -99,7 +99,7 @@ def _phase(execution_id: str, event: dict[str, Any]) -> None:
                 if key not in {"stage", "status", "detail", "percent", "updated_at"}
             },
         }
-        phases = record["phases"]
+        phases = record.setdefault("phases", [])
         current_index = next(
             (index for index, item in enumerate(phases) if item.get("stage") == phase["stage"]),
             None,
@@ -108,27 +108,28 @@ def _phase(execution_id: str, event: dict[str, Any]) -> None:
             phases.append(phase)
         else:
             phases[current_index] = {**phases[current_index], **phase}
-        _append_event(record, phase)
+        published = _append_snapshot_event(record, phase)
         record["percent"] = percent
         record["current_phase"] = phase
         record["updated_at"] = phase["updated_at"]
         if phase.get("job_id"):
             record["job_id"] = str(phase["job_id"])
+        _save(execution_id, record)
+        _STORE.append_event(execution_id, published)
 
 
 def _cancel_requested(execution_id: str) -> bool:
-    with _LOCK:
-        return bool((_RECORDS.get(execution_id) or {}).get("cancel_requested"))
+    record = _STORE.get(execution_id) or {}
+    return bool(record.get("cancel_requested"))
 
 
 def _mark_cancelled(execution_id: str, detail: str) -> None:
-    with _LOCK:
-        record = _RECORDS.get(execution_id)
-        if not record:
-            return
-        current = dict(record.get("current_phase") or {})
-        stage = str(current.get("stage") or "evidence_analysis")
-        percent = int(record.get("percent") or 0)
+    record = _STORE.get(execution_id)
+    if not record:
+        return
+    current = dict(record.get("current_phase") or {})
+    stage = str(current.get("stage") or "evidence_analysis")
+    percent = int(record.get("percent") or 0)
     _phase(
         execution_id,
         {
@@ -139,7 +140,7 @@ def _mark_cancelled(execution_id: str, detail: str) -> None:
         },
     )
     with _LOCK:
-        record = _RECORDS.get(execution_id)
+        record = _STORE.get(execution_id)
         if not record:
             return
         record["status"] = "cancelled"
@@ -147,16 +148,28 @@ def _mark_cancelled(execution_id: str, detail: str) -> None:
         record["cancelled_at"] = _iso()
         record["completed_at"] = record["cancelled_at"]
         record["updated_at"] = record["cancelled_at"]
+        _save(execution_id, record)
+        _STORE.append_event(
+            execution_id,
+            {
+                "stage": "snapshot",
+                "status": "cancelled",
+                "detail": detail,
+                "percent": percent,
+                "record": deepcopy(record),
+            },
+        )
 
 
 def _execute(execution_id: str, operation: Callable[[], dict[str, Any]]) -> None:
     with _LOCK:
-        record = _RECORDS.get(execution_id)
+        record = _STORE.get(execution_id)
         if not record:
             return
         record["status"] = "running"
         record["started_at"] = _iso()
         record["updated_at"] = record["started_at"]
+        _save(execution_id, record)
     _phase(
         execution_id,
         {
@@ -184,7 +197,7 @@ def _execute(execution_id: str, operation: Callable[[], dict[str, Any]]) -> None
             },
         )
         with _LOCK:
-            record = _RECORDS.get(execution_id)
+            record = _STORE.get(execution_id)
             if not record:
                 return
             record["status"] = "completed"
@@ -192,6 +205,17 @@ def _execute(execution_id: str, operation: Callable[[], dict[str, Any]]) -> None
             record["result"] = result
             record["completed_at"] = _iso()
             record["updated_at"] = record["completed_at"]
+            _save(execution_id, record)
+            _STORE.append_event(
+                execution_id,
+                {
+                    "stage": "snapshot",
+                    "status": "completed",
+                    "detail": "Resultado final disponível.",
+                    "percent": 100,
+                    "record": deepcopy(record),
+                },
+            )
     except ExecutionCancelled as exc:
         _mark_cancelled(execution_id, str(exc) or "Coleta cancelada pelo operador.")
     except Exception as exc:
@@ -204,13 +228,24 @@ def _execute(execution_id: str, operation: Callable[[], dict[str, Any]]) -> None
             },
         )
         with _LOCK:
-            record = _RECORDS.get(execution_id)
+            record = _STORE.get(execution_id)
             if not record:
                 return
             record["status"] = "failed"
             record["error"] = f"{type(exc).__name__}: {exc}"
             record["completed_at"] = _iso()
             record["updated_at"] = record["completed_at"]
+            _save(execution_id, record)
+            _STORE.append_event(
+                execution_id,
+                {
+                    "stage": "snapshot",
+                    "status": "failed",
+                    "detail": record["error"],
+                    "percent": int(record.get("percent") or 0),
+                    "record": deepcopy(record),
+                },
+            )
 
 
 def submit_ui_execution(
@@ -251,17 +286,24 @@ def submit_ui_execution(
         "events": [],
         "result": None,
         "error": None,
+        "store_backend": _STORE.backend_name(),
     }
     with _LOCK:
-        _prune()
-        _RECORDS[execution_id] = record
+        _save(execution_id, record)
+        queued = _append_snapshot_event(record, record["current_phase"])
+        _save(execution_id, record)
+        _STORE.append_event(execution_id, queued)
     _EXECUTOR.submit(_execute, execution_id, operation)
-    return execution_detail(execution_id) or {"execution_id": execution_id, "status": "queued", "percent": 0}
+    return execution_detail(execution_id) or {
+        "execution_id": execution_id,
+        "status": "queued",
+        "percent": 0,
+    }
 
 
 def request_execution_cancel(execution_id: str) -> dict[str, Any] | None:
     with _LOCK:
-        record = _RECORDS.get(str(execution_id))
+        record = _STORE.get(str(execution_id))
         if not record:
             return None
         if record.get("status") in _TERMINAL_STATUSES:
@@ -277,12 +319,28 @@ def request_execution_cancel(execution_id: str) -> dict[str, Any] | None:
             "percent": record.get("percent") or 0,
             "job_id": record.get("job_id"),
         }
+        _save(str(execution_id), record)
     _phase(str(execution_id), event)
     return execution_detail(str(execution_id))
 
 
 def execution_detail(execution_id: str) -> dict[str, Any] | None:
-    with _LOCK:
-        _prune()
-        record = _RECORDS.get(str(execution_id))
-        return deepcopy(record) if record else None
+    record = _STORE.get(str(execution_id))
+    return deepcopy(record) if record else None
+
+
+def execution_latest_cursor(execution_id: str) -> str:
+    return _STORE.latest_cursor(str(execution_id))
+
+
+def execution_event_batch(
+    execution_id: str,
+    cursor: str | None,
+    *,
+    block_milliseconds: int,
+) -> tuple[list[tuple[str, dict[str, Any]]], str]:
+    return _STORE.read_events(
+        str(execution_id),
+        cursor,
+        block_milliseconds=block_milliseconds,
+    )
