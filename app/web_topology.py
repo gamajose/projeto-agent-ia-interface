@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field, model_validator
 from app.core.policies import EnvironmentType
 from app.db.base import ensure_database_schema
 from app.services.customer_topology import get_customer_topology, save_customer_scope
+from app.services.performance_config import get_performance_config
+from app.services.runtime_cache import get_runtime_cache
 from app.web import InvestigationPayload, _require_access, _require_mutation
 
 
@@ -60,6 +62,14 @@ class TopologySavePayload(BaseModel):
     related_targets: list[RelatedTargetPayload] = Field(default_factory=list, max_length=8)
 
 
+def _topology_cache_key(reference: str | None, customer: str | None) -> str:
+    return get_runtime_cache().key(
+        "topology",
+        (reference or "").strip().casefold(),
+        (customer or "").strip().casefold(),
+    )
+
+
 @router.get("/ui/api/topology/resolve")
 def resolve_topology(
     request: Request,
@@ -68,14 +78,21 @@ def resolve_topology(
 ) -> dict:
     _require_access(request)
     ensure_database_schema()
-    return get_customer_topology(reference=reference, customer_name=customer)
+    cache = get_runtime_cache()
+    key = _topology_cache_key(reference, customer)
+    cached = cache.get(key)
+    if isinstance(cached, dict):
+        return {**cached, "cache": {"hit": True, "ttl_seconds": get_performance_config().topology_cache_seconds}}
+    result = get_customer_topology(reference=reference, customer_name=customer)
+    cache.set(key, result, get_performance_config().topology_cache_seconds)
+    return {**result, "cache": {"hit": False, "ttl_seconds": get_performance_config().topology_cache_seconds}}
 
 
 @router.post("/ui/api/topology")
 def save_topology(payload: TopologySavePayload, request: Request) -> dict:
     _require_mutation(request)
     ensure_database_schema()
-    return save_customer_scope(
+    result = save_customer_scope(
         payload.customer_name,
         primary={
             "address": payload.primary_reference,
@@ -96,3 +113,7 @@ def save_topology(payload: TopologySavePayload, request: Request) -> dict:
             for item in payload.related_targets
         ],
     )
+    cache = get_runtime_cache()
+    cache.delete(_topology_cache_key(payload.primary_reference, None))
+    cache.delete(_topology_cache_key(None, payload.customer_name))
+    return result
