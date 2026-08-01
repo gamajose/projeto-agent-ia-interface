@@ -8,10 +8,12 @@ from rich.panel import Panel
 
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
+from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.jobs import get_job, run_worker_once, worker_loop
 from app.services.secrets import secret_backend_status
 
 
+install_operational_tools()
 app = typer.Typer(no_args_is_help=True)
 console = Console()
 

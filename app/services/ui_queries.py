@@ -7,12 +7,14 @@ from sqlalchemy.orm import aliased
 
 from app.db.base import SessionLocal
 from app.db.models import HostORM, InvestigationORM, MonitoringMappingORM
+from app.services.metrics import observe
 
 
-def _investigation_item(row: InvestigationORM) -> dict[str, Any]:
-    analysis = dict(row.analysis or {})
+def _investigation_item(row: Any) -> dict[str, Any]:
+    mapping = row._mapping if hasattr(row, "_mapping") else row
+    analysis = dict(mapping.analysis or {})
     playbook = None
-    for plan in row.plans or []:
+    for plan in mapping.plans or []:
         candidate = plan.get("playbook") if isinstance(plan, dict) else None
         if isinstance(candidate, dict) and candidate.get("id"):
             playbook = {
@@ -23,25 +25,42 @@ def _investigation_item(row: InvestigationORM) -> dict[str, Any]:
 
     final_confidence = analysis.get("confidence")
     try:
-        confidence = max(0, min(100, int(final_confidence if final_confidence is not None else row.confidence)))
+        confidence = max(
+            0,
+            min(
+                100,
+                int(final_confidence if final_confidence is not None else mapping.confidence),
+            ),
+        )
     except (TypeError, ValueError):
-        confidence = int(row.confidence or 0)
+        confidence = int(mapping.confidence or 0)
+    multi_host = dict(analysis.get("multi_host") or {})
     return {
-        "id": str(row.id),
-        "target": row.target,
-        "hostname": row.hostname,
-        "objective": row.objective,
-        "environment": row.environment,
-        "mode": row.mode,
-        "status": analysis.get("status") or row.status,
+        "id": str(mapping.id),
+        "target": mapping.target,
+        "hostname": mapping.hostname,
+        "objective": mapping.objective,
+        "environment": mapping.environment,
+        "mode": mapping.mode,
+        "status": analysis.get("status") or mapping.status,
         "confidence": confidence,
-        "profile": row.profile,
-        "model": row.model,
-        "duration_ms": row.duration_ms,
+        "profile": mapping.profile,
+        "model": mapping.model,
+        "duration_ms": mapping.duration_ms,
         "playbook": playbook,
         "summary": analysis.get("summary"),
         "probable_cause": analysis.get("probable_cause"),
-        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "multi_host": (
+            {
+                "enabled": True,
+                "customer": multi_host.get("customer"),
+                "hosts_count": len(multi_host.get("hosts") or []),
+                "root_host": multi_host.get("root_host"),
+            }
+            if multi_host.get("enabled")
+            else None
+        ),
+        "created_at": mapping.created_at.isoformat() if mapping.created_at else None,
     }
 
 
@@ -56,7 +75,7 @@ def list_investigations(
 ) -> dict[str, Any]:
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
-    conditions = []
+    conditions = [~InvestigationORM.analysis.has_key("multi_host_parent_id")]  # type: ignore[attr-defined]
 
     normalized_query = (query or "").strip()
     if normalized_query:
@@ -76,15 +95,28 @@ def list_investigations(
         conditions.append(InvestigationORM.environment == environment)
 
     with SessionLocal() as session:
-        count_stmt = select(func.count(InvestigationORM.id))
-        rows_stmt = select(InvestigationORM)
-        if conditions:
-            count_stmt = count_stmt.where(*conditions)
-            rows_stmt = rows_stmt.where(*conditions)
+        count_stmt = select(func.count(InvestigationORM.id)).where(*conditions)
+        rows_stmt = select(
+            InvestigationORM.id,
+            InvestigationORM.target,
+            InvestigationORM.hostname,
+            InvestigationORM.objective,
+            InvestigationORM.environment,
+            InvestigationORM.mode,
+            InvestigationORM.status,
+            InvestigationORM.confidence,
+            InvestigationORM.profile,
+            InvestigationORM.model,
+            InvestigationORM.duration_ms,
+            InvestigationORM.plans,
+            InvestigationORM.analysis,
+            InvestigationORM.created_at,
+        ).where(*conditions)
         total = int(session.scalar(count_stmt) or 0)
-        rows = session.scalars(
+        rows = session.execute(
             rows_stmt.order_by(InvestigationORM.created_at.desc()).offset(offset).limit(limit)
         ).all()
+        observe("agent_ui_query_rows", len(rows), labels={"query": "investigations"})
         return {
             "total": total,
             "limit": limit,
@@ -166,4 +198,5 @@ def list_hosts(
                     ),
                 }
             )
+        observe("agent_ui_query_rows", len(items), labels={"query": "hosts"})
         return {"total": len(items), "limit": limit, "items": items}

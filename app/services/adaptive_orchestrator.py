@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from app.core.policies import EnvironmentType
 from app.services.adaptive_tools import describe_adaptive_tools, execute_adaptive_tool
+from app.services.operational_tools import describe_operational_tools
 from app.services.redaction import redact_object
 from app.services.ssh import SSHExecutor
 from app.services.tool_registry import describe_tools
@@ -136,10 +137,13 @@ def combined_tool_catalog(runtime_context: dict[str, Any] | None = None) -> list
     runtime_context = runtime_context or {}
     binaries = set(runtime_context.get("binaries") or [])
     rows: list[dict[str, Any]] = []
-    for item in [*describe_tools(), *describe_adaptive_tools()]:
+    for item in [*describe_tools(), *describe_adaptive_tools(), *describe_operational_tools()]:
         row = dict(item)
         requirements = tuple(row.get("requires_any") or ())
-        row["available"] = not requirements or any(binary in binaries for binary in requirements)
+        if row.get("transport") == "http":
+            row["available"] = True
+        else:
+            row["available"] = not requirements or any(binary in binaries for binary in requirements)
         if requirements and not row["available"]:
             row["unavailable_reason"] = f"requer uma destas ferramentas: {', '.join(requirements)}"
         rows.append(row)
@@ -191,6 +195,74 @@ def tool_feedback(evidence: Iterable[dict[str, Any]]) -> dict[str, Any]:
     } | {"reasons": reasons[-20:]}
 
 
+def _diversify_recommendations(
+    rows: list[dict[str, Any]],
+    *,
+    objective_tokens: set[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Evita que muitas ferramentas de um único domínio ocultem alternativas úteis."""
+    limit = max(1, int(limit))
+    selected = list(rows[:limit])
+    selected_names = {str(item.get("tool") or "") for item in selected}
+
+    priority_groups: list[tuple[set[str], tuple[str, ...]]] = []
+    if objective_tokens & {"servico", "service", "unidade", "unit", "systemd"}:
+        priority_groups.append(({"service"}, ("service.search", "systemd.inspect_unit", "systemd.list_failed")))
+    if objective_tokens & {"erro", "erros", "error", "errors", "log", "logs", "journal"}:
+        priority_groups.append(({"logs"}, ("logs.search", "journal.read_unit")))
+    if objective_tokens & {"porta", "port", "socket", "listener", "listeners"}:
+        priority_groups.append(({"network"}, ("network.listeners", "network.test_port")))
+
+    for categories, preferred_names in priority_groups:
+        if any(str(item.get("category") or "") in categories for item in selected):
+            continue
+        candidate = next(
+            (
+                item
+                for preferred in preferred_names
+                for item in rows
+                if item.get("tool") == preferred and item.get("tool") not in selected_names
+            ),
+            None,
+        )
+        if candidate is None:
+            candidate = next(
+                (
+                    item
+                    for item in rows
+                    if str(item.get("category") or "") in categories
+                    and item.get("tool") not in selected_names
+                ),
+                None,
+            )
+        if candidate is None:
+            continue
+        if len(selected) >= limit:
+            replace_index = next(
+                (
+                    index
+                    for index in range(len(selected) - 1, -1, -1)
+                    if str(selected[index].get("category") or "") not in categories
+                    and sum(
+                        1
+                        for existing in selected
+                        if existing.get("category") == selected[index].get("category")
+                    ) > 1
+                ),
+                len(selected) - 1,
+            )
+            selected_names.discard(str(selected[replace_index].get("tool") or ""))
+            selected[replace_index] = candidate
+        else:
+            selected.append(candidate)
+        selected_names.add(str(candidate.get("tool") or ""))
+
+    order = {str(item.get("tool") or ""): index for index, item in enumerate(rows)}
+    selected.sort(key=lambda item: order.get(str(item.get("tool") or ""), len(rows)))
+    return selected[:limit]
+
+
 def recommend_tools(
     *,
     objective: str,
@@ -230,6 +302,8 @@ def recommend_tools(
         score += min(8.0, float(successful_history.get(name, 0) * 2))
         if item.get("adaptive"):
             score += 0.5
+        if item.get("operational"):
+            score += 1.0
         if name in failed:
             score -= 12
         if name == "runtime.snapshot":
@@ -255,9 +329,12 @@ def recommend_tools(
 
     ranked.sort(key=lambda pair: (-pair[0], pair[1]["tool"]))
     positive = [row for score, row in ranked if score > 0]
-    if positive:
-        return positive[: max(1, limit)]
-    return [row for _, row in ranked[: max(1, min(limit, 6))]]
+    candidates = positive if positive else [row for _, row in ranked[: max(1, min(limit, 12))]]
+    return _diversify_recommendations(
+        candidates,
+        objective_tokens=objective_tokens,
+        limit=limit,
+    )
 
 
 def _recommendation_reason(

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import time
-from typing import Any
+from typing import Any, Iterator
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
@@ -12,25 +14,30 @@ from app.services.evidence_timing import stamp_evidence_timing
 from app.services.incident_orchestration import enrich_incident_intelligence
 from app.services.investigation_insights import enrich_investigation_result
 from app.services.jobs import cancel_job, enqueue_investigation, get_job
+from app.services.multi_host_runner import run_multi_host_tracked
+from app.services.performance_config import get_performance_config
 from app.services.progress import report_progress
 from app.services.result_presentation import finalize_result_presentation
 from app.services.tracked_runner import persist_result_inventory, run_target_tracked
 from app.services.ui_executions import (
     execution_detail,
+    execution_event_batch,
+    execution_latest_cursor,
     request_execution_cancel,
     submit_ui_execution,
 )
 from app.web import (
-    InvestigationPayload,
     _compact_result,
     _operator_name,
     _require_access,
     _require_mutation,
     _validate_selection,
 )
+from app.web_topology import MultiHostInvestigationPayload
 
 
 router = APIRouter(tags=["interface-executions"])
+_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
 
 def _compact_with_request(
@@ -48,6 +55,8 @@ def _compact_with_request(
     compact["inventory"] = result.get("inventory")
     compact["status"] = (result.get("analysis") or {}).get("status") or result.get("status")
     compact["confidence"] = (result.get("analysis") or {}).get("confidence") or result.get("confidence")
+    compact["multi_host"] = result.get("multi_host") or (result.get("analysis") or {}).get("multi_host")
+    compact["child_investigations"] = result.get("child_investigations") or []
     return compact
 
 
@@ -63,7 +72,7 @@ def _forward_worker_event(event: dict[str, Any], *, job_id: str, worker: str | N
 
 
 @router.post("/ui/api/executions")
-def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[str, Any]:
+def start_ui_execution(payload: MultiHostInvestigationPayload, request: Request) -> dict[str, Any]:
     _require_mutation(request)
     settings = get_settings()
     ensure_database_schema()
@@ -82,11 +91,18 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
         "playbook_id": None if provider == "auto" else (payload.playbook_id or "").strip() or None,
         "settings": settings,
     }
+    multi_host_options = {
+        "customer_name": (payload.customer_name or "").strip() or None,
+        "auto_expand_scope": bool(payload.auto_expand_scope),
+        "related_targets": [item.model_dump(mode="json") for item in payload.related_targets],
+    }
     target = payload.target.strip()
     objective = payload.objective.strip()
-    execution_mode = settings.agent_execution_mode.strip().casefold()
+    configured_execution_mode = settings.agent_execution_mode.strip().casefold()
+    execution_mode = "inline" if payload.multi_host else configured_execution_mode
 
     if execution_mode == "queue":
+
         def operation() -> dict[str, Any]:
             raise_if_cancelled("Coleta cancelada antes de entrar na fila.")
             report_progress(
@@ -179,9 +195,19 @@ def start_ui_execution(payload: InvestigationPayload, request: Request) -> dict[
                         model=model,
                     )
                 time.sleep(1.0)
+
     else:
+
         def operation() -> dict[str, Any]:
-            raw = run_target_tracked(target, objective, **common)
+            if payload.multi_host:
+                raw = run_multi_host_tracked(
+                    target,
+                    objective,
+                    **common,
+                    **multi_host_options,
+                )
+            else:
+                raw = run_target_tracked(target, objective, **common)
             return _compact_with_request(
                 raw,
                 requested_mode=payload.mode,
@@ -206,6 +232,65 @@ def get_ui_execution(execution_id: str, request: Request) -> dict[str, Any]:
     if not record:
         raise HTTPException(status_code=404, detail="execução não encontrada ou expirada")
     return record
+
+
+def _sse_payload(event_id: str, event_name: str, payload: dict[str, Any]) -> str:
+    data = json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
+    return f"id: {event_id}\nevent: {event_name}\ndata: {data}\n\n"
+
+
+@router.get("/ui/api/executions/{execution_id}/events")
+def stream_ui_execution(execution_id: str, request: Request) -> StreamingResponse:
+    _require_access(request)
+    config = get_performance_config()
+    if not config.sse_enabled:
+        raise HTTPException(status_code=404, detail="stream de eventos desabilitado")
+    initial = execution_detail(execution_id)
+    if not initial:
+        raise HTTPException(status_code=404, detail="execução não encontrada ou expirada")
+    requested_cursor = (
+        request.headers.get("last-event-id")
+        or request.query_params.get("cursor")
+        or execution_latest_cursor(execution_id)
+    )
+
+    def generate() -> Iterator[str]:
+        cursor = str(requested_cursor or "0")
+        yield "retry: 1500\n\n"
+        yield _sse_payload(cursor, "snapshot", initial)
+        if str(initial.get("status")) in _TERMINAL_STATUSES:
+            return
+        while True:
+            rows, cursor = execution_event_batch(
+                execution_id,
+                cursor,
+                block_milliseconds=config.sse_block_milliseconds,
+            )
+            if not rows:
+                current = execution_detail(execution_id)
+                if current and str(current.get("status")) in _TERMINAL_STATUSES:
+                    cursor = execution_latest_cursor(execution_id)
+                    yield _sse_payload(cursor, "snapshot", current)
+                    return
+                yield f": heartbeat {int(time.time())}\n\n"
+                continue
+            for event_id, payload in rows:
+                event_name = "snapshot" if payload.get("stage") == "snapshot" else "progress"
+                yield _sse_payload(event_id, event_name, payload)
+                if event_name == "snapshot":
+                    record = payload.get("record") if isinstance(payload.get("record"), dict) else None
+                    if record and str(record.get("status")) in _TERMINAL_STATUSES:
+                        return
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/ui/api/executions/{execution_id}/cancel")

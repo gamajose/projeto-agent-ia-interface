@@ -9,7 +9,9 @@ from app.services.evidence_timing import stamp_evidence_timing
 from app.services.incident_orchestration import classify_access_failure, enrich_incident_intelligence
 from app.services.intelligent_agent import run_dynamic_investigation
 from app.services.inventory_learning import learn_result_inventory
+from app.services.investigation_budget import use_investigation_budget
 from app.services.investigation_insights import enrich_investigation_result
+from app.services.metrics import increment, observe
 from app.services.playbooks import selected_playbook_ssh_port, use_playbook
 from app.services.progress import report_progress
 from app.services.provider_router import resolve_automatic_provider
@@ -59,6 +61,48 @@ def run_target_tracked(
     playbook_id: str | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
+    with use_investigation_budget() as budget:
+        result = _run_target_tracked_impl(
+            reference,
+            objective,
+            environment=environment,
+            mode=mode,
+            approve=approve,
+            ssh_port=ssh_port,
+            provider_name=provider_name,
+            model_name=model_name,
+            playbook_mode=playbook_mode,
+            playbook_id=playbook_id,
+            settings=settings,
+        )
+        snapshot = budget.snapshot()
+        result["budget"] = snapshot
+        analysis = dict(result.get("analysis") or {})
+        analysis["budget"] = snapshot
+        result["analysis"] = analysis
+        increment("agent_investigations", labels={"mode": mode, "multi_host": "false"})
+        observe(
+            "agent_investigation_duration_seconds",
+            float(result.get("duration_ms") or 0) / 1000.0,
+            labels={"multi_host": "false"},
+        )
+        return result
+
+
+def _run_target_tracked_impl(
+    reference: str,
+    objective: str,
+    *,
+    environment: EnvironmentType = EnvironmentType.UNKNOWN,
+    mode: str = "propose",
+    approve: bool = False,
+    ssh_port: int | None = None,
+    provider_name: str | None = None,
+    model_name: str | None = None,
+    playbook_mode: str = "auto",
+    playbook_id: str | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
     settings = settings or get_settings()
     requested_provider = str(provider_name or settings.ai_provider or "gemini").strip().lower()
     automatic = requested_provider == "auto"
@@ -78,9 +122,12 @@ def run_target_tracked(
         effective_playbook_id = playbook_id
 
     report_progress(
-        "provider_validation", status="completed",
+        "provider_validation",
+        status="completed",
         detail=f"{selection.label} · {selection.model or 'modelo padrão'}",
-        provider=selection.provider, model=selection.model, percent=18,
+        provider=selection.provider,
+        model=selection.model,
+        percent=18,
     )
 
     with use_provider(selection.provider, selection.model), use_playbook(effective_playbook_mode, effective_playbook_id):
@@ -89,13 +136,18 @@ def run_target_tracked(
             objective.strip() or "validar a saúde geral do servidor"
         )
         target = resolve_target(
-            reference, environment, ssh_port,
-            playbook_ssh_port=playbook_ssh_port, settings=settings,
+            reference,
+            environment,
+            ssh_port,
+            playbook_ssh_port=playbook_ssh_port,
+            settings=settings,
         )
         report_progress(
-            "target_resolution", status="completed",
+            "target_resolution",
+            status="completed",
             detail=f"Alvo resolvido em {target.host}:{target.port}.",
-            playbook_id=selected_playbook_id, percent=30,
+            playbook_id=selected_playbook_id,
+            percent=30,
         )
 
         executor = build_executor(target, settings=settings)
@@ -103,8 +155,10 @@ def run_target_tracked(
         effective_ssh_port = target.port
         try:
             report_progress(
-                "ssh_connection", detail="Entrando no Monitor 1 e abrindo o cliente pelo menu VPN.",
-                access_step="bastion", percent=32,
+                "ssh_connection",
+                detail="Entrando no Monitor 1 e abrindo o cliente pelo menu VPN.",
+                access_step="bastion",
+                percent=32,
             )
             try:
                 executor.connect()
@@ -115,10 +169,13 @@ def run_target_tracked(
                 connection["access_failure"] = failure
                 setattr(executor, "connection_metadata", connection)
                 report_progress(
-                    "ssh_connection", status="failed",
+                    "ssh_connection",
+                    status="failed",
                     detail=f"{failure['summary']} Próximo passo: {failure['next_step']}",
-                    access_step=failure.get("stage"), access_failure=failure,
-                    access_journey=journey, percent=44,
+                    access_step=failure.get("stage"),
+                    access_failure=failure,
+                    access_journey=journey,
+                    percent=44,
                 )
                 raise RuntimeError(
                     f"{failure['code']}: {failure['summary']} Próximo passo: {failure['next_step']}"
@@ -128,40 +185,58 @@ def run_target_tracked(
             effective_ssh_port = int(connection.get("ssh_port") or executor.port or target.port)
             client_name = str(connection.get("client_name") or "").strip()
             report_progress(
-                "ssh_connection", status="completed",
+                "ssh_connection",
+                status="completed",
                 detail=(
                     f"Conectado via menu VPN em {client_name} ({target.host}:{effective_ssh_port})."
-                    if client_name else "Conexão autenticada. Nenhuma correção foi executada."
+                    if client_name
+                    else "Conexão autenticada. Nenhuma correção foi executada."
                 ),
-                access_step="target_shell", client_name=client_name or None,
-                vpn_ip=target.host, ssh_port=effective_ssh_port, percent=46,
+                access_step="target_shell",
+                client_name=client_name or None,
+                vpn_ip=target.host,
+                ssh_port=effective_ssh_port,
+                percent=46,
             )
             report_progress(
-                "evidence_analysis", detail="Descobrindo o host, coletando evidências e replanejando a análise.", percent=48,
+                "evidence_analysis",
+                detail="Descobrindo o host, coletando evidências e replanejando a análise.",
+                percent=48,
             )
             result = run_dynamic_investigation(
-                executor=executor, target=reference, context=objective,
-                environment=target.environment, mode=effective_mode, approve=effective_approve,
+                executor=executor,
+                target=reference,
+                context=objective,
+                environment=target.environment,
+                mode=effective_mode,
+                approve=effective_approve,
             )
             result["connection"] = connection
             report_progress(
-                "evidence_analysis", status="completed",
+                "evidence_analysis",
+                status="completed",
                 detail=f"Coleta adaptativa concluída com {len(result.get('evidence') or [])} evidência(s).",
-                adaptive_rounds=len(result.get("round_assessments") or []), percent=88,
+                adaptive_rounds=len(result.get("round_assessments") or []),
+                percent=88,
             )
         finally:
             executor.close()
 
     report_progress(
-        "result_persistence", detail="Persistindo investigação, inteligência do incidente e inventário aprendido.", percent=92,
+        "result_persistence",
+        detail="Persistindo investigação, inteligência do incidente e inventário aprendido.",
+        percent=92,
     )
     result["provider_selection"] = selection.as_dict()
     result["selected_provider"] = selection.provider
     result["selected_model"] = selection.model
     result["automation"] = _automation_summary(selection=selection, target=target, result=result)
     persist_result_inventory(
-        result, resolved_host=target.host, ssh_port=effective_ssh_port,
-        saved_inventory=target.inventory, settings=settings,
+        result,
+        resolved_host=target.host,
+        ssh_port=effective_ssh_port,
+        saved_inventory=target.inventory,
+        settings=settings,
     )
     stamp_evidence_timing(result)
     enrich_investigation_result(result, settings=settings)
@@ -172,18 +247,24 @@ def run_target_tracked(
     quality = dict(analysis.get("quality") or {})
     correlation = dict((analysis.get("incident_intelligence") or {}).get("alert_correlation") or {})
     report_progress(
-        "result_persistence", status="completed",
+        "result_persistence",
+        status="completed",
         detail=(
             "Resultado salvo com fatos, hipóteses, correlação de alertas e inventário atualizado."
             if inventory.get("saved")
             else f"Resultado salvo; inventário pendente: {inventory.get('detail') or 'falha não detalhada'}."
         ),
-        inventory_saved=bool(inventory.get("saved")), quality_overall=quality.get("overall"),
-        alerts_grouped=bool(correlation.get("grouped")), percent=98,
+        inventory_saved=bool(inventory.get("saved")),
+        quality_overall=quality.get("overall"),
+        alerts_grouped=bool(correlation.get("grouped")),
+        percent=98,
     )
     report_progress(
-        "completed", status="completed",
+        "completed",
+        status="completed",
         detail="Investigação concluída, correlacionada e disponível para validação do operador.",
-        investigation_id=result.get("investigation_id"), display_target=result.get("display_target"), percent=100,
+        investigation_id=result.get("investigation_id"),
+        display_target=result.get("display_target"),
+        percent=100,
     )
     return result
