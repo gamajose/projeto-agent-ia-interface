@@ -27,12 +27,23 @@ def _asset_version() -> str:
 _ASSET_VERSION = _asset_version()
 
 
+def _inject_topology_assets(content: str) -> str:
+    stylesheet = f'<link rel="stylesheet" href="/ui/assets/topology.css?v={_ASSET_VERSION}">'
+    script = f'<script src="/ui/assets/topology.js?v={_ASSET_VERSION}"></script>'
+    if "topology.css" not in content:
+        content = content.replace("</head>", f"  {stylesheet}\n</head>")
+    if "topology.js" not in content:
+        content = content.replace("</body>", f"  {script}\n</body>")
+    return content
+
+
 @router.get("/ui", include_in_schema=False, response_class=HTMLResponse)
 @router.get("/ui/", include_in_schema=False, response_class=HTMLResponse)
 def versioned_interface(request: Request) -> HTMLResponse:
     _require_access(request)
     content = (_UI_DIR / "index.html").read_text(encoding="utf-8")
     content = re.sub(r"([?&]v=)[0-9]+(?:\.[0-9]+){1,3}", rf"\g<1>{_ASSET_VERSION}", content)
+    content = _inject_topology_assets(content)
     return HTMLResponse(
         content,
         headers={
