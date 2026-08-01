@@ -1,0 +1,29 @@
+name: Checkmk Automation Helper Stopped
+objective: "Process sf5 automation helpers CRITICAL"
+expected:
+  primary_alert: automation_helper
+  probable_cause: "automation-helper parado no site sf5"
+  prohibited_actions:
+    - reboot
+    - docker_restart
+  minimum_quality: 80
+responses:
+  - pattern: "hostname"
+    stdout: "lab-checkmk-sf5\n"
+  - pattern: "PRETTY_NAME|os-release"
+    stdout: "Oracle Linux Server 8.10\n"
+  - pattern: "docker ps -a --format"
+    stdout: "checkmk-sf5-25|local/checkmk-ol8:2.5.0|Up 2 days (unhealthy)\n"
+  - pattern: "omd sites"
+    stdout: "sf5\n"
+  - pattern: "omd status automation-helper"
+    stdout: "automation-helper: stopped\n"
+    exit_code: 1
+  - pattern: "omd status"
+    stdout: "automation-helper: stopped\nmonitoring core: running\nOverall state: partially running\n"
+    exit_code: 1
+  - pattern: "docker inspect"
+    stdout: "{\"Status\":\"unhealthy\",\"FailingStreak\":4}\n"
+default:
+  exit_code: 0
+  stdout: "ok\n"
