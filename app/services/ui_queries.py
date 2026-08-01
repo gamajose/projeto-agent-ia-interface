@@ -26,6 +26,7 @@ def _investigation_item(row: InvestigationORM) -> dict[str, Any]:
         confidence = max(0, min(100, int(final_confidence if final_confidence is not None else row.confidence)))
     except (TypeError, ValueError):
         confidence = int(row.confidence or 0)
+    multi_host = dict(analysis.get("multi_host") or {})
     return {
         "id": str(row.id),
         "target": row.target,
@@ -41,6 +42,16 @@ def _investigation_item(row: InvestigationORM) -> dict[str, Any]:
         "playbook": playbook,
         "summary": analysis.get("summary"),
         "probable_cause": analysis.get("probable_cause"),
+        "multi_host": (
+            {
+                "enabled": True,
+                "customer": multi_host.get("customer"),
+                "hosts_count": len(multi_host.get("hosts") or []),
+                "root_host": multi_host.get("root_host"),
+            }
+            if multi_host.get("enabled")
+            else None
+        ),
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
@@ -56,7 +67,9 @@ def list_investigations(
 ) -> dict[str, Any]:
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
-    conditions = []
+    # Investigações executadas em hosts internos são preservadas para auditoria,
+    # mas aparecem na interface somente através da investigação lógica principal.
+    conditions = [~InvestigationORM.analysis.has_key("multi_host_parent_id")]  # type: ignore[attr-defined]
 
     normalized_query = (query or "").strip()
     if normalized_query:
@@ -76,11 +89,8 @@ def list_investigations(
         conditions.append(InvestigationORM.environment == environment)
 
     with SessionLocal() as session:
-        count_stmt = select(func.count(InvestigationORM.id))
-        rows_stmt = select(InvestigationORM)
-        if conditions:
-            count_stmt = count_stmt.where(*conditions)
-            rows_stmt = rows_stmt.where(*conditions)
+        count_stmt = select(func.count(InvestigationORM.id)).where(*conditions)
+        rows_stmt = select(InvestigationORM).where(*conditions)
         total = int(session.scalar(count_stmt) or 0)
         rows = session.scalars(
             rows_stmt.order_by(InvestigationORM.created_at.desc()).offset(offset).limit(limit)
