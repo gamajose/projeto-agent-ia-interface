@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from app.services.conclusion_validator import validate_conclusion
 from app.services.correction_comparison import build_before_after_comparison
 from app.services.incident_correlation import correlate_alerts
 from app.services.incident_intelligence import (
     build_dependency_map,
     classify_access_failure,
     evidence_freshness,
-    validate_conclusion,
 )
 from app.services.incident_orchestration import enrich_incident_intelligence
 
