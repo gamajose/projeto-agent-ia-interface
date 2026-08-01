@@ -14,6 +14,7 @@ from app.services.persistence import (
     save_playbook_draft,
 )
 from app.services.playbooks import reload_playbooks
+from app.services.tool_registry import resolve_tool
 
 
 _MAX_DRAFT_BYTES = 100 * 1024
@@ -42,6 +43,15 @@ def _patterns(objective: str) -> list[str]:
     return [rf"\b{re.escape(word)}\b" for word in selected] or [re.escape(objective[:80])]
 
 
+def _read_only_tool(tool: str) -> bool:
+    try:
+        return not resolve_tool(tool, {}).correction
+    except Exception:
+        # Ferramentas com argumentos obrigatórios são conhecidas como leitura
+        # quando não pertencem à família explícita de recuperação.
+        return not any(token in tool.casefold() for token in ("recover", "restart", "start", "enable", "correct"))
+
+
 def _read_only_steps(investigation: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -52,6 +62,8 @@ def _read_only_steps(investigation: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(item, dict) or not item.get("tool"):
                 continue
             tool = str(item["tool"])
+            if not _read_only_tool(tool):
+                continue
             key = f"{tool}:{item.get('arguments') or {}}"
             if key in seen:
                 continue
@@ -68,27 +80,26 @@ def _read_only_steps(investigation: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _validation_steps(investigation: dict[str, Any], correction_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    successful_tools = {
-        str(item.get("tool"))
-        for item in investigation.get("evidence") or []
-        if isinstance(item, dict) and item.get("tool") and int(item.get("exit_code") or 0) == 0
-    }
-    rows = [
-        {"tool": tool, "arguments": {}, "purpose": "Confirmar o estado após a correção."}
-        for tool in list(successful_tools)[:4]
-    ]
-    if rows:
-        return rows
-    return [
-        {
-            "tool": str(item.get("tool")),
-            "arguments": dict(item.get("arguments") or {}),
-            "purpose": "Revalidar a ferramenta corretiva somente após aprovação humana.",
-        }
-        for item in correction_results
-        if item.get("tool") and item.get("status") == "validated"
-    ][:3]
+def _validation_steps(investigation: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in investigation.get("evidence") or []:
+        if not isinstance(item, dict) or not item.get("tool") or int(item.get("exit_code") or 0) != 0:
+            continue
+        tool = str(item["tool"])
+        if not _read_only_tool(tool) or tool in seen:
+            continue
+        seen.add(tool)
+        rows.append(
+            {
+                "tool": tool,
+                "arguments": dict(item.get("arguments") or {}),
+                "purpose": "Confirmar o estado após a correção sem repetir a ação corretiva.",
+            }
+        )
+        if len(rows) >= 4:
+            break
+    return rows
 
 
 def generate_playbook_draft(
@@ -117,7 +128,7 @@ def generate_playbook_draft(
         "match": {"any": _patterns(objective)},
         "steps": _read_only_steps(investigation),
         "allowed_corrections": sorted({str(item.get("tool")) for item in validated if item.get("tool")}),
-        "validation": _validation_steps(investigation, validated),
+        "validation": _validation_steps(investigation),
         "metadata": {
             "status": "draft",
             "source_investigation": investigation_id,
@@ -125,6 +136,7 @@ def generate_playbook_draft(
             "confidence": analysis.get("confidence"),
             "requires_human_review": True,
             "validated_actions": len(validated),
+            "validation_is_read_only": True,
         },
     }
     content = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False, width=110)
@@ -160,8 +172,14 @@ def activate_playbook_draft(
     parsed = yaml.safe_load(content)
     if not isinstance(parsed, dict) or parsed.get("id") != draft.get("playbook_id"):
         raise ValueError("o YAML do rascunho não corresponde ao playbook registrado")
-    if parsed.get("metadata", {}).get("requires_human_review") is not True:
+    metadata = parsed.get("metadata") or {}
+    if metadata.get("requires_human_review") is not True:
         raise ValueError("o rascunho não possui a marca obrigatória de revisão humana")
+    if metadata.get("validation_is_read_only") is not True:
+        raise ValueError("o rascunho não garante validações somente leitura")
+    for item in parsed.get("validation") or []:
+        if not isinstance(item, dict) or not _read_only_tool(str(item.get("tool") or "")):
+            raise ValueError("a validação do rascunho contém ferramenta corretiva")
 
     directory = Path(settings.agent_playbook_dir).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
