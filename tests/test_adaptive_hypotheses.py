@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.adaptive_hypotheses import build_adaptive_hypothesis_state
+from app.services.adaptive_hypothesis_certainty import build_adaptive_hypothesis_state
 from app.services.adaptive_incident_graph import (
     build_adaptive_dependency_graph,
     group_related_alerts,
