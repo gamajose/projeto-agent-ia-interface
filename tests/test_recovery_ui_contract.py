@@ -37,8 +37,9 @@ def test_recovery_ui_supports_adaptive_blockers_and_same_incident_approval() -> 
 
 def test_ui_does_not_offer_unsafe_recovery_capabilities() -> None:
     assert "Banco: <b>bloqueado</b>" in SCRIPT
-    assert "Reboot: <b>bloqueado</b>" in SCRIPT
+    assert "Reinício da máquina: <b>manual</b>" in SCRIPT
     assert "Container: <b>bloqueado</b>" in SCRIPT
+    assert "automatic_execution" in (ROOT / "app" / "services" / "correction_readiness.py").read_text(encoding="utf-8")
     assert "rm -rf" not in SCRIPT
     assert "docker restart" not in SCRIPT
     assert "systemctl reboot" not in SCRIPT
