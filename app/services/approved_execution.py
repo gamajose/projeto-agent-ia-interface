@@ -147,6 +147,24 @@ def _review_pending_actions(
     )
 
 
+def _pending_tools_belong_to_playbook(
+    analysis: dict[str, Any],
+    pending_actions: list[dict[str, Any]],
+) -> bool:
+    """Impede que uma nova aprovação amplie o playbook silenciosamente."""
+    approved_scope = {
+        str(item)
+        for item in (analysis.get("recovery_scope") or {}).get("allowed_correction_tools") or []
+        if str(item).strip()
+    }
+    requested = {
+        str(item.get("tool") or "").strip()
+        for item in pending_actions
+        if isinstance(item, dict) and str(item.get("tool") or "").strip()
+    }
+    return bool(requested) and requested.issubset(approved_scope)
+
+
 def execute_approved_investigation(
     investigation_id: str,
     token: str,
@@ -257,28 +275,48 @@ def execute_approved_investigation(
             if isinstance(item, dict)
         ]
         if pending_actions:
-            pending_review = _review_pending_actions(
-                analysis=updated_analysis,
-                pending_actions=pending_actions,
-                recovery=recovery,
-                evidence=list(investigation.get("evidence") or []),
-                settings=settings,
-            )
-            updated_analysis["recovery_pending_actions"] = pending_actions
-            updated_analysis["recovery_pending_review"] = pending_review
-            if pending_review.get("approved"):
-                next_approval_token = create_approval_token(
-                    investigation_id,
-                    target_reference,
-                    pending_actions,
-                    ssh_port=target.port,
+            if _pending_tools_belong_to_playbook(analysis, pending_actions):
+                pending_review = _review_pending_actions(
+                    analysis=updated_analysis,
+                    pending_actions=pending_actions,
+                    recovery=recovery,
+                    evidence=list(investigation.get("evidence") or []),
                     settings=settings,
                 )
-                if next_approval_token:
-                    updated_analysis["recovery_pending_approval"] = {
-                        "required": True,
-                        "expires_in_minutes": settings.approval_ttl_minutes,
+                if pending_review.get("approved"):
+                    next_approval_token = create_approval_token(
+                        investigation_id,
+                        target_reference,
+                        pending_actions,
+                        ssh_port=target.port,
+                        settings=settings,
+                    )
+            else:
+                pending_review = {
+                    "approved": False,
+                    "reason": (
+                        "O novo bloqueio exige uma ferramenta corretiva que não está autorizada "
+                        "pelo playbook desta investigação. Revise o playbook e gere outra proposta."
+                    ),
+                    "requires_playbook_review": True,
+                }
+                pending_actions = [
+                    {
+                        **item,
+                        "status": "playbook_review_required",
+                        "reason": pending_review["reason"],
                     }
+                    for item in pending_actions
+                ]
+            updated_analysis["recovery_pending_actions"] = pending_actions
+            updated_analysis["recovery_pending_review"] = pending_review
+            if next_approval_token:
+                updated_analysis["recovery_pending_approval"] = {
+                    "required": True,
+                    "expires_in_minutes": settings.approval_ttl_minutes,
+                }
+            else:
+                updated_analysis.pop("recovery_pending_approval", None)
         else:
             updated_analysis.pop("recovery_pending_actions", None)
             updated_analysis.pop("recovery_pending_review", None)
