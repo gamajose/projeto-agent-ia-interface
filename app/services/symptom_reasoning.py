@@ -73,8 +73,11 @@ def install_symptom_reasoning() -> None:
     engine._model_call = root_cause_model_call
     _INSTALLED = True
 
-    # O motor adaptativo envolve a camada acima. A ordem garante que toda
-    # hipótese continue respeitando o contrato: alerta é sintoma, não causa.
+    # Sinais determinísticos específicos são instalados antes do wrapper
+    # cognitivo. Assim, erros diretos como "No space left on device" encerram
+    # a disputa de hipóteses sem transformar alertas genéricos em certeza.
+    from app.services.adaptive_hypothesis_certainty import install_certainty_rules
     from app.services.adaptive_reasoning import install_adaptive_reasoning
 
+    install_certainty_rules()
     install_adaptive_reasoning()
