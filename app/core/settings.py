@@ -110,6 +110,15 @@ class Settings(BaseSettings):
     agent_playbook_dir: str = str(PROJECT_ROOT / "config" / "playbooks")
     agent_allow_legacy_read_commands: bool = True
 
+    # Recuperação adaptativa: depois da aprovação humana, cada ação é observada.
+    # Falhas viram novas evidências, ferramentas de leitura mapeiam o bloqueio e
+    # outra ação só é executada quando continua dentro do envelope aprovado.
+    agent_recovery_enabled: bool = True
+    agent_recovery_max_rounds: int = Field(default=3, ge=1, le=8)
+    agent_recovery_max_actions: int = Field(default=6, ge=1, le=20)
+    agent_recovery_max_diagnostics_per_round: int = Field(default=4, ge=1, le=8)
+    agent_recovery_max_repeated_action: int = Field(default=2, ge=1, le=3)
+
     ai_provider: str = "gemini"
     ai_auto_provider_order: str = "groq,omniroute,deepseek,gemini,ollama,openrouter"
     ai_preflight_timeout_seconds: float = Field(default=8.0, ge=1.0, le=60.0)

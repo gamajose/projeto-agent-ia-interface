@@ -22,6 +22,11 @@ from app.services.runner import (
     build_executor,
     resolve_target,
 )
+from app.services.symptom_intake import enrich_result_with_symptom, use_reported_symptom
+from app.services.symptom_reasoning import install_symptom_reasoning
+
+
+install_symptom_reasoning()
 
 
 def persist_result_inventory(
@@ -153,6 +158,7 @@ def _run_target_tracked_impl(
         executor = build_executor(target, settings=settings)
         connection: dict[str, Any] = {}
         effective_ssh_port = target.port
+        symptom_contract: dict[str, Any] = {}
         try:
             report_progress(
                 "ssh_connection",
@@ -198,24 +204,33 @@ def _run_target_tracked_impl(
                 ssh_port=effective_ssh_port,
                 percent=46,
             )
-            report_progress(
-                "evidence_analysis",
-                detail="Descobrindo o host, coletando evidências e replanejando a análise.",
-                percent=48,
-            )
-            result = run_dynamic_investigation(
-                executor=executor,
-                target=reference,
-                context=objective,
-                environment=target.environment,
-                mode=effective_mode,
-                approve=effective_approve,
-            )
+            with use_reported_symptom(objective) as symptom_contract:
+                report_progress(
+                    "evidence_analysis",
+                    detail=(
+                        symptom_contract.get("investigation_question")
+                        or "Descobrindo a causa do problema e replanejando a análise."
+                    ),
+                    reported_symptom=symptom_contract if symptom_contract.get("reported") else None,
+                    percent=48,
+                )
+                result = run_dynamic_investigation(
+                    executor=executor,
+                    target=reference,
+                    context=objective,
+                    environment=target.environment,
+                    mode=effective_mode,
+                    approve=effective_approve,
+                )
             result["connection"] = connection
             report_progress(
                 "evidence_analysis",
                 status="completed",
-                detail=f"Coleta adaptativa concluída com {len(result.get('evidence') or [])} evidência(s).",
+                detail=(
+                    "Investigação causal concluída; o alerta foi tratado como sintoma, não como causa."
+                    if symptom_contract.get("reported")
+                    else f"Coleta adaptativa concluída com {len(result.get('evidence') or [])} evidência(s)."
+                ),
                 adaptive_rounds=len(result.get("round_assessments") or []),
                 percent=88,
             )
@@ -224,7 +239,7 @@ def _run_target_tracked_impl(
 
     report_progress(
         "result_persistence",
-        detail="Persistindo investigação, inteligência do incidente e inventário aprendido.",
+        detail="Persistindo causa, plano de recuperação, inteligência do incidente e inventário aprendido.",
         percent=92,
     )
     result["provider_selection"] = selection.as_dict()
@@ -241,28 +256,31 @@ def _run_target_tracked_impl(
     stamp_evidence_timing(result)
     enrich_investigation_result(result, settings=settings)
     enrich_incident_intelligence(result)
+    enrich_result_with_symptom(result, symptom_contract)
     finalize_result_presentation(result, settings=settings)
     inventory = dict(result.get("inventory") or {})
     analysis = dict(result.get("analysis") or {})
     quality = dict(analysis.get("quality") or {})
     correlation = dict((analysis.get("incident_intelligence") or {}).get("alert_correlation") or {})
+    root_cause = dict(analysis.get("root_cause") or {})
     report_progress(
         "result_persistence",
         status="completed",
         detail=(
-            "Resultado salvo com fatos, hipóteses, correlação de alertas e inventário atualizado."
-            if inventory.get("saved")
-            else f"Resultado salvo; inventário pendente: {inventory.get('detail') or 'falha não detalhada'}."
+            "Resultado salvo com causa, cadeia causal, correlação e plano de recuperação."
+            if root_cause.get("status") in {"confirmed", "probable"}
+            else "Resultado salvo; a causa raiz permanece explicitamente pendente de evidência."
         ),
         inventory_saved=bool(inventory.get("saved")),
         quality_overall=quality.get("overall"),
         alerts_grouped=bool(correlation.get("grouped")),
+        root_cause_status=root_cause.get("status"),
         percent=98,
     )
     report_progress(
         "completed",
         status="completed",
-        detail="Investigação concluída, correlacionada e disponível para validação do operador.",
+        detail="Investigação causal concluída e disponível para proposta de recuperação.",
         investigation_id=result.get("investigation_id"),
         display_target=result.get("display_target"),
         percent=100,
