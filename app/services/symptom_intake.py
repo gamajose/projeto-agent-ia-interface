@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator
 
+from app.core.settings import get_settings
+
 
 _CURRENT_SYMPTOM: ContextVar[dict[str, Any] | None] = ContextVar(
     "agent_reported_symptom",
@@ -155,6 +157,34 @@ def _same_as_symptom(cause: str, symptom: dict[str, Any]) -> bool:
     return False
 
 
+def _recovery_scope(result: dict[str, Any]) -> dict[str, Any]:
+    settings = get_settings()
+    analysis = dict(result.get("analysis") or {})
+    allowed: list[str] = []
+    for name in (result.get("playbook") or {}).get("allowed_corrections") or []:
+        value = str(name or "").strip()
+        if value and value not in allowed:
+            allowed.append(value)
+    for item in analysis.get("proposed_actions") or []:
+        value = str(item.get("tool") or "").strip()
+        if value and value not in allowed:
+            allowed.append(value)
+    return {
+        "target": result.get("target"),
+        "environment": (result.get("environment_classification") or {}).get("environment"),
+        "allowed_correction_tools": allowed,
+        "max_recovery_rounds": settings.agent_recovery_max_rounds,
+        "max_correction_actions": settings.agent_recovery_max_actions,
+        "max_diagnostic_tools_per_round": settings.agent_recovery_max_diagnostics_per_round,
+        "same_target_only": True,
+        "database_access": False,
+        "server_reboot": False,
+        "container_lifecycle": False,
+        "firewall_change": False,
+        "package_change": False,
+    }
+
+
 def enrich_result_with_symptom(result: dict[str, Any], symptom: dict[str, Any]) -> dict[str, Any]:
     analysis = dict(result.get("analysis") or {})
     cause = _compact(analysis.get("probable_cause"), 2000)
@@ -214,6 +244,7 @@ def enrich_result_with_symptom(result: dict[str, Any], symptom: dict[str, Any]) 
             "O alerta pode normalizar sem reaparecer durante a observação.",
         ],
     }
+    analysis["recovery_scope"] = _recovery_scope({**result, "analysis": analysis})
     result["symptom_contract"] = symptom
     result["analysis"] = analysis
     return result
