@@ -50,6 +50,13 @@ def _inject_operator_assets(content: str) -> str:
     return content
 
 
+def _inject_adaptive_assets(content: str) -> str:
+    script = f'<script src="/ui/assets/adaptive-analysis.js?v={_ASSET_VERSION}"></script>'
+    if "adaptive-analysis.js" not in content:
+        content = content.replace("</body>", f"  {script}\n</body>")
+    return content
+
+
 @router.get("/ui", include_in_schema=False, response_class=HTMLResponse)
 @router.get("/ui/", include_in_schema=False, response_class=HTMLResponse)
 def versioned_interface(request: Request) -> HTMLResponse:
@@ -58,6 +65,7 @@ def versioned_interface(request: Request) -> HTMLResponse:
     content = re.sub(r"([?&]v=)[0-9]+(?:\.[0-9]+){1,3}", rf"\g<1>{_ASSET_VERSION}", content)
     content = _inject_topology_assets(content)
     content = _inject_operator_assets(content)
+    content = _inject_adaptive_assets(content)
     return HTMLResponse(
         content,
         headers={

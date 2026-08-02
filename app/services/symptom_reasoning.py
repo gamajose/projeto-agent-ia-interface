@@ -48,12 +48,7 @@ def _cause_only_repeats_symptom(cause: str, symptom: dict[str, Any]) -> bool:
 
 
 def install_symptom_reasoning() -> None:
-    """Instala uma única camada contextual sobre as chamadas cognitivas.
-
-    O ContextVar do sintoma mantém a implementação segura entre execuções
-    concorrentes. A camada não altera prompts quando a investigação não veio de
-    um alerta reconhecível.
-    """
+    """Instala as camadas de sintoma e hipóteses adaptativas uma única vez."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -77,3 +72,12 @@ def install_symptom_reasoning() -> None:
     intelligent_agent.resilient_model_call = root_cause_model_call
     engine._model_call = root_cause_model_call
     _INSTALLED = True
+
+    # Sinais determinísticos específicos são instalados antes do wrapper
+    # cognitivo. Assim, erros diretos como "No space left on device" encerram
+    # a disputa de hipóteses sem transformar alertas genéricos em certeza.
+    from app.services.adaptive_hypothesis_certainty import install_certainty_rules
+    from app.services.adaptive_reasoning import install_adaptive_reasoning
+
+    install_certainty_rules()
+    install_adaptive_reasoning()
