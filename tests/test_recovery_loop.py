@@ -354,4 +354,4 @@ def test_correction_tool_cannot_be_used_as_diagnostic(monkeypatch) -> None:
     diagnostic = result["diagnostic_results"][0]
     assert diagnostic["tool"] == "systemd.recover_unit"
     assert diagnostic["status"] == "blocked"
-    assert "somente" in diagnostic["reason"]
+    assert "leitura" in diagnostic["reason"]
