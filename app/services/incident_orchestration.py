@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.adaptive_incident_graph import group_related_alerts
 from app.services.conclusion_validator import validate_conclusion
 from app.services.incident_correlation import correlate_alerts
 from app.services.incident_intelligence import (
@@ -25,7 +26,7 @@ def _unique(values: list[Any]) -> list[str]:
 
 
 def enrich_incident_intelligence(result: dict[str, Any]) -> dict[str, Any]:
-    """Aplica a correlação multi-alerta e os validadores determinísticos."""
+    """Aplica correlação, validade temporal e o estado causal adaptativo."""
     analysis = dict(result.get("analysis") or {})
     journey = [
         item
@@ -39,6 +40,12 @@ def enrich_incident_intelligence(result: dict[str, Any]) -> dict[str, Any]:
         connection_failure = None
 
     correlation = correlate_alerts(result)
+    adaptive = dict(analysis.get("adaptive_hypotheses") or result.get("adaptive_hypotheses") or {})
+    adaptive_grouping = group_related_alerts(
+        objective=str(result.get("context") or ""),
+        adaptive_state=adaptive,
+        existing_correlation=correlation,
+    )
     conclusion_validation = validate_conclusion(result)
     freshness = evidence_freshness(result)
     dependencies = build_dependency_map(result)
@@ -52,16 +59,22 @@ def enrich_incident_intelligence(result: dict[str, Any]) -> dict[str, Any]:
     elif conclusion_validation["verdict"] == "needs_more_evidence":
         confidence = min(confidence, 70)
     analysis["confidence"] = confidence
+    analysis["adaptive_alert_grouping"] = adaptive_grouping
 
     intelligence = {
         "access_failure": connection_failure,
         "alert_correlation": correlation,
+        "adaptive_alert_grouping": adaptive_grouping,
         "dependency_map": dependencies,
+        "adaptive_dependency_graph": analysis.get("adaptive_dependency_graph"),
+        "adaptive_hypotheses": adaptive,
+        "environment_fingerprint": analysis.get("environment_fingerprint"),
         "conclusion_validation": conclusion_validation,
         "evidence_freshness": freshness,
         "access_journey_complete": bool(journey and journey[-1].get("status") == "completed"),
     }
     analysis["incident_intelligence"] = intelligence
+    result["adaptive_alert_grouping"] = adaptive_grouping
     result["incident_intelligence"] = intelligence
     result["analysis"] = analysis
     return result
