@@ -135,6 +135,19 @@ def _adaptive_model_call(
     )
 
 
+def _playbook_id(result: dict[str, Any]) -> str | None:
+    playbook = result.get("playbook") or {}
+    if isinstance(playbook, dict) and playbook.get("id"):
+        return str(playbook["id"])
+    for plan in result.get("plans") or []:
+        if not isinstance(plan, dict):
+            continue
+        item = plan.get("playbook") or {}
+        if isinstance(item, dict) and item.get("id"):
+            return str(item["id"])
+    return None
+
+
 def _enrich_result(result: dict[str, Any]) -> dict[str, Any]:
     fingerprint = build_environment_fingerprint(
         identity=dict(result.get("identity") or {}),
@@ -167,6 +180,16 @@ def _enrich_result(result: dict[str, Any]) -> dict[str, Any]:
     analysis["adaptive_dependency_graph"] = graph
     analysis["validated_memory_guidance"] = memory
     analysis["analysis_mode"] = "adaptive_dynamic"
+    analysis["operational_memory"] = _adaptive_memory(
+        objective=str(result.get("context") or ""),
+        profile=result.get("profile"),
+        playbook_id=_playbook_id(result),
+        analysis=analysis,
+        evidence=list(result.get("evidence") or []),
+        corrections=list(result.get("corrections") or []),
+        target=result.get("target"),
+        hostname=result.get("hostname"),
+    )
     result["adaptive_alert_grouping"] = grouped
     result["adaptive_dependency_graph"] = graph
     result["validated_memory_guidance"] = memory
