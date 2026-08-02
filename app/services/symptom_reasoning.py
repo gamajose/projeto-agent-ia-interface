@@ -16,6 +16,14 @@ def _normalized(value: Any) -> str:
     return unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().casefold()
 
 
+def _tokens(value: str) -> list[str]:
+    return [
+        token.strip(".,;:!?()[]{}")
+        for token in re.findall(r"[a-z0-9_.@:-]{2,}", value)
+        if token.strip(".,;:!?()[]{}")
+    ]
+
+
 def _cause_only_repeats_symptom(cause: str, symptom: dict[str, Any]) -> bool:
     text = _normalized(cause)
     component = _normalized(symptom.get("component"))
@@ -30,10 +38,10 @@ def _cause_only_repeats_symptom(cause: str, symptom: dict[str, Any]) -> bool:
         "down", "unhealthy", "critical", "critico", "critica", "indisponivel", "sem", "resposta",
         "timeout", "degraded", "degradado", "degradada",
     }
-    component_tokens = set(re.findall(r"[a-z0-9_.@:-]{2,}", component))
+    component_tokens = set(_tokens(component))
     remaining = [
         token
-        for token in re.findall(r"[a-z0-9_.@:-]{2,}", text)
+        for token in _tokens(text)
         if token not in removable and token not in component_tokens
     ]
     return not remaining
