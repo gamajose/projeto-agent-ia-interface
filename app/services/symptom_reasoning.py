@@ -48,12 +48,7 @@ def _cause_only_repeats_symptom(cause: str, symptom: dict[str, Any]) -> bool:
 
 
 def install_symptom_reasoning() -> None:
-    """Instala uma única camada contextual sobre as chamadas cognitivas.
-
-    O ContextVar do sintoma mantém a implementação segura entre execuções
-    concorrentes. A camada não altera prompts quando a investigação não veio de
-    um alerta reconhecível.
-    """
+    """Instala as camadas de sintoma e hipóteses adaptativas uma única vez."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -77,3 +72,9 @@ def install_symptom_reasoning() -> None:
     intelligent_agent.resilient_model_call = root_cause_model_call
     engine._model_call = root_cause_model_call
     _INSTALLED = True
+
+    # O motor adaptativo envolve a camada acima. A ordem garante que toda
+    # hipótese continue respeitando o contrato: alerta é sintoma, não causa.
+    from app.services.adaptive_reasoning import install_adaptive_reasoning
+
+    install_adaptive_reasoning()
