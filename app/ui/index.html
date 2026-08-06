@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="/ui/assets/product-polish.css?v=1.21.2">
   <link rel="stylesheet" href="/ui/assets/investigation-flow.css?v=1.21.2">
   <link rel="stylesheet" href="/ui/assets/execution-live.css?v=1.21.2">
+  <link rel="stylesheet" href="/ui/assets/projects.css?v=1.31.0">
 </head>
 <body>
   <div class="app-shell">
@@ -25,6 +26,7 @@
         <button class="nav-item" data-view="investigations"><span class="nav-icon">◎</span><span>Investigações</span></button>
         <button class="nav-item" data-view="inventory"><span class="nav-icon">▦</span><span>Inventário</span></button>
         <button class="nav-item" data-view="playbooks"><span class="nav-icon">◇</span><span>Playbooks</span></button>
+        <button class="nav-item" data-view="projects"><span class="nav-icon">✓</span><span>Projetos</span></button>
         <button class="nav-item" data-view="opencode"><span class="nav-icon">⌘</span><span>OpenCode</span></button>
         <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span><span>Configurações</span></button>
         <button class="nav-item" data-view="health"><span class="nav-icon">♥</span><span>Saúde</span></button>
@@ -65,6 +67,63 @@
           </div>
           <div class="playbook-grid" id="playbook-grid"><div class="empty-state">Abra esta seção para carregar os playbooks.</div></div>
         </article>
+      </section>
+
+      <section class="view" id="view-projects">
+        <div class="project-layout">
+          <article class="panel project-builder">
+            <div class="project-builder-head"><p class="eyebrow">CHECKLIST ADAPTATIVO</p><h3>Montar validação de projeto</h3><p id="project-scenario-help">Selecione o cenário, sistema operacional e endereços envolvidos. A IA separa coletas seguras, etapas manuais e alterações que exigem autorização.</p></div>
+            <form id="project-form" class="project-form">
+              <div class="project-form-grid">
+                <label><span>Projeto / cliente</span><input id="project-name" placeholder="Cliente ou nome do projeto" required></label>
+                <label><span>Ticket</span><input id="project-ticket" placeholder="Ex.: 205794"></label>
+                <label class="full"><span>Tipo de validação</span><select id="project-scenario" required><option value="linux_prod_std">Carregando cenários...</option></select></label>
+                <label id="project-role-field"><span>Papel do servidor</span><select id="project-role"><option value="production">Produção</option><option value="standby">Standby</option></select></label>
+                <label id="project-os-field"><span>Sistema operacional</span><select id="project-os-family"><option value="unknown">Carregando...</option></select></label>
+                <label><span>Nome do alvo</span><input id="project-target-name" placeholder="Produção, Standby, Monitor..."></label>
+                <label><span>IP VPN/TAP do alvo</span><input id="project-target-vpn" placeholder="172.27.x.x" required></label>
+                <label><span>IP interno do alvo</span><input id="project-target-internal" placeholder="192.168.x.x"></label>
+                <label id="project-agent-field" class="project-check-field"><input id="project-install-agent" type="checkbox" checked><span>Incluir instalação/validação do agente Checkmk</span></label>
+                <label id="project-monitor-toggle-field" class="project-check-field"><input id="project-has-monitor" type="checkbox"><span>Tem servidor de monitoramento do cliente</span></label>
+
+                <div id="project-monitor-fields" class="project-conditional" hidden>
+                  <label class="full"><span>Nome do servidor de monitoramento</span><input id="project-monitor-name" placeholder="Monitoramento do cliente"></label>
+                  <label><span>IP VPN do monitor</span><input id="project-monitor-vpn" placeholder="172.27.x.x"></label>
+                  <label><span>IP interno do monitor</span><input id="project-monitor-internal" placeholder="192.168.x.x"></label>
+                </div>
+
+                <div id="project-related-fields" class="project-conditional" hidden>
+                  <label class="full"><span>Outros hosts internos do cliente</span><textarea id="project-related-hosts" rows="5" placeholder="Produção | production | 192.168.1.10 | 172.27.232.210&#10;Standby | standby | 192.168.1.11 |"></textarea><small class="project-related-example">Uma linha por host: Nome | papel | IP interno | IP VPN opcional. Os testes entre monitor, produção e standby usam os IPs internos.</small></label>
+                </div>
+
+                <div id="project-management-fields" class="project-conditional" hidden>
+                  <label><span>Interface de gerenciamento</span><select id="project-management-type"><option value="auto">Carregando...</option></select></label>
+                  <label><span>IP da interface</span><input id="project-management-ip" placeholder="10.x.x.x"></label>
+                </div>
+
+                <div id="project-firewall-fields" class="project-conditional" hidden>
+                  <label class="full"><span>Fabricante do firewall</span><select id="project-firewall-type"><option value="pfsense">pfSense</option><option value="fortigate">FortiGate</option><option value="fortinet">FortiNet</option><option value="unknown">A identificar</option></select></label>
+                </div>
+
+                <div id="project-dns-fields" class="project-conditional" hidden>
+                  <label><span>Nome DNS da VPN</span><input id="project-vpn-dns-name" value="vpn.oracledba.com.br"></label>
+                  <label><span>DNS do gateway</span><input id="project-gateway-dns" placeholder="192.168.10.1"></label>
+                </div>
+
+                <div class="project-conditional">
+                  <label><span>Monitor 1</span><input id="project-monitor1-ip" value="10.17.181.1"></label>
+                  <label><span>Usuário do Monitor 1</span><input id="project-monitor1-user" value="jose.moraes"></label>
+                  <label><span>Monitor 5 / CMK05</span><input id="project-cmk05-ip" value="10.17.181.44"></label>
+                  <label><span>API do WhatsApp</span><input id="project-whatsapp-host" value="ws.2comconsulting.com.br"></label>
+                </div>
+              </div>
+              <small class="project-help">As senhas continuam sendo lidas do .env/Vault. O plano nunca exibe credenciais. Instalações, listeners, reinícios e ajustes de rede ficam separados como etapas manuais.</small>
+              <div id="project-form-status" class="project-form-status"></div>
+              <div class="project-form-actions"><button type="button" class="secondary-button" id="project-clear">Limpar</button><button type="submit" class="primary-button" id="project-generate">Gerar plano do projeto</button></div>
+            </form>
+          </article>
+          <div id="project-plan" class="project-plan" hidden><div class="project-empty"><div><strong>Nenhum plano gerado</strong><span>Preencha o cenário para receber o checklist dividido por servidor e por tipo de evidência.</span></div></div></div>
+        </div>
       </section>
 
       <section class="view" id="view-opencode"><article class="panel"><div class="panel-header"><div><p class="eyebrow">AGENTE DE DESENVOLVIMENTO</p><h3>OpenCode integrado ao Agent IA</h3></div></div><div class="opencode-workspace" id="opencode-workspace"><div class="empty-state">Abra esta seção para usar o OpenCode.</div></div></article></section>
@@ -135,6 +194,7 @@
   <script src="/ui/assets/batch.js?v=1.21.2" defer></script>
   <script src="/ui/assets/workspace.js?v=1.21.2" defer></script>
   <script src="/ui/assets/tools.js?v=1.21.2" defer></script>
+  <script src="/ui/assets/projects.js?v=1.31.0" defer></script>
   <script src="/ui/assets/settings.js?v=1.21.2" defer></script>
   <script src="/ui/assets/ux-improvements.js?v=1.21.2" defer></script>
   <script src="/ui/assets/execution-tracker.js?v=1.21.2" defer></script>

@@ -1,0 +1,38 @@
+id: project-management-interface
+title: Projeto N1 - Interface de Gerenciamento
+priority: 120
+profiles: [oracle_linux, linux_generic, checkmk]
+match:
+  any:
+    - "interface de gerenciamento"
+    - "idrac"
+    - "ilom"
+    - "xclarity"
+    - "ilo"
+    - "revis[aã]o.*winthor"
+steps:
+  - command: systemd-detect-virt
+    purpose: Identificar se o equipamento é físico ou virtual.
+  - command: dmidecode -t1
+    sudo: true
+    purpose: Coletar fabricante, modelo e número de série do equipamento.
+  - command: cat /etc/*-release
+    purpose: Registrar a versão do sistema operacional.
+  - command: ipmitool lan print
+    sudo: true
+    purpose: Identificar a configuração LAN e o fabricante provável da interface de gerenciamento.
+  - tool: network.interfaces
+    purpose: Registrar interfaces e rota para o endereço da controladora.
+  - tool: network.inspect_route
+    requires_context: objective_ip
+    arguments: {host: "{{objective_ip}}"}
+    purpose: Validar a rota até a interface de gerenciamento informada.
+  - tool: network.udp_probe
+    requires_context: objective_ip
+    arguments: {host: "{{objective_ip}}", port: 161}
+    purpose: Validar alcance UDP/161 antes do snmpwalk apropriado ao fabricante.
+allowed_corrections: []
+validation:
+  - tool: network.udp_probe
+    requires_context: objective_ip
+    arguments: {host: "{{objective_ip}}", port: 161}

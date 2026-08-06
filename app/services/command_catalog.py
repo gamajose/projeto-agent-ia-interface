@@ -32,6 +32,10 @@ def _p(expression: str) -> re.Pattern[str]:
 
 CATALOG: tuple[CommandSpec, ...] = (
     CommandSpec("system_basics", "system", _p(r"^(uptime|hostname|hostnamectl|uname|nproc|date|timedatectl|who|w|last)(\s|$)")),
+    CommandSpec("virtualization_read", "system", _p(r"^systemd-detect-virt(?:\s|$)"), availability_binary="systemd-detect-virt"),
+    CommandSpec("dmi_system_read", "hardware", _p(r"^dmidecode\s+(?:-t|--type)\s*(?:1|system)(?:\s|$)"), requires_sudo=True, availability_binary="dmidecode"),
+    CommandSpec("ipmi_lan_read", "hardware", _p(r"^ipmitool\s+lan\s+print(?:\s+[0-9]+)?\s*$"), requires_sudo=True, availability_binary="ipmitool"),
+    CommandSpec("checkmk_agent_output", "monitoring", _p(r"^(?:check_mk_agent|check-mk-agent)(?:\s|$)")),
     CommandSpec("cpu_memory", "resources", _p(r"^(free|vmstat|iostat|mpstat|sar|lscpu|lsmem|top|ps)(\s|$)")),
     CommandSpec("filesystem", "filesystem", _p(r"^(df|du|lsblk|blkid|mount|findmnt|stat|find|ls)(\s|$)")),
     CommandSpec("network", "network", _p(r"^(ip|ss|netstat|route|arp|ping|traceroute|tracepath|ethtool|resolvectl|getent|host|dig|nslookup)(\s|$)")),

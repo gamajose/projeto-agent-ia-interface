@@ -1,0 +1,41 @@
+id: project-linux-monitoring
+title: Projeto N1 - Servidor de Monitoramento
+priority: 125
+profiles: [checkmk, oracle_linux, linux_generic]
+match:
+  any:
+    - "projeto.*monitoramento"
+    - "servidor de monitoramento.*projeto"
+    - "livestatus.*projeto"
+    - "porta 6557"
+steps:
+  - command: systemd-detect-virt
+    purpose: Identificar se o servidor de monitoramento é físico ou virtual.
+  - command: dmidecode -t1
+    sudo: true
+    purpose: Coletar fabricante, modelo e número de série.
+  - command: cat /etc/*-release
+    purpose: Registrar a versão do sistema operacional.
+  - command: ip a
+    purpose: Registrar o IP interno usado nos testes com produção e standby.
+  - command: timedatectl
+    purpose: Validar data, hora, timezone e sincronismo.
+  - command: ipmitool lan print
+    sudo: true
+    purpose: Mapear a interface de gerenciamento quando existir.
+  - tool: checkmk.inspect_agent_socket
+    purpose: Validar agente e listener local 6556.
+  - command: ping -c 4 10.17.181.1
+    purpose: Validar comunicação ICMP com o Monitor 1.
+  - tool: network.test_port
+    arguments: {host: "10.17.181.1", port: 6556}
+    purpose: Validar comunicação com o Monitor 1.
+  - tool: network.test_port
+    arguments: {host: "10.17.181.44", port: 6557}
+    purpose: Validar comunicação com o Monitor 5 enquanto o listener estiver aberto.
+  - tool: network.test_port
+    arguments: {host: "ws.2comconsulting.com.br", port: 443}
+    purpose: Validar comunicação com a API do WhatsApp.
+allowed_corrections: []
+validation:
+  - tool: network.interfaces
