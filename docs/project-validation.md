@@ -33,6 +33,18 @@ Produção | production | 192.168.1.10 | 172.27.232.210
 Standby | standby | 192.168.1.11 |
 ```
 
+## Credenciais SNMP
+
+As credenciais de iDRAC/ILOM não ficam no código ou nos playbooks. Configure no `.env` ou no backend de segredos:
+
+```dotenv
+SNMP_V2_COMMUNITY=
+SNMP_V3_USER=doiscom
+SNMP_V3_AUTH_PASSWORD=
+```
+
+Quando os valores não estiverem configurados, o plano mostra placeholders explícitos e mantém o `snmpwalk` como etapa assistida, sem execução automática.
+
 ## DNS da VPN
 
 O playbook de DNS compara os resolvers informados, coleta `/etc/resolv.conf`, correlaciona os logs da VPN e apresenta os ajustes de OL7/OL8 como passos manuais. Ele não altera DNS, rede ou serviço OpenVPN automaticamente.
