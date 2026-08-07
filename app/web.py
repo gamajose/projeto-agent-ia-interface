@@ -22,6 +22,7 @@ from app.services.persistence import get_investigation, operational_metrics
 from app.services.playbooks import list_playbooks
 from app.services.provider_preflight import ProviderPreflight, preflight_all, preflight_provider
 from app.services.provider_router import automatic_provider_order
+from app.services.range_investigation import looks_like_ip_range, run_range_investigation
 from app.services.runner import run_target
 from app.services.ui_queries import list_hosts, list_investigations
 
@@ -33,7 +34,7 @@ ProviderName = Literal["auto", "gemini", "groq", "openrouter", "ollama", "omniro
 
 class InvestigationPayload(BaseModel):
     target: str = Field(min_length=1, max_length=255)
-    objective: str = Field(min_length=3, max_length=12000)
+    objective: str = Field(default="", max_length=12000)
     environment: EnvironmentType = EnvironmentType.UNKNOWN
     mode: Literal["investigate", "propose", "correct"] = "propose"
     ssh_port: int | None = Field(default=None, ge=1, le=65535)
@@ -106,6 +107,7 @@ def _compact_result(result: dict[str, Any]) -> dict[str, Any]:
         "investigation_id": result.get("investigation_id"),
         "hostname": result.get("hostname"),
         "target": result.get("target"),
+        "range_target": result.get("range_target"),
         "profile": result.get("profile"),
         "environment_classification": result.get("environment_classification"),
         "playbook": result.get("playbook"),
@@ -204,6 +206,7 @@ def ui_session(request: Request) -> dict[str, Any]:
         "reviewer_provider": settings.ai_reviewer_provider,
         "review_required": settings.ai_reviewer_required_for_corrections,
         "safe_rules": [
+            "Faixas privadas podem ser varridas a partir do Monitor 1; todos os hosts SSH encontrados recebem triagem.",
             "Produção e standby recebem investigação e proposta, nunca correção automática.",
             "Reboot, shutdown, bancos de clientes e ciclo de vida de containers permanecem bloqueados.",
             "Toda ação corretiva exige playbook permitido, segunda IA e aprovação humana.",
@@ -304,6 +307,12 @@ def create_investigation(payload: InvestigationPayload, request: Request) -> dic
     settings = get_settings()
     ensure_database_schema()
     provider, model, effective_mode = _validate_selection(payload, settings)
+    target_value = payload.target.strip()
+    objective = payload.objective.strip() or (
+        "Realizar análise geral de saúde do ambiente, identificar falhas, diferenciar sintomas de causas, "
+        "encontrar a causa raiz e propor somente correções sustentadas por evidências."
+    )
+    range_scan = looks_like_ip_range(target_value)
 
     common = {
         "environment": payload.environment,
@@ -320,13 +329,14 @@ def create_investigation(payload: InvestigationPayload, request: Request) -> dic
     if settings.agent_execution_mode.strip().casefold() == "queue":
         try:
             return enqueue_investigation(
-                payload.target.strip(),
-                payload.objective.strip(),
+                target_value,
+                objective,
                 metadata={
-                    "source": "web_ui",
+                    "source": "web_ui_range" if range_scan else "web_ui",
                     "operator": _operator_name(),
                     "requested_mode": payload.mode,
                     "autopilot": provider == "auto",
+                    "range_scan": range_scan,
                 },
                 **common,
             )
@@ -334,10 +344,10 @@ def create_investigation(payload: InvestigationPayload, request: Request) -> dic
             raise HTTPException(status_code=503, detail=f"fila indisponível: {type(exc).__name__}: {exc}") from exc
 
     try:
-        result = run_target(
-            payload.target.strip(),
-            payload.objective.strip(),
-            **common,
+        result = (
+            run_range_investigation(target_value, objective, **common)
+            if range_scan
+            else run_target(target_value, objective, **common)
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
