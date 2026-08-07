@@ -90,6 +90,21 @@ def _stdout_for(step_id: str, by_id: dict[str, dict[str, Any]]) -> str:
     return str((by_id.get(step_id) or {}).get("stdout") or "")
 
 
+def _checkmk_agent_installed(output: str) -> bool:
+    """Confirma presença do agente sem confundir instalação com listener ativo.
+
+    A coleta agent-local-validation começa pela consulta de pacote (rpm/dpkg) e
+    também tenta executar check_mk_agent. Portanto, uma assinatura do pacote ou
+    da saída real do agente é suficiente para impedir uma reinstalação desnecessária.
+    """
+    return bool(
+        re.search(
+            r"(?im)(\bcheck[-_]mk[-_]agent(?:[-_.][A-Za-z0-9]+)*\b|\bcheck_mk_agent\b|<<<check_mk>>>)",
+            output or "",
+        )
+    )
+
+
 def _facts(target: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
     vpn_ip = str(target.get("vpn_ip") or "")
     release = _stdout_for("os-version", by_id)
@@ -118,6 +133,7 @@ def _facts(target: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str
         "management_label": INTERFACE_LABELS.get(management_type, management_type),
         "management_ip": management_ip,
         "time_sync": "synchronized" if re.search(r"(?i)(System clock synchronized:\s*yes|synchronized:\s*yes)", timedate) else "not_confirmed",
+        "agent_installed": _checkmk_agent_installed(agent),
         "agent_6556": "listening" if re.search(r"6556", agent) else "not_confirmed",
     }
 
@@ -145,7 +161,11 @@ def _friendly_summary(step: dict[str, Any], evidence: dict[str, Any] | None, fac
         label = str(facts.get("management_label") or "Interface de gerenciamento")
         return f"{label}: {facts.get('management_ip')}" if facts.get("management_ip") else f"{label}; IP não identificado."
     if step_id == "agent-local-validation":
-        return "Agente/porta 6556 identificados no host." if facts.get("agent_6556") == "listening" else "Validação local do agente executada; listener 6556 não confirmado."
+        if facts.get("agent_installed") and facts.get("agent_6556") == "listening":
+            return "Agente Checkmk já instalado e listener 6556 identificado no host."
+        if facts.get("agent_installed"):
+            return "Agente Checkmk já instalado; listener 6556 não confirmado."
+        return "Validação local executada; agente Checkmk instalado não foi confirmado."
     if "6556" in str(step.get("title") or "") or "6557" in str(step.get("title") or ""):
         return "Comunicação validada com sucesso."
     if "WhatsApp" in str(step.get("title") or ""):
@@ -189,6 +209,29 @@ def build_project_macro_result(
                         "stderr": str(found.get("stderr") or "") if found else "",
                     },
                     "evidence_hint": step.get("evidence_hint"),
+                    "notes": list(step.get("notes") or []),
+                }
+            )
+            continue
+
+        if step.get("id") in {"agent-copy", "agent-install"} and facts.get("agent_installed"):
+            validation = by_id.get("agent-local-validation") or {}
+            checklist.append(
+                {
+                    "id": step.get("id"),
+                    "title": step.get("title"),
+                    "context": step.get("context"),
+                    "reference": step.get("reference"),
+                    "kind": step.get("kind"),
+                    "automated": False,
+                    "status": "completed",
+                    "summary": "Agente Checkmk já está instalado no servidor. Esta etapa foi ignorada e nenhuma reinstalação foi executada.",
+                    "evidence": {
+                        "exit_code": validation.get("exit_code"),
+                        "stdout": str(validation.get("stdout") or ""),
+                        "stderr": str(validation.get("stderr") or ""),
+                    },
+                    "evidence_hint": "A própria validação local do agente comprovou que o Checkmk já está instalado.",
                     "notes": list(step.get("notes") or []),
                 }
             )
