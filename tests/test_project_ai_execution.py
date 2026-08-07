@@ -38,6 +38,19 @@ def test_project_ui_starts_execution_instead_of_rendering_copyable_commands() ->
     assert "Executar validação com IA" in source
 
 
+def test_project_ui_normalizes_async_response_before_reading_array_lengths() -> None:
+    source = (PROJECT_ROOT / "app/ui/projects.js").read_text(encoding="utf-8")
+
+    assert "const asArray = (value) => (Array.isArray(value) ? value : []);" in source
+    assert "normalizeExecutionResponse" in source
+    assert "jobs: asArray(response.jobs)" in source
+    assert "executions: asArray(response.executions)" in source
+    assert "errors: asArray(response.errors)" in source
+    assert "response.jobs.length" in source
+    assert "response.executions.length" in source
+    assert "response.jobs || []" not in source
+
+
 def test_project_plan_snapshot_does_not_send_command_groups_to_ui() -> None:
     snapshot = _plan_snapshot(
         {
