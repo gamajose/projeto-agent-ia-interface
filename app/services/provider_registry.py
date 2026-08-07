@@ -18,7 +18,7 @@ from app.services.secrets import clear_secret_cache, get_secret
 _PROVIDER_ID = re.compile(r"^[a-z][a-z0-9_-]{1,47}$")
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{2,95}$")
 _ALLOWED_TIERS = {"free", "paid", "local", "gateway", "custom"}
-_LEGACY_CATALOG_IDS = {"gemini", "groq", "openrouter", "ollama", "omniroute"}
+_LEGACY_CATALOG_IDS = {"gemini", "groq", "openrouter", "ollama", "omniroute", "codex"}
 
 
 @dataclass(frozen=True)
@@ -119,6 +119,19 @@ def _builtin_specs(settings: Settings) -> tuple[ProviderSpec, ...]:
             credential_env="GROQ_API_KEY",
             tier="free",
             priority=10,
+            builtin=True,
+        ),
+        ProviderSpec(
+            id="codex",
+            label="OpenAI Codex CLI",
+            kind="codex-cli",
+            source="local",
+            base_url="local://codex-cli",
+            default_model=settings.codex_model,
+            models=(settings.codex_model,) if settings.codex_model else (),
+            credential_env=None,
+            tier="local",
+            priority=18,
             builtin=True,
         ),
         ProviderSpec(
@@ -229,11 +242,7 @@ def _custom_spec(row: dict[str, Any]) -> ProviderSpec | None:
     )
 
 
-def provider_specs(
-    settings: Settings | None = None,
-    *,
-    include_disabled: bool = False,
-) -> tuple[ProviderSpec, ...]:
+def provider_specs(settings: Settings | None = None, *, include_disabled: bool = False) -> tuple[ProviderSpec, ...]:
     settings = settings or get_settings()
     specs = list(_builtin_specs(settings))
     builtin_ids = {item.id for item in specs}
@@ -248,10 +257,7 @@ def provider_specs(
 
 def provider_spec(provider_id: str, settings: Settings | None = None) -> ProviderSpec | None:
     normalized = str(provider_id or "").strip().lower()
-    return next(
-        (item for item in provider_specs(settings, include_disabled=True) if item.id == normalized),
-        None,
-    )
+    return next((item for item in provider_specs(settings, include_disabled=True) if item.id == normalized), None)
 
 
 def provider_label(provider_id: str, settings: Settings | None = None) -> str:
@@ -288,8 +294,15 @@ def provider_secret(spec: ProviderSpec, settings: Settings | None = None) -> str
 
 
 def provider_configured(spec: ProviderSpec, settings: Settings | None = None) -> bool:
+    settings = settings or get_settings()
     if spec.kind == "ollama":
         return True
+    if spec.kind == "codex-cli":
+        try:
+            from app.services.codex_cli import codex_cli_status
+            return codex_cli_status(settings).available
+        except Exception:
+            return False
     try:
         return bool(provider_secret(spec, settings))
     except Exception:
@@ -297,12 +310,7 @@ def provider_configured(spec: ProviderSpec, settings: Settings | None = None) ->
 
 
 def provider_ids(settings: Settings | None = None) -> tuple[str, ...]:
-    """Retorna o catálogo operacional.
-
-    Os cinco provedores históricos continuam visíveis mesmo sem chave. DeepSeek e
-    provedores personalizados entram automaticamente após receberem credencial,
-    evitando aumentar o catálogo com integrações ainda não configuradas.
-    """
+    """Retorna o catálogo operacional, incluindo backends locais detectáveis."""
     settings = settings or get_settings()
     rows = []
     for spec in provider_specs(settings):
@@ -327,11 +335,7 @@ def _atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def update_env_values(
-    updates: dict[str, str],
-    *,
-    settings: Settings | None = None,
-) -> Path:
+def update_env_values(updates: dict[str, str], *, settings: Settings | None = None) -> Path:
     settings = settings or get_settings()
     path = _env_path(settings)
     lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
@@ -363,10 +367,7 @@ def update_env_values(
 
 def _save_custom_rows(rows: list[dict[str, Any]], settings: Settings) -> Path:
     path = _registry_path(settings)
-    _atomic_write(
-        path,
-        json.dumps({"version": 1, "providers": rows}, ensure_ascii=False, indent=2) + "\n",
-    )
+    _atomic_write(path, json.dumps({"version": 1, "providers": rows}, ensure_ascii=False, indent=2) + "\n")
     return path
 
 
@@ -410,11 +411,7 @@ def save_custom_provider(
         "tier": tier if tier in _ALLOWED_TIERS else "custom",
         "priority": max(1, min(int(priority), 999)),
     }
-    rows = [
-        item
-        for item in _load_custom_rows(settings)
-        if str(item.get("id") or "").strip().lower() != normalized_id
-    ]
+    rows = [item for item in _load_custom_rows(settings) if str(item.get("id") or "").strip().lower() != normalized_id]
     rows.append(row)
     _save_custom_rows(rows, settings)
     if api_key:
@@ -430,11 +427,7 @@ def delete_custom_provider(provider_id: str, settings: Settings | None = None) -
     settings = settings or get_settings()
     normalized = provider_id.strip().lower()
     rows = _load_custom_rows(settings)
-    remaining = [
-        item
-        for item in rows
-        if str(item.get("id") or "").strip().lower() != normalized
-    ]
+    remaining = [item for item in rows if str(item.get("id") or "").strip().lower() != normalized]
     if len(remaining) == len(rows):
         return False
     _save_custom_rows(remaining, settings)
@@ -456,6 +449,7 @@ def builtin_env_updates(
     mapping: dict[str, dict[str, str]] = {
         "gemini": {"key": "GEMINI_API_KEY", "model": "GEMINI_MODEL", "models": "GEMINI_FREE_MODELS"},
         "groq": {"key": "GROQ_API_KEY", "base": "GROQ_BASE_URL", "model": "GROQ_MODEL"},
+        "codex": {"model": "CODEX_MODEL"},
         "deepseek": {"key": "DEEPSEEK_API_KEY", "base": "DEEPSEEK_BASE_URL", "model": "DEEPSEEK_MODEL", "models": "DEEPSEEK_MODELS"},
         "openrouter": {"key": "OPENROUTER_API_KEY", "base": "OPENROUTER_BASE_URL", "model": "OPENROUTER_MODEL"},
         "ollama": {"base": "OLLAMA_BASE_URL", "model": "OLLAMA_MODEL", "models": "OLLAMA_PREFERRED_MODELS"},
@@ -483,8 +477,5 @@ def public_registry(settings: Settings | None = None) -> dict[str, Any]:
     return {
         "registry_path": str(_registry_path(settings)),
         "env_path": str(_env_path(settings)),
-        "providers": [
-            item.public_dict(settings)
-            for item in provider_specs(settings, include_disabled=True)
-        ],
+        "providers": [item.public_dict(settings) for item in provider_specs(settings, include_disabled=True)],
     }
