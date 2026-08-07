@@ -23,6 +23,7 @@ def main() -> None:
     parser.add_argument("--command-b64", required=True)
     parser.add_argument("--purpose", default="validação de projeto")
     parser.add_argument("--monitor-id", default="monitor1")
+    parser.add_argument("--sudo", action="store_true")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
@@ -40,12 +41,17 @@ def main() -> None:
         target = resolve_target(args.reference, environment, None, settings=settings)
         executor = build_executor(target, settings=settings)
         executor.connect()
-        completed = executor.run(command, target.environment, timeout=settings.ssh_command_timeout)
+        completed = (
+            executor.run_sudo(command, target.environment, timeout=settings.ssh_command_timeout)
+            if args.sudo
+            else executor.run(command, target.environment, timeout=settings.ssh_command_timeout)
+        )
         result = {
             "orchestrator": "ansible",
             "reference": args.reference,
             "purpose": args.purpose,
             "command": command,
+            "sudo": bool(args.sudo),
             "exit_code": int(completed.exit_code),
             "stdout": str(completed.stdout or "")[-12000:],
             "stderr": str(completed.stderr or "")[-4000:],
@@ -57,6 +63,7 @@ def main() -> None:
             "reference": args.reference,
             "purpose": args.purpose,
             "command": command,
+            "sudo": bool(args.sudo),
             "exit_code": 255,
             "stdout": "",
             "stderr": f"{type(exc).__name__}: {exc}",
