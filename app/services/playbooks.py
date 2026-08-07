@@ -18,6 +18,7 @@ from app.services.operational_memory import (
     playbook_learning_summary,
     recommended_playbook_id,
 )
+from app.services.runtime_env import runtime_value
 
 
 @dataclass(frozen=True)
@@ -208,6 +209,31 @@ def _objective_addresses(objective: str) -> list[str]:
     return addresses
 
 
+def _runtime_context() -> dict[str, str]:
+    """Expõe ao YAML apenas metadados operacionais não secretos já existentes no .env."""
+    settings = get_settings()
+    monitor1 = str(
+        settings.ssh_bastion_host
+        or runtime_value("SSH_SRV_VPN_IP", "10.17.181.1", settings=settings)
+        or "10.17.181.1"
+    ).strip()
+    cmk05 = str(
+        runtime_value(
+            "SSH_CMK05",
+            runtime_value("SSH_CMK05_IP", "10.17.181.44", settings=settings),
+            settings=settings,
+        )
+        or "10.17.181.44"
+    ).strip()
+    whatsapp = str(runtime_value("API_WHATSAPP", "ws.2comconsulting.com.br", settings=settings) or "ws.2comconsulting.com.br").strip()
+    whatsapp = re.sub(r"^https?://", "", whatsapp, flags=re.I).split("/", 1)[0]
+    return {
+        "monitor1_ip": monitor1,
+        "cmk05_ip": cmk05,
+        "whatsapp_host": whatsapp,
+    }
+
+
 def _render(value: Any, context: dict[str, Any]) -> Any:
     if isinstance(value, str):
         result = value
@@ -225,7 +251,8 @@ def render_steps(playbook: Playbook | None, context: dict[str, Any]) -> list[dic
     if not playbook:
         return []
 
-    render_context = dict(context)
+    render_context = _runtime_context()
+    render_context.update(context)
     addresses = _objective_addresses(_CURRENT_OBJECTIVE.get())
     render_context.setdefault("objective_ip", addresses[0] if addresses else "")
     render_context.setdefault("objective_ips", ",".join(addresses))
