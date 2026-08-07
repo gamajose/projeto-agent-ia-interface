@@ -44,6 +44,7 @@ def _row(
         label={
             "gemini": "Google Gemini",
             "groq": "Groq (Llama)",
+            "codex": "OpenAI Codex CLI",
             "openrouter": "OpenRouter",
             "ollama": "Ollama local",
             "omniroute": "OmniRoute",
@@ -62,7 +63,7 @@ def test_automatic_provider_order_is_configurable_and_deduplicated() -> None:
 
     assert order[:2] == ("omniroute", "groq")
     assert len(order) == len(set(order))
-    assert set(order) == {"gemini", "groq", "openrouter", "ollama", "omniroute"}
+    assert set(order) == {"gemini", "groq", "codex", "openrouter", "ollama", "omniroute"}
 
 
 def test_autopilot_falls_back_to_next_fully_validated_provider(monkeypatch) -> None:
@@ -73,6 +74,7 @@ def test_autopilot_falls_back_to_next_fully_validated_provider(monkeypatch) -> N
         _row("gemini", selectable=False),
         _row("ollama", selectable=False),
         _row("openrouter", selectable=False),
+        _row("codex", selectable=False),
     ]
     monkeypatch.setattr(provider_router, "preflight_all", lambda *args, **kwargs: quick)
 
@@ -99,7 +101,7 @@ def test_autopilot_blocks_before_ssh_when_no_provider_is_healthy(monkeypatch) ->
         "preflight_all",
         lambda *args, **kwargs: [
             _row(provider, selectable=False, detail="indisponível")
-            for provider in ("gemini", "groq", "openrouter", "ollama", "omniroute")
+            for provider in ("gemini", "groq", "codex", "openrouter", "ollama", "omniroute")
         ],
     )
 
