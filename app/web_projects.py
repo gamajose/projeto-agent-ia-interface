@@ -120,12 +120,7 @@ def _needs_sudo(command: str) -> bool:
 
 
 def _ansible_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:
-    """Transforma somente coletas automáticas do plano em tarefas Ansible.
-
-    Mudanças, listeners e itens manuais não entram na execução automática. Cada
-    tarefa mantém o IP VPN/TAP do contexto onde precisa rodar; depois o caller
-    separa as tarefas por alvo para não repetir o procedimento em outros hosts.
-    """
+    """Transforma somente coletas automáticas do plano em tarefas Ansible."""
     environment_by_reference = {
         str(item.get("reference") or ""): str(item.get("environment") or "unknown")
         for item in plan.get("execution_targets") or []
@@ -157,16 +152,21 @@ def _ansible_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:
 
 @router.post("/start")
 def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
-    """Recebe o IP e executa o processo; não devolve uma folha de comandos."""
+    """Recebe o IP e executa o processo; não devolve uma folha de comandos.
+
+    Quando a execução é em fila, a descoberta não abre uma sessão SSH separada
+    no processo web. O worker assume a coleta inteira para evitar reconexões
+    desnecessárias ao Monitor e ao servidor cliente.
+    """
     _require_mutation(request)
     settings = get_settings()
-    plan = _plan(payload, discover=True)
+    queue_mode = settings.agent_execution_mode.strip().casefold() == "queue"
+    plan = _plan(payload, discover=not queue_mode)
     targets = list(plan.get("execution_targets") or [])
     if not targets:
         raise HTTPException(status_code=422, detail="o plano não possui alvo elegível para validação automática")
 
     provider_name, model_name, automatic_selection = _provider_selection(payload, settings)
-    queue_mode = settings.agent_execution_mode.strip().casefold() == "queue"
     all_ansible_steps = _ansible_steps(plan)
     jobs: list[dict[str, Any]] = []
     executions: list[dict[str, Any]] = []
@@ -257,8 +257,8 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
         "executions": executions,
         "errors": errors,
         "message": (
-            "A IA iniciou a validação operacional. O Ansible executa automaticamente as coletas previstas pelo playbook, "
-            "as saídas entram como evidência da análise e a IA devolve o diagnóstico. Etapas corretivas continuam sujeitas "
-            "à revisão e aprovação humana."
+            "A IA iniciou a validação operacional. O worker abre o acesso ao cliente somente quando precisa executar a coleta; "
+            "o Ansible agrupa as validações do mesmo alvo em uma única sessão SSH, preserva as saídas como evidência e a IA "
+            "devolve o diagnóstico. Etapas corretivas continuam sujeitas à revisão e aprovação humana."
         ),
     }
