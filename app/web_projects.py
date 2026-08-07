@@ -114,12 +114,17 @@ def _run_kwargs(
     }
 
 
+def _needs_sudo(command: str) -> bool:
+    normalized = command.strip().casefold()
+    return normalized.startswith("dmidecode ") or normalized.startswith("ipmitool ")
+
+
 def _ansible_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:
     """Transforma somente coletas automáticas do plano em tarefas Ansible.
 
-    Etapas manuais e mudanças não entram aqui. O endereço do grupo define em qual
-    servidor a tarefa será executada; os endereços internos continuam sendo
-    descobertos pela própria aplicação antes de montar os testes dependentes.
+    Mudanças, listeners e itens manuais não entram na execução automática. Cada
+    tarefa mantém o IP VPN/TAP do contexto onde precisa rodar; depois o caller
+    separa as tarefas por alvo para não repetir o procedimento em outros hosts.
     """
     environment_by_reference = {
         str(item.get("reference") or ""): str(item.get("environment") or "unknown")
@@ -133,7 +138,8 @@ def _ansible_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         environment = environment_by_reference.get(reference, default_environment)
         for item in group.get("items") or []:
-            if item.get("kind") != "command" or not item.get("automated") or not str(item.get("command") or "").strip():
+            command = str(item.get("command") or "").strip()
+            if item.get("kind") != "command" or not item.get("automated") or not command:
                 continue
             rows.append(
                 {
@@ -141,7 +147,8 @@ def _ansible_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:
                     "environment": environment,
                     "title": item.get("title"),
                     "purpose": item.get("purpose"),
-                    "command": item.get("command"),
+                    "command": command,
+                    "sudo": _needs_sudo(command),
                     "automated": True,
                 }
             )
@@ -160,14 +167,16 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
 
     provider_name, model_name, automatic_selection = _provider_selection(payload, settings)
     queue_mode = settings.agent_execution_mode.strip().casefold() == "queue"
-    ansible_steps = _ansible_steps(plan)
+    all_ansible_steps = _ansible_steps(plan)
     jobs: list[dict[str, Any]] = []
     executions: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
 
     for item in targets:
+        reference = str(item["reference"])
         environment = _environment(item.get("environment"))
         common = _run_kwargs(item, environment, settings, provider_name=provider_name, model_name=model_name)
+        target_ansible_steps = [step for step in all_ansible_steps if str(step.get("reference")) == reference]
         metadata = {
             "source": "project_validation",
             "plan_id": plan["plan_id"],
@@ -182,16 +191,16 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
             "access_monitor_id": "monitor1",
             "access_monitor_label": "Monitor 1",
             "access_monitor_host": settings.ssh_bastion_host,
-            "ansible_steps": ansible_steps,
+            "ansible_steps": target_ansible_steps,
         }
         try:
             if queue_mode:
-                queued = enqueue_investigation(str(item["reference"]), str(item["objective"]), metadata=metadata, **common)
+                queued = enqueue_investigation(reference, str(item["objective"]), metadata=metadata, **common)
                 jobs.append(
                     {
                         "job_id": queued["job_id"],
                         "status": queued["status"],
-                        "reference": item["reference"],
+                        "reference": reference,
                         "label": item.get("label"),
                         "playbook_id": item["playbook_id"],
                         "environment": environment.value,
@@ -199,9 +208,13 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
                 )
                 continue
 
-            ansible_evidence, ansible_diagnostics = execute_project_steps(ansible_steps, access_monitor_id="monitor1", settings=settings)
+            ansible_evidence, ansible_diagnostics = execute_project_steps(
+                target_ansible_steps,
+                access_monitor_id="monitor1",
+                settings=settings,
+            )
             objective = str(item["objective"]) + evidence_context(ansible_evidence)
-            result = run_target_tracked(str(item["reference"]), objective, **common)
+            result = run_target_tracked(reference, objective, **common)
             if ansible_evidence:
                 result["evidence"] = [*ansible_evidence, *list(result.get("evidence") or [])]
             result["ansible"] = ansible_diagnostics
@@ -210,7 +223,7 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
             executions.append(
                 {
                     "status": "completed",
-                    "reference": item["reference"],
+                    "reference": reference,
                     "label": item.get("label"),
                     "playbook_id": item["playbook_id"],
                     "environment": environment.value,
@@ -221,7 +234,7 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
         except Exception as exc:
             errors.append(
                 {
-                    "reference": str(item.get("reference") or ""),
+                    "reference": reference,
                     "label": str(item.get("label") or ""),
                     "error": f"{type(exc).__name__}: {exc}",
                 }
