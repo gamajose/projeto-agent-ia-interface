@@ -258,8 +258,8 @@ def _automation_summary(
             },
         ],
         "safety": {
-            "production_changes": "blocked",
-            "standby_changes": "blocked",
+            "production_changes": "approval_required",
+            "standby_changes": "approval_required",
             "reboot_shutdown": "blocked",
             "customer_databases": "blocked",
             "container_lifecycle": "blocked",
