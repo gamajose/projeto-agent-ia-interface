@@ -17,4 +17,5 @@ SQLAlchemy==2.0.44
 psycopg[binary]==3.2.12
 redis==7.0.1
 alembic==1.17.2
+ansible-core>=2.18,<2.21
 pytest==9.0.2
