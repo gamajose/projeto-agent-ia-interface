@@ -9,6 +9,7 @@ from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
 from app.services.jobs import enqueue_investigation
 from app.services.project_validation import ProjectPlanError, build_project_plan, project_templates
+from app.services.provider_router import resolve_automatic_provider
 from app.services.tracked_runner import run_target_tracked
 from app.web import _compact_result, _require_access, _require_mutation
 
@@ -89,19 +90,30 @@ def _environment(value: Any) -> EnvironmentType:
         return EnvironmentType.UNKNOWN
 
 
+def _provider_selection(payload: ProjectPayload, settings: Any) -> tuple[str, str | None, dict[str, Any] | None]:
+    requested = (payload.provider or "auto").strip().lower()
+    requested_model = (payload.model or "").strip() or None
+    if requested != "auto":
+        return requested, requested_model, None
+    selection = resolve_automatic_provider(settings)
+    return selection.provider, selection.model, selection.as_dict()
+
+
 def _run_kwargs(
-    payload: ProjectPayload,
     item: dict[str, Any],
     environment: EnvironmentType,
     settings: Any,
+    *,
+    provider_name: str,
+    model_name: str | None,
 ) -> dict[str, Any]:
     return {
         "environment": environment,
         "mode": "propose",
         "approve": False,
         "ssh_port": int(item.get("ssh_port") or 22),
-        "provider_name": (payload.provider or "auto").strip().lower(),
-        "model_name": (payload.model or "").strip() or None,
+        "provider_name": provider_name,
+        "model_name": model_name,
         "playbook_mode": "manual",
         "playbook_id": str(item["playbook_id"]),
         "settings": settings,
@@ -123,6 +135,7 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
     if not targets:
         raise HTTPException(status_code=422, detail="o plano não possui alvo elegível para validação automática")
 
+    provider_name, model_name, automatic_selection = _provider_selection(payload, settings)
     queue_mode = settings.agent_execution_mode.strip().casefold() == "queue"
     jobs: list[dict[str, Any]] = []
     executions: list[dict[str, Any]] = []
@@ -130,7 +143,13 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
 
     for item in targets:
         environment = _environment(item.get("environment"))
-        common = _run_kwargs(payload, item, environment, settings)
+        common = _run_kwargs(
+            item,
+            environment,
+            settings,
+            provider_name=provider_name,
+            model_name=model_name,
+        )
         metadata = {
             "source": "project_validation",
             "plan_id": plan["plan_id"],
@@ -138,6 +157,9 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
             "target_label": item.get("label"),
             "automatic_scope": "execute_read_only_then_propose",
             "input_contract": "vpn_ip_first",
+            "requested_provider": (payload.provider or "auto").strip().lower(),
+            "selected_provider": provider_name,
+            "selected_model": model_name,
             "discovery_source": (plan.get("discovery") or {}).get("source"),
         }
         try:
@@ -194,6 +216,9 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
         "plan_id": plan["plan_id"],
         "scenario": plan["scenario"],
         "execution_mode": "queue" if queue_mode else "inline",
+        "provider_selection": automatic_selection,
+        "selected_provider": provider_name,
+        "selected_model": model_name,
         "plan": _plan_snapshot(plan),
         "jobs": jobs,
         "executions": executions,
