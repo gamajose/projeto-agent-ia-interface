@@ -70,7 +70,7 @@ def test_readiness_requires_human_decision_when_evidence_mentions_reboot() -> No
     assert result["host_restart"]["evidence"]
 
 
-def test_production_still_receives_plan_but_not_automatic_correction() -> None:
+def test_production_allows_restricted_correction_only_after_human_approval() -> None:
     result = assess_correction_readiness(
         _investigation("O xinetd está parado.", environment="production"),
         [
@@ -81,5 +81,6 @@ def test_production_still_receives_plan_but_not_automatic_correction() -> None:
         ],
     )
 
-    assert result["automatic_correction_allowed"] is False
-    assert "Produção" in result["policy_message"]
+    assert result["automatic_correction_allowed"] is True
+    assert "aprovação explícita do analista" in result["policy_message"]
+    assert result["host_restart"]["automatic_execution"] is False
