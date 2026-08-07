@@ -16,8 +16,8 @@ steps:
   - tool: checkmk.inspect_agent_socket
     purpose: Validar listener do agente Checkmk quando disponível.
   - tool: network.test_port
-    arguments: {host: "10.17.181.1", port: 6556}
-    purpose: Validar comunicação do firewall para o Monitor 1.
+    arguments: {host: "{{monitor1_ip}}", port: 6556}
+    purpose: Validar comunicação do firewall para o Monitor 1 definido no ambiente.
 allowed_corrections: []
 validation:
   - tool: checkmk.inspect_agent_socket

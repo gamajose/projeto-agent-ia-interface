@@ -4,8 +4,8 @@
   const projectState = {
     templates: null,
     plan: null,
-    draftKey: "agent-ui-project-validation-draft-v1",
-    completedKey: "agent-ui-project-validation-completed-v1",
+    draftKey: "agent-ui-project-validation-draft-v2",
+    completedKey: "agent-ui-project-validation-completed-v2",
   };
 
   const q = (selector, root = document) => root.querySelector(selector);
@@ -19,50 +19,38 @@
     return Boolean(q(`#${id}`)?.checked);
   }
 
+  function normalizeRole(raw) {
+    const value = String(raw || "").trim().toLowerCase();
+    if (["production", "producao", "produção", "prod"].includes(value)) return "production";
+    if (["standby", "std"].includes(value)) return "standby";
+    return "server";
+  }
+
   function parseRelatedHosts(raw) {
     return String(raw || "")
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean)
       .map((line, index) => {
-        const parts = line.split("|").map((item) => item.trim());
-        if (parts.length < 3) {
-          throw new Error(`Linha ${index + 1} dos hosts relacionados deve usar: Nome | papel | IP interno | IP VPN opcional`);
-        }
-        return {
-          name: parts[0],
-          role: parts[1] || "server",
-          internal_ip: parts[2],
-          vpn_ip: parts[3] || null,
-        };
+        const parts = line.split("|").map((item) => item.trim()).filter(Boolean);
+        if (parts.length === 1) return { role: "server", vpn_ip: parts[0] };
+        if (parts.length === 2) return { role: normalizeRole(parts[0]), vpn_ip: parts[1] };
+        if (parts.length >= 3) return { role: normalizeRole(parts[1] || parts[0]), vpn_ip: parts[parts.length - 1] };
+        throw new Error(`Linha ${index + 1} dos hosts relacionados é inválida.`);
       });
   }
 
   function payload() {
     return {
-      project_name: value("project-name") || "Validação de projeto",
-      ticket_number: value("project-ticket") || null,
       scenario: value("project-scenario"),
       role: value("project-role") || "production",
-      target_name: value("project-target-name") || "Servidor do projeto",
       target_vpn_ip: value("project-target-vpn"),
-      target_internal_ip: value("project-target-internal") || null,
-      os_family: value("project-os-family") || "unknown",
       install_agent: checked("project-install-agent"),
       has_monitoring_server: checked("project-has-monitor"),
-      monitoring_name: value("project-monitor-name") || null,
       monitoring_vpn_ip: value("project-monitor-vpn") || null,
-      monitoring_internal_ip: value("project-monitor-internal") || null,
       related_hosts: parseRelatedHosts(value("project-related-hosts")),
-      management_interface_type: value("project-management-type") || "auto",
-      management_interface_ip: value("project-management-ip") || null,
-      firewall_type: value("project-firewall-type") || "unknown",
       gateway_dns: value("project-gateway-dns") || null,
       vpn_dns_name: value("project-vpn-dns-name") || "vpn.oracledba.com.br",
-      monitor1_ip: value("project-monitor1-ip") || "10.17.181.1",
-      monitor1_user: value("project-monitor1-user") || "jose.moraes",
-      cmk05_ip: value("project-cmk05-ip") || "10.17.181.44",
-      whatsapp_host: value("project-whatsapp-host") || "ws.2comconsulting.com.br",
       provider: "auto",
       model: null,
     };
@@ -75,39 +63,33 @@
 
   function refreshScenario() {
     const scenario = value("project-scenario");
-    const isLinux = ["linux_prod_std", "linux_monitoring", "management_interface", "dns_vpn"].includes(scenario);
     const isMonitoring = scenario === "linux_monitoring";
-    const isManagement = scenario === "management_interface" || ["linux_prod_std", "linux_monitoring"].includes(scenario);
-    const isWindows = scenario === "windows";
-    const isFirewall = scenario === "firewall";
     const isDns = scenario === "dns_vpn";
+    const canUseSharedMonitor = ["linux_prod_std", "management_interface", "windows"].includes(scenario);
 
     setHidden("#project-role-field", scenario !== "linux_prod_std");
-    setHidden("#project-os-field", !(isLinux || isWindows));
-    setHidden("#project-agent-field", !(scenario === "linux_prod_std" || isMonitoring));
-    setHidden("#project-monitor-toggle-field", isMonitoring || !(scenario === "linux_prod_std" || scenario === "management_interface" || isWindows));
-    setHidden("#project-monitor-fields", isMonitoring || !checked("project-has-monitor"));
+    setHidden("#project-agent-field", !["linux_prod_std", "linux_monitoring"].includes(scenario));
+    setHidden("#project-monitor-toggle-field", !canUseSharedMonitor);
+    setHidden("#project-monitor-fields", !canUseSharedMonitor || !checked("project-has-monitor"));
     setHidden("#project-related-fields", !isMonitoring);
-    setHidden("#project-management-fields", !isManagement);
-    setHidden("#project-firewall-fields", !isFirewall);
     setHidden("#project-dns-fields", !isDns);
 
     if (isMonitoring) {
       q("#project-role").value = "monitoring";
       q("#project-has-monitor").checked = false;
+    } else if (!canUseSharedMonitor) {
+      q("#project-has-monitor").checked = false;
     }
-    if (isWindows) q("#project-os-family").value = "windows";
-    if (isFirewall) q("#project-os-family").value = value("project-firewall-type") === "pfsense" ? "pfsense" : "fortigate";
 
     const descriptions = {
-      linux_prod_std: "Produção/standby: hardware, SO, acesso root, agente Checkmk, 6556 nos dois sentidos e interface de gerenciamento.",
-      linux_monitoring: "Monitoramento: inclui IPs internos dos demais hosts, Livestatus, Monitor 1, Monitor 5/6557 e API do WhatsApp.",
-      management_interface: "Interface: hardware, ipmitool e SNMP pelo próprio host ou pelo servidor de monitoramento compartilhado.",
-      firewall: "Firewall: painel, shell, versão, agente e porta 6556 nos dois sentidos.",
-      windows: "Windows: Socat/RDP, systeminfo, IP, agente e comunicação 6556 pela rede interna.",
-      dns_vpn: "DNS da VPN: compara resolvers, lê logs e prepara ajuste específico para OL7/OL8 sem aplicar automaticamente.",
+      linux_prod_std: "Informe somente se é Produção ou Standby e o IP VPN/TAP. A ferramenta acessa o host e descobre SO, IP interno, hardware e interface de gerenciamento.",
+      linux_monitoring: "Informe o IP VPN/TAP do monitor e, se houver, os IPs VPN dos outros hosts. A ferramenta descobre os IPs internos antes dos testes 6556.",
+      management_interface: "Informe o IP VPN/TAP do servidor físico. A ferramenta descobre fabricante, modelo, iDRAC/iLO/ILOM/xClarity e o IP da controladora com dmidecode/ipmitool.",
+      firewall: "Informe apenas o IP VPN/TAP. A ferramenta identifica o fabricante/versão e valida agente e comunicação.",
+      windows: "O fluxo Windows permanece com Socat/RDP. Se houver monitor do cliente, informe somente o IP VPN dele.",
+      dns_vpn: "Informe o IP VPN/TAP do servidor. O SO é descoberto automaticamente antes de preparar qualquer ajuste de DNS.",
     };
-    q("#project-scenario-help").textContent = descriptions[scenario] || "Selecione um cenário.";
+    q("#project-scenario-help").textContent = descriptions[scenario] || "Escolha o tipo de validação e informe o IP VPN/TAP.";
     saveDraft();
   }
 
@@ -181,6 +163,39 @@
     </article>`;
   }
 
+  function managementLabel(facts) {
+    const labels = { idrac: "iDRAC", ilo: "iLO", ilom: "ILOM", xclarity: "xClarity", unknown: "Não identificada", none: "Não identificada" };
+    const type = labels[facts?.management_type] || facts?.management_type || "Não identificada";
+    return facts?.management_ip ? `${type} · ${facts.management_ip}` : type;
+  }
+
+  function discoveryCard(title, facts, role = "") {
+    if (!facts) return "";
+    const reachable = facts.reachable === true ? "Acessado" : facts.reachable === false ? "Falha no acesso" : "Pendente";
+    const tone = facts.reachable === true ? "good" : facts.reachable === false ? "bad" : "neutral";
+    return `<article class="project-discovery-card" data-tone="${tone}">
+      <div class="project-discovery-head"><div><strong>${escapeHtml(title)}</strong>${role ? `<span>${escapeHtml(role)}</span>` : ""}</div><span>${escapeHtml(reachable)}</span></div>
+      <dl>
+        <div><dt>IP VPN</dt><dd>${escapeHtml(facts.vpn_ip || "—")}</dd></div>
+        <div><dt>Sistema operacional</dt><dd>${escapeHtml(facts.os_name || "A descobrir")}</dd></div>
+        <div><dt>IP interno</dt><dd>${escapeHtml(facts.internal_ip || "A descobrir")}</dd></div>
+        <div><dt>Máquina</dt><dd>${escapeHtml(facts.machine_type || "A descobrir")}${facts.virtualization && facts.virtualization !== "unknown" ? ` · ${escapeHtml(facts.virtualization)}` : ""}</dd></div>
+        <div><dt>Hardware</dt><dd>${escapeHtml([facts.manufacturer, facts.model].filter(Boolean).join(" ") || "A descobrir")}</dd></div>
+        <div><dt>Gerenciamento</dt><dd>${escapeHtml(managementLabel(facts))}</dd></div>
+      </dl>
+      ${facts.error ? `<p class="project-discovery-error">${escapeHtml(facts.error)}</p>` : ""}
+    </article>`;
+  }
+
+  function discoveryMarkup(plan) {
+    const discovery = plan.discovery || {};
+    const target = discoveryCard(plan.target?.name || "Alvo", discovery.target || {});
+    const monitor = discovery.monitoring_server ? discoveryCard("Servidor de monitoramento", discovery.monitoring_server) : "";
+    const related = (discovery.related_hosts || []).map((item, index) => discoveryCard(`Host relacionado ${index + 1}`, item, item.role || "")).join("");
+    if (!target && !monitor && !related) return "";
+    return `<section class="project-discovery"><div class="project-discovery-title"><p class="eyebrow">DESCOBERTA AUTOMÁTICA</p><h3>Dados obtidos pela própria ferramenta</h3><p>Esses dados não são pedidos no formulário. A ferramenta acessa os IPs VPN e coleta o ambiente.</p></div><div class="project-discovery-grid">${target}${monitor}${related}</div></section>`;
+  }
+
   function renderPlan(plan) {
     projectState.plan = plan;
     const root = q("#project-plan");
@@ -194,14 +209,15 @@
     </section>`).join("");
 
     root.innerHTML = `<div class="project-plan-summary">
-      <div><p class="eyebrow">PLANO GERADO</p><h2>${escapeHtml(plan.project_name)}</h2><p>${escapeHtml(plan.scenario_label)} · ${escapeHtml(plan.target.name)} (${escapeHtml(plan.target.vpn_ip)})</p></div>
+      <div><p class="eyebrow">PLANO GERADO</p><h2>${escapeHtml(plan.scenario_label)}</h2><p>Alvo VPN/TAP: ${escapeHtml(plan.target.vpn_ip)}</p></div>
       <div class="project-summary-metrics"><span><b>${escapeHtml(plan.summary.total_steps)}</b> etapas</span><span><b>${escapeHtml(plan.summary.automatic_read_only_steps)}</b> coletas IA</span><span><b>${escapeHtml(plan.summary.change_steps)}</b> alterações manuais</span></div>
     </div>
+    ${discoveryMarkup(plan)}
     ${warnings}
-    <div class="project-safety-note"><strong>Escopo automático:</strong> ${escapeHtml(plan.safety.automatic_scope)} <strong>Fora do automático:</strong> ${escapeHtml(plan.safety.manual_scope)}</div>
-    <div class="project-plan-actions"><button type="button" class="primary-button" id="project-start-ai">Iniciar validações de leitura com a IA</button><button type="button" class="secondary-button" id="project-copy-all">Copiar comandos</button><button type="button" class="secondary-button" id="project-copy-macro">Copiar macro</button></div>
+    <div class="project-safety-note"><strong>Escopo automático:</strong> ${escapeHtml(plan.safety.automatic_scope)} <strong>Fora do automático:</strong> ${escapeHtml(plan.safety.manual_scope)}<br><strong>Infraestrutura:</strong> ${escapeHtml(plan.safety.credentials)}</div>
+    <div class="project-plan-actions"><button type="button" class="primary-button" id="project-start-ai">Continuar validação com a IA</button><button type="button" class="secondary-button" id="project-copy-all">Copiar comandos</button><button type="button" class="secondary-button" id="project-copy-macro">Copiar macro</button></div>
     <div class="project-context-list">${groups}</div>
-    <section class="project-macro-card"><div><p class="eyebrow">TEXTO DO TICKET</p><h3>Macro preparada</h3></div><pre id="project-ticket-macro">${escapeHtml(plan.ticket_macro)}</pre></section>
+    <section class="project-macro-card"><div><p class="eyebrow">TEXTO DO TICKET</p><h3>Macro preparada com o que foi descoberto</h3></div><pre id="project-ticket-macro">${escapeHtml(plan.ticket_macro)}</pre></section>
     <div id="project-jobs" class="project-jobs" hidden></div>`;
     root.hidden = false;
 
@@ -236,18 +252,21 @@
     const button = q("#project-generate");
     if (!button) return;
     button.disabled = active;
-    button.textContent = active ? "Montando cenário..." : "Gerar plano do projeto";
+    button.textContent = active ? "Acessando IP VPN e descobrindo ambiente..." : "Acessar e montar validação";
   }
 
   async function generatePlan(event) {
     event?.preventDefault();
     setPlanning(true);
+    q("#project-form-status").textContent = "Conectando pelo fluxo VPN já configurado e coletando SO, interfaces, hardware e gerenciamento...";
     try {
       const plan = await api("/ui/api/projects/plan", { method: "POST", body: payload() });
       renderPlan(plan);
-      toast("Plano de projeto montado conforme o cenário informado.");
+      q("#project-form-status").textContent = "Pré-descoberta concluída. Revise as evidências e continue com a IA quando desejar.";
+      toast("Ambiente acessado e plano montado com os dados descobertos.");
       saveDraft();
     } catch (error) {
+      q("#project-form-status").textContent = error.message;
       toast(error.message, "error");
     } finally {
       setPlanning(false);
@@ -276,7 +295,7 @@
       toast(error.message, "error");
     } finally {
       button.disabled = false;
-      button.textContent = "Iniciar validações de leitura com a IA";
+      button.textContent = "Continuar validação com a IA";
     }
   }
 
@@ -285,14 +304,6 @@
     const defaults = projectState.templates.defaults || {};
     const scenario = q("#project-scenario");
     scenario.innerHTML = (projectState.templates.scenarios || []).map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
-    const os = q("#project-os-family");
-    os.innerHTML = (projectState.templates.os_families || []).map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
-    const management = q("#project-management-type");
-    management.innerHTML = (projectState.templates.management_interfaces || []).map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
-    q("#project-monitor1-ip").value ||= defaults.monitor1_ip || "10.17.181.1";
-    q("#project-monitor1-user").value ||= defaults.monitor1_user || "jose.moraes";
-    q("#project-cmk05-ip").value ||= defaults.cmk05_ip || "10.17.181.44";
-    q("#project-whatsapp-host").value ||= defaults.whatsapp_host || "ws.2comconsulting.com.br";
     q("#project-vpn-dns-name").value ||= defaults.vpn_dns_name || "vpn.oracledba.com.br";
     restoreDraft();
     refreshScenario();
@@ -302,7 +313,6 @@
     q("#project-form")?.addEventListener("submit", generatePlan);
     q("#project-scenario")?.addEventListener("change", refreshScenario);
     q("#project-has-monitor")?.addEventListener("change", refreshScenario);
-    q("#project-firewall-type")?.addEventListener("change", refreshScenario);
     qa("#project-form input, #project-form select, #project-form textarea").forEach((element) => {
       element.addEventListener("change", saveDraft);
       if (element.tagName === "TEXTAREA" || element.type === "text") element.addEventListener("input", saveDraft);
@@ -313,8 +323,9 @@
       localStorage.removeItem(projectState.completedKey);
       q("#project-plan").hidden = true;
       q("#project-plan").innerHTML = "";
+      q("#project-form-status").textContent = "";
       refreshScenario();
-      toast("Rascunho do projeto limpo.");
+      toast("Rascunho da validação limpo.");
     });
   }
 

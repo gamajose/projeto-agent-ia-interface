@@ -1,41 +1,55 @@
 # Validação assistida de projetos
 
-A seção **Projetos** monta um checklist conforme o cenário, o sistema operacional e os endereços informados pelo operador.
+A seção **Projetos** parte do princípio de que o operador não deve preencher informações que a própria ferramenta consegue descobrir no ambiente.
 
-## Cenários
+## Entrada mínima
 
-- Linux Produção/Standby
-- Linux Monitoramento
-- Interface de gerenciamento
-- Firewall
-- Windows
-- Resolução DNS da VPN
+Para o alvo principal, a interface pede o **tipo de validação** e o **IP VPN/TAP**. Em Produção/Standby também é informado apenas o papel do servidor. O sistema acessa o IP pelo fluxo SSH/VPN já configurado e descobre automaticamente:
 
-## Separação de responsabilidades
+- sistema operacional e versão;
+- IP interno e rotas;
+- máquina física ou virtual;
+- fabricante e modelo do equipamento;
+- existência e tipo de interface iDRAC, iLO, ILOM ou xClarity;
+- IP da interface de gerenciamento quando `ipmitool` o informa;
+- listener/agente Checkmk na porta 6556;
+- data e sincronismo de horário.
 
-O plano diferencia:
+Cliente, ticket, nome do host, SO, IP interno e tipo/IP da interface de gerenciamento não são campos do formulário.
 
-- coletas de leitura que podem ser enfileiradas para a IA;
-- comandos assistidos que dependem do terminal correto;
-- etapas manuais, como painel de indisponibilidade, bots e prints;
-- alterações que exigem revisão, como instalação de pacotes/agente, Socat, DNS, listeners e reinícios.
+## Infraestrutura 2Com
 
-Produção e standby continuam sem correção automática. As senhas permanecem no `.env`/Vault e não aparecem no checklist.
+A tela não pede dados que já pertencem à configuração da aplicação. O fluxo reutiliza o `.env`/Vault existente:
+
+```dotenv
+SSH_SRV_VPN_IP=
+SSH_SRV_VPN_PORT=22
+SSH_SRV_VPN_USER=
+SSH_SRV_VPN_SENHA=
+SSH_CMK05=
+API_WHATSAPP=
+```
+
+O Monitor 1 usa a conexão já configurada como bastion. Para o CMK05, o projeto usa o endereço de `SSH_CMK05`; a credencial operacional segue a mesma configuração já utilizada pelo fluxo do Monitor 1. A API do WhatsApp é lida de `API_WHATSAPP`.
 
 ## Servidor de monitoramento do cliente
 
-Ao marcar **Tem servidor de monitoramento do cliente**, a interface solicita nome, IP VPN e IP interno. O plano usa o IP interno nos testes entre monitor, produção e standby. O IP VPN é utilizado somente para abrir a sessão remota necessária à coleta.
+Quando um projeto de Produção/Standby, Interface de Gerenciamento ou Windows possui monitor dedicado/compartilhado, o operador marca **Tem servidor de monitoramento do cliente** e informa somente o **IP VPN/TAP desse monitor**. A ferramenta acessa o monitor e descobre o IP interno por conta própria.
 
-No cenário de servidor de monitoramento, podem ser informados outros hosts no formato:
+No cenário **Servidor Linux — Monitoramento**, os demais servidores podem ser informados somente pelos IPs VPN/TAP, por exemplo:
 
 ```text
-Produção | production | 192.168.1.10 | 172.27.232.210
-Standby | standby | 192.168.1.11 |
+production | 172.27.232.210
+standby | 172.27.232.211
 ```
 
-## Credenciais SNMP
+A ferramenta acessa cada IP VPN, identifica o IP interno correspondente e então monta os testes `nc` entre monitor, produção e standby usando os **IPs internos**, nunca os IPs VPN para a comunicação local do cliente.
 
-As credenciais de iDRAC/ILOM não ficam no código ou nos playbooks. Configure no `.env` ou no backend de segredos:
+## Interface de gerenciamento
+
+O operador não escolhe iDRAC/iLO/ILOM/xClarity e não informa previamente o IP da controladora. A ferramenta coleta `dmidecode -t1` e `ipmitool lan print`, correlaciona fabricante/modelo e registra o que encontrou. Se existir servidor de monitoramento compartilhado, o teste SNMP pode ser executado a partir dele.
+
+As credenciais SNMP continuam fora do código e devem permanecer no `.env`/Vault:
 
 ```dotenv
 SNMP_V2_COMMUNITY=
@@ -43,10 +57,10 @@ SNMP_V3_USER=doiscom
 SNMP_V3_AUTH_PASSWORD=
 ```
 
-Quando os valores não estiverem configurados, o plano mostra placeholders explícitos e mantém o `snmpwalk` como etapa assistida, sem execução automática.
+## Cenários
 
-## DNS da VPN
+A função mantém os fluxos de Linux Produção/Standby, Linux Monitoramento, Interface de Gerenciamento, Firewall, Windows e Resolução DNS da VPN. Windows continua usando o fluxo RDP/Socat quando necessário. No DNS, a versão do Linux é descoberta antes de apresentar o procedimento compatível com OL7 ou OL8/9.
 
-O playbook de DNS compara os resolvers informados, coleta `/etc/resolv.conf`, correlaciona os logs da VPN e apresenta os ajustes de OL7/OL8 como passos manuais. Ele não altera DNS, rede ou serviço OpenVPN automaticamente.
+## Segurança
 
-A porta do Monitor 5, os endereços dos monitores e os hosts relacionados são campos editáveis porque podem variar conforme o projeto.
+A descoberta automática é somente leitura. Instalação de pacotes/agente, criação de Socat, abertura persistente de listeners, alteração de DNS, reinício de rede/VPN e demais mudanças continuam separadas como etapas manuais ou sujeitas a aprovação. Produção e standby permanecem sem correção automática.

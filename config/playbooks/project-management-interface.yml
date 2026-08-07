@@ -20,19 +20,9 @@ steps:
     purpose: Registrar a versão do sistema operacional.
   - command: ipmitool lan print
     sudo: true
-    purpose: Identificar a configuração LAN e o fabricante provável da interface de gerenciamento.
+    purpose: Descobrir o tipo e o IP da interface de gerenciamento sem exigir essa informação do operador.
   - tool: network.interfaces
-    purpose: Registrar interfaces e rota para o endereço da controladora.
-  - tool: network.inspect_route
-    requires_context: objective_ip
-    arguments: {host: "{{objective_ip}}"}
-    purpose: Validar a rota até a interface de gerenciamento informada.
-  - tool: network.udp_probe
-    requires_context: objective_ip
-    arguments: {host: "{{objective_ip}}", port: 161}
-    purpose: Validar alcance UDP/161 antes do snmpwalk apropriado ao fabricante.
+    purpose: Registrar interfaces e rotas do servidor para contextualizar a rede da controladora.
 allowed_corrections: []
 validation:
-  - tool: network.udp_probe
-    requires_context: objective_ip
-    arguments: {host: "{{objective_ip}}", port: 161}
+  - tool: network.interfaces

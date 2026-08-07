@@ -16,15 +16,11 @@ router = APIRouter(prefix="/ui/api/projects", tags=["interface-projects"])
 
 
 class RelatedHostPayload(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    role: str = Field(default="server", max_length=30)
-    internal_ip: str = Field(min_length=1, max_length=64)
-    vpn_ip: str | None = Field(default=None, max_length=64)
+    role: Literal["production", "standby", "server"] = "server"
+    vpn_ip: str = Field(min_length=1, max_length=64)
 
 
 class ProjectPayload(BaseModel):
-    project_name: str = Field(default="Validação de projeto", max_length=180)
-    ticket_number: str | None = Field(default=None, max_length=40)
     scenario: Literal[
         "linux_prod_std",
         "linux_monitoring",
@@ -34,36 +30,13 @@ class ProjectPayload(BaseModel):
         "dns_vpn",
     ]
     role: Literal["production", "standby", "monitoring", "unknown"] = "production"
-    target_name: str = Field(default="Servidor do projeto", max_length=180)
     target_vpn_ip: str = Field(min_length=1, max_length=64)
-    target_internal_ip: str | None = Field(default=None, max_length=64)
-    os_family: Literal[
-        "oracle7",
-        "oracle8",
-        "oracle9",
-        "rhel",
-        "ubuntu",
-        "debian",
-        "windows",
-        "pfsense",
-        "fortigate",
-        "unknown",
-    ] = "unknown"
     install_agent: bool = True
     has_monitoring_server: bool = False
-    monitoring_name: str | None = Field(default=None, max_length=180)
     monitoring_vpn_ip: str | None = Field(default=None, max_length=64)
-    monitoring_internal_ip: str | None = Field(default=None, max_length=64)
     related_hosts: list[RelatedHostPayload] = Field(default_factory=list, max_length=50)
-    management_interface_type: Literal["auto", "idrac", "ilo", "ilom", "xclarity", "none"] = "auto"
-    management_interface_ip: str | None = Field(default=None, max_length=64)
-    firewall_type: Literal["pfsense", "fortigate", "fortinet", "unknown"] = "unknown"
     gateway_dns: str | None = Field(default=None, max_length=64)
     vpn_dns_name: str = Field(default="vpn.oracledba.com.br", max_length=255)
-    monitor1_ip: str = Field(default="10.17.181.1", max_length=64)
-    monitor1_user: str = Field(default="jose.moraes", max_length=120)
-    cmk05_ip: str = Field(default="10.17.181.44", max_length=64)
-    whatsapp_host: str = Field(default="ws.2comconsulting.com.br", max_length=255)
     provider: str | None = Field(default="auto", max_length=80)
     model: str | None = Field(default=None, max_length=255)
 
@@ -74,9 +47,9 @@ def templates(request: Request) -> dict[str, Any]:
     return project_templates()
 
 
-def _plan(payload: ProjectPayload) -> dict[str, Any]:
+def _plan(payload: ProjectPayload, *, discover: bool = True) -> dict[str, Any]:
     try:
-        return build_project_plan(payload.model_dump())
+        return build_project_plan(payload.model_dump(), perform_discovery=discover)
     except ProjectPlanError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -84,14 +57,17 @@ def _plan(payload: ProjectPayload) -> dict[str, Any]:
 @router.post("/plan")
 def plan_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
     _require_mutation(request)
-    return _plan(payload)
+    return _plan(payload, discover=True)
 
 
 @router.post("/start")
 def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
     _require_mutation(request)
     settings = get_settings()
-    plan = _plan(payload)
+    # Refaz a descoberta antes de enfileirar para que os objetivos entregues aos
+    # workers carreguem os IPs internos e a interface de gerenciamento realmente
+    # observados no ambiente, sem depender de campos preenchidos pelo operador.
+    plan = _plan(payload, discover=True)
     targets = list(plan.get("execution_targets") or [])
     if not targets:
         raise HTTPException(status_code=422, detail="o plano não possui alvo elegível para validação assistida")
@@ -119,11 +95,11 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
                 metadata={
                     "source": "project_validation",
                     "plan_id": plan["plan_id"],
-                    "project_name": plan["project_name"],
-                    "ticket_number": plan.get("ticket_number"),
                     "scenario": plan["scenario"],
                     "target_label": item.get("label"),
                     "automatic_scope": "read_only",
+                    "input_contract": "vpn_ip_only",
+                    "discovery_source": (plan.get("discovery") or {}).get("source"),
                 },
                 settings=settings,
             )
@@ -152,13 +128,11 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
 
     return {
         "plan_id": plan["plan_id"],
-        "project_name": plan["project_name"],
         "scenario": plan["scenario"],
         "jobs": jobs,
         "errors": errors,
-        "plan": plan,
         "message": (
-            "Validações de leitura enfileiradas. Instalações, ajustes de rede, listeners e reinícios "
-            "permanecem no checklist manual e não foram executados."
+            "Validações de leitura enfileiradas. A IA recebe os IPs VPN e os fatos descobertos no ambiente "
+            "(SO, IP interno, hardware e gerenciamento). Instalações e alterações permanecem manuais."
         ),
     }
