@@ -22,6 +22,8 @@ def _read_steps(path: Path) -> list[dict[str, Any]]:
 def _result_for_error(item: dict[str, Any], reference: str, exc: Exception) -> dict[str, Any]:
     return {
         "orchestrator": "ansible",
+        "step_id": str(item.get("id") or ""),
+        "title": str(item.get("title") or "Validação"),
         "reference": reference,
         "purpose": str(item.get("purpose") or item.get("title") or "validação de projeto"),
         "command": str(item.get("command") or ""),
@@ -71,6 +73,8 @@ def main() -> None:
                 evidence.append(
                     {
                         "orchestrator": "ansible",
+                        "step_id": str(item.get("id") or ""),
+                        "title": str(item.get("title") or "Validação"),
                         "reference": args.reference,
                         "purpose": str(item.get("purpose") or item.get("title") or "validação de projeto"),
                         "command": command,

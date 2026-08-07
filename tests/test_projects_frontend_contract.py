@@ -16,7 +16,10 @@ def test_project_frontend_never_reads_length_from_optional_api_arrays_directly()
     assert "const response = renderExecution(rawResponse);" in source
 
 
-def test_project_frontend_keeps_target_ip_visible_while_discovery_is_pending() -> None:
+def test_project_frontend_keeps_target_ip_visible_while_macro_is_pending() -> None:
     source = (PROJECT_ROOT / "app/ui/projects.js").read_text(encoding="utf-8")
 
-    assert "if (!targetFacts.vpn_ip && plan?.target?.vpn_ip) targetFacts.vpn_ip = plan.target.vpn_ip;" in source
+    assert 'plan.target?.vpn_ip || value("project-target-vpn")' in source
+    assert "VALIDAÇÃO DE PROJETO" in source
+    assert "EXECUÇÃO DA MACRO" in source
+    assert "análise profunda" not in source
