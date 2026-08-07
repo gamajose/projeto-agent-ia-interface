@@ -1,0 +1,23 @@
+id: project-firewall
+title: Projeto N1 - Firewall
+priority: 120
+profiles: [pfsense, fortigate, linux_generic]
+match:
+  any:
+    - "projeto.*firewall"
+    - "pfsense.*projeto"
+    - "fortigate.*projeto"
+    - "fortinet.*projeto"
+steps:
+  - tool: system.basics
+    purpose: Coletar versão e identidade básica do firewall sem alterar configuração.
+  - tool: network.interfaces
+    purpose: Registrar interfaces, endereços e rotas.
+  - tool: checkmk.inspect_agent_socket
+    purpose: Validar listener do agente Checkmk quando disponível.
+  - tool: network.test_port
+    arguments: {host: "10.17.181.1", port: 6556}
+    purpose: Validar comunicação do firewall para o Monitor 1.
+allowed_corrections: []
+validation:
+  - tool: checkmk.inspect_agent_socket

@@ -1,0 +1,21 @@
+id: project-windows
+title: Projeto N1 - Servidor Windows
+priority: 115
+profiles: [linux_generic, checkmk, any]
+match:
+  any:
+    - "projeto.*windows"
+    - "socat.*rdp"
+    - "test-netconnection.*6556"
+steps:
+  - tool: system.basics
+    purpose: Identificar o servidor de monitoramento usado como ponte para o Windows.
+  - tool: network.interfaces
+    purpose: Registrar o IP interno do monitor e as rotas para o Windows.
+  - tool: network.test_port
+    requires_context: objective_ip
+    arguments: {host: "{{objective_ip}}", port: 6556}
+    purpose: Validar do monitor para o IP interno do Windows quando o endereço estiver no objetivo.
+allowed_corrections: []
+validation:
+  - tool: network.interfaces

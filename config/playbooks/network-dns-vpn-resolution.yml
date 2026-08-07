@@ -1,0 +1,31 @@
+id: network-dns-vpn-resolution
+title: Rede - Resolução DNS da VPN
+priority: 120
+profiles: [oracle_linux, linux_generic]
+match:
+  any:
+    - "dns.*vpn"
+    - "resolve.*vpn"
+    - "temporary failure in name resolution"
+    - "cannot resolve host address"
+    - "openvpn.*dns"
+steps:
+  - command: cat /etc/resolv.conf
+    purpose: Coletar os servidores DNS configurados no momento da falha.
+  - command: cat /etc/*-release
+    purpose: Identificar a versão do SO antes de preparar qualquer ajuste.
+  - command: nslookup vpn.oracledba.com.br 8.8.8.8
+    purpose: Testar a resolução do nome da VPN pelo DNS do Google.
+  - command: nslookup vpn.oracledba.com.br 1.1.1.1
+    purpose: Testar a resolução do nome da VPN pela Cloudflare.
+  - command: nslookup vpn.oracledba.com.br 9.9.9.9
+    purpose: Testar uma terceira referência externa pela Quad9.
+  - command: tail -n 120 /var/log/openvpn_client.log
+    purpose: Correlacionar a falha de resolução com os eventos recentes do OpenVPN.
+  - tool: network.interfaces
+    purpose: Coletar interfaces, rotas e contexto de rede antes de qualquer ajuste.
+  - tool: vpn.inspect
+    purpose: Correlacionar interface, processo, rotas e logs disponíveis da VPN.
+allowed_corrections: []
+validation:
+  - tool: vpn.inspect

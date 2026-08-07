@@ -1,0 +1,33 @@
+id: project-linux-prod-std
+title: Projeto N1 - Linux Produção ou Standby
+priority: 120
+profiles: [oracle_linux, linux_generic, checkmk]
+match:
+  any:
+    - "projeto.*produ[cç][aã]o"
+    - "projeto.*standby"
+    - "valida[cç][aã]o.*projeto"
+    - "implanta[cç][aã]o.*monitoramento"
+steps:
+  - command: systemd-detect-virt
+    purpose: Identificar se a máquina é física ou virtual.
+  - command: dmidecode -t1
+    sudo: true
+    purpose: Coletar fabricante, modelo e número de série do equipamento.
+  - command: cat /etc/*-release
+    purpose: Registrar a versão real do sistema operacional.
+  - command: ip a
+    purpose: Registrar endereços internos e interfaces do servidor.
+  - command: timedatectl
+    purpose: Validar data, hora, timezone e sincronismo NTP.
+  - command: ipmitool lan print
+    sudo: true
+    purpose: Mapear a interface de gerenciamento quando existir.
+  - tool: checkmk.inspect_agent_socket
+    purpose: Validar agente Checkmk, listener 6556 e resposta local.
+  - tool: network.test_port
+    arguments: {host: "10.17.181.1", port: 6556}
+    purpose: Validar comunicação do host para o Monitor 1 pela porta 6556.
+allowed_corrections: []
+validation:
+  - tool: checkmk.inspect_agent_socket
