@@ -62,6 +62,27 @@ OMD_ADJUST_RE = re.compile(r"\bomd\s+(start|restart)\b", re.I)
 SERVICE_ADJUST_RE = re.compile(r"\b(systemctl\s+(start|restart|reload|enable)|service\s+\S+\s+(start|restart|reload))\b", re.I)
 
 
+def classify_command(command: str) -> ActionType:
+    command = command.strip()
+    if REBOOT_RE.search(command):
+        return ActionType.HOST_REBOOT
+    if DB_CLIENT_RE.search(command):
+        return ActionType.DATABASE_ACCESS
+    if CONTAINER_LIFECYCLE_RE.search(command):
+        return ActionType.CONTAINER_ADJUSTMENT
+    if PAIRED_SERVICE_STOP_START_RE.fullmatch(command) or PAIRED_LEGACY_STOP_START_RE.fullmatch(command):
+        return ActionType.SERVICE_ADJUSTMENT
+    if PAIRED_OMD_STOP_START_RE.fullmatch(command):
+        return ActionType.OMD_ADJUSTMENT
+    if DESTRUCTIVE_RE.search(command):
+        return ActionType.DESTRUCTIVE
+    if OMD_ADJUST_RE.search(command):
+        return ActionType.OMD_ADJUSTMENT
+    if SERVICE_ADJUST_RE.search(command):
+        return ActionType.SERVICE_ADJUSTMENT
+    return ActionType.READ_ONLY
+
+
 def environment_allows_correction(environment: EnvironmentType) -> bool:
     """Ambientes classificados podem executar correções seguras após aprovação.
 
