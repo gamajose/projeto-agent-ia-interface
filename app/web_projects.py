@@ -64,10 +64,10 @@ def plan_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
 def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
     _require_mutation(request)
     settings = get_settings()
-    # O plano visual já executa a pré-descoberta. Ao iniciar a IA não repetimos
-    # todas as conexões síncronas: cada investigação descobre novamente os fatos
-    # necessários e valida o resultado com o motor operacional.
-    plan = _plan(payload, discover=False)
+    # Refaz a descoberta antes de enfileirar para que os objetivos entregues aos
+    # workers carreguem os IPs internos e a interface de gerenciamento realmente
+    # observados no ambiente, sem depender de campos preenchidos pelo operador.
+    plan = _plan(payload, discover=True)
     targets = list(plan.get("execution_targets") or [])
     if not targets:
         raise HTTPException(status_code=422, detail="o plano não possui alvo elegível para validação assistida")
@@ -99,6 +99,7 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
                     "target_label": item.get("label"),
                     "automatic_scope": "read_only",
                     "input_contract": "vpn_ip_only",
+                    "discovery_source": (plan.get("discovery") or {}).get("source"),
                 },
                 settings=settings,
             )
@@ -131,7 +132,7 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
         "jobs": jobs,
         "errors": errors,
         "message": (
-            "Validações de leitura enfileiradas. A IA recebe os IPs VPN e descobre SO, IP interno, hardware "
-            "e interface de gerenciamento durante a investigação. Instalações e alterações permanecem manuais."
+            "Validações de leitura enfileiradas. A IA recebe os IPs VPN e os fatos descobertos no ambiente "
+            "(SO, IP interno, hardware e gerenciamento). Instalações e alterações permanecem manuais."
         ),
     }
