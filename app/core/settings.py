@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     vault_token: str | None = None
     vault_namespace: str | None = None
     vault_kv_mount: str = "secret"
-    vault_secret_path: str = "agent_ia"
+    vault_secret_path: str = "agent-ia"
     vault_verify_tls: bool = True
     vault_cache_seconds: int = 60
 
