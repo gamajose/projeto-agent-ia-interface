@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
+from app.services.access_monitors import AccessMonitorError, resolve_access_monitor, settings_for_access_monitor
 from app.services.batch_manifest import BatchManifestError, parse_batch_manifest
 from app.services.jobs import enqueue_investigation
 from app.services.provider_router import ProviderResolution, resolve_automatic_provider
@@ -48,23 +49,13 @@ def parse_batch(payload: BatchManifestPayload, request: Request) -> dict[str, An
     settings = get_settings()
     if not settings.agent_batch_enabled:
         raise HTTPException(status_code=404, detail="execução em lote desabilitada")
-
     size = len(payload.content.encode("utf-8"))
     if size > settings.agent_batch_max_file_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"arquivo excede o limite de {settings.agent_batch_max_file_bytes} bytes",
-        )
-
+        raise HTTPException(status_code=413, detail=f"arquivo excede o limite de {settings.agent_batch_max_file_bytes} bytes")
     try:
-        result = parse_batch_manifest(
-            payload.filename,
-            payload.content,
-            max_targets=settings.agent_batch_max_targets,
-        )
+        result = parse_batch_manifest(payload.filename, payload.content, max_targets=settings.agent_batch_max_targets)
     except BatchManifestError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
     return {
         **result,
         "limits": {
@@ -75,10 +66,7 @@ def parse_batch(payload: BatchManifestPayload, request: Request) -> dict[str, An
     }
 
 
-def _resolve_batch_provider(
-    provider: str,
-    model: str | None,
-) -> tuple[str, str | None, ProviderResolution | None]:
+def _resolve_batch_provider(provider: str, model: str | None) -> tuple[str, str | None, ProviderResolution | None]:
     if provider != "auto":
         return provider, model, None
     selection = resolve_automatic_provider(get_settings())
@@ -86,29 +74,25 @@ def _resolve_batch_provider(
 
 
 @router.post("/ui/api/batches/investigations")
-def create_batch_investigation(
-    payload: InvestigationPayload,
-    request: Request,
-) -> dict[str, Any]:
-    """Executa um item do lote sem misturar o estado dos demais servidores.
-
-    Quando a IA está em modo automático, o provedor é resolvido antes do job.
-    Assim, o playbook importado continua disponível como contexto consultivo em
-    vez de ser substituído pelo playbook automático do autopilot geral.
-    """
+def create_batch_investigation(payload: InvestigationPayload, request: Request) -> dict[str, Any]:
     _require_mutation(request)
-    settings = get_settings()
-    if not settings.agent_batch_enabled:
+    base_settings = get_settings()
+    if not base_settings.agent_batch_enabled:
         raise HTTPException(status_code=404, detail="execução em lote desabilitada")
+    try:
+        monitor = resolve_access_monitor(payload.access_monitor_id, base_settings)
+        settings = settings_for_access_monitor(payload.access_monitor_id, base_settings)
+    except AccessMonitorError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     ensure_database_schema()
-    provider, model, effective_mode = _validate_selection(payload, settings)
-    execution_provider, execution_model, automatic_selection = _resolve_batch_provider(
-        provider,
-        model,
-    )
+    provider, model, effective_mode = _validate_selection(payload, base_settings)
+    execution_provider, execution_model, automatic_selection = _resolve_batch_provider(provider, model)
     playbook_id = (payload.playbook_id or "").strip() or None
-
+    objective = payload.objective.strip() or (
+        "Realizar análise geral do servidor, validar sistema, recursos, rede, serviços, containers e Checkmk, "
+        "identificar a causa raiz de anomalias e propor correção baseada nas evidências coletadas."
+    )
     common = {
         "environment": payload.environment,
         "mode": effective_mode,
@@ -120,7 +104,6 @@ def create_batch_investigation(
         "playbook_id": playbook_id,
         "settings": settings,
     }
-
     metadata = {
         "source": "web_ui_batch",
         "operator": _operator_name(),
@@ -129,31 +112,23 @@ def create_batch_investigation(
         "autopilot": provider == "auto",
         "playbook_mode": payload.playbook_mode,
         "playbook_id": playbook_id,
+        "access_monitor_id": monitor.id,
+        "access_monitor_label": monitor.label,
+        "access_monitor_host": monitor.host,
     }
 
-    if settings.agent_execution_mode.strip().casefold() == "queue":
+    if base_settings.agent_execution_mode.strip().casefold() == "queue":
         try:
-            response = enqueue_investigation(
-                payload.target.strip(),
-                payload.objective.strip(),
-                metadata=metadata,
-                **common,
-            )
+            response = enqueue_investigation(payload.target.strip(), objective, metadata=metadata, **common)
         except Exception as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=f"fila indisponível: {type(exc).__name__}: {exc}",
-            ) from exc
+            raise HTTPException(status_code=503, detail=f"fila indisponível: {type(exc).__name__}: {exc}") from exc
         if automatic_selection:
             response["provider_selection"] = automatic_selection.as_dict()
+        response["access_monitor"] = monitor.public_dict()
         return response
 
     try:
-        result = run_target(
-            payload.target.strip(),
-            payload.objective.strip(),
-            **common,
-        )
+        result = run_target(payload.target.strip(), objective, **common)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -164,13 +139,7 @@ def create_batch_investigation(
         result["selected_provider"] = automatic_selection.provider
         result["selected_model"] = automatic_selection.model
         automation = dict(result.get("automation") or {})
-        automation.update(
-            {
-                "mode": "safe_batch_autopilot",
-                "provider": automatic_selection.as_dict(),
-                "playbook_selection": payload.playbook_mode,
-            }
-        )
+        automation.update({"mode": "safe_batch_autopilot", "provider": automatic_selection.as_dict(), "playbook_selection": payload.playbook_mode})
         result["automation"] = automation
 
     compact = _compact_result(result)
@@ -178,4 +147,5 @@ def create_batch_investigation(
     compact["requested_provider"] = provider
     compact["selected_provider"] = result.get("selected_provider") or execution_provider
     compact["selected_model"] = result.get("selected_model") or execution_model
+    compact["access_monitor"] = monitor.public_dict()
     return compact
