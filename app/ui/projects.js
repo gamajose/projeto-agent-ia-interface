@@ -11,6 +11,17 @@
   const q = (selector, root = document) => root.querySelector(selector);
   const qa = (selector, root = document) => [...root.querySelectorAll(selector)];
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const asArray = (value) => (Array.isArray(value) ? value : []);
+
+  function normalizeExecutionResponse(value) {
+    const response = value && typeof value === "object" ? value : {};
+    return {
+      ...response,
+      jobs: asArray(response.jobs),
+      executions: asArray(response.executions),
+      errors: asArray(response.errors),
+    };
+  }
 
   function value(id) {
     return String(q(`#${id}`)?.value || "").trim();
@@ -147,9 +158,11 @@
 
   function discoveryMarkup(plan) {
     const discovery = plan?.discovery || {};
-    const target = discoveryCard(plan?.target?.name || "Alvo", discovery.target || {});
+    const targetFacts = { ...(discovery.target || {}) };
+    if (!targetFacts.vpn_ip && plan?.target?.vpn_ip) targetFacts.vpn_ip = plan.target.vpn_ip;
+    const target = discoveryCard(plan?.target?.name || "Alvo", targetFacts);
     const monitor = discovery.monitoring_server ? discoveryCard("Servidor de monitoramento", discovery.monitoring_server) : "";
-    const related = (discovery.related_hosts || []).map((item, index) => discoveryCard(`Host relacionado ${index + 1}`, item, item.role || "")).join("");
+    const related = asArray(discovery.related_hosts).map((item, index) => discoveryCard(`Host relacionado ${index + 1}`, item, item.role || "")).join("");
     if (!target && !monitor && !related) return "";
     return `<section class="project-discovery"><div class="project-discovery-title"><p class="eyebrow">DESCOBERTA AUTOMÁTICA</p><h3>O que a IA encontrou antes da análise profunda</h3><p>Esses dados foram coletados pela própria aplicação a partir do IP informado.</p></div><div class="project-discovery-grid">${target}${monitor}${related}</div></section>`;
   }
@@ -168,7 +181,11 @@
 
   function analysisMarkup(result) {
     const analysis = result?.analysis || {};
-    const recommendations = analysis.recommendations || [];
+    const recommendations = Array.isArray(analysis.recommendations)
+      ? analysis.recommendations
+      : analysis.recommendations
+        ? [String(analysis.recommendations)]
+        : [];
     const cause = analysis.probable_cause || "A IA ainda não confirmou uma causa provável.";
     const conclusion = analysis.conclusion || analysis.summary || "Análise concluída.";
     const approval = result?.approval_token
@@ -184,17 +201,20 @@
   }
 
   function jobCard(meta) {
-    return `<article class="project-job-card" data-project-job="${escapeHtml(meta.job_id || meta.investigation_id || meta.reference)}" data-state="${escapeHtml(meta.status || "queued")}">
-      <div class="project-job-card-head"><div><span class="pulse-dot"></span><strong>${escapeHtml(meta.label || meta.reference)}</strong></div><span class="project-job-status">${escapeHtml(statusLabel(meta.status))}</span></div>
-      <p>${escapeHtml(meta.reference)} · ${escapeHtml(meta.environment || "unknown")}</p>
-      <div class="project-job-progress"><span style="width:${meta.status === "completed" ? 100 : 4}%"></span></div>
-      <small class="project-job-phase">${meta.status === "completed" ? "Validação concluída." : "A IA vai executar os testes do playbook e analisar as saídas."}</small>
+    const safeMeta = meta && typeof meta === "object" ? meta : {};
+    return `<article class="project-job-card" data-project-job="${escapeHtml(safeMeta.job_id || safeMeta.investigation_id || safeMeta.reference || "unknown")}" data-state="${escapeHtml(safeMeta.status || "queued")}">
+      <div class="project-job-card-head"><div><span class="pulse-dot"></span><strong>${escapeHtml(safeMeta.label || safeMeta.reference || "Validação")}</strong></div><span class="project-job-status">${escapeHtml(statusLabel(safeMeta.status))}</span></div>
+      <p>${escapeHtml(safeMeta.reference || "—")} · ${escapeHtml(safeMeta.environment || "unknown")}</p>
+      <div class="project-job-progress"><span style="width:${safeMeta.status === "completed" ? 100 : 4}%"></span></div>
+      <small class="project-job-phase">${safeMeta.status === "completed" ? "Validação concluída." : "A IA vai executar os testes do playbook e analisar as saídas."}</small>
       <div class="project-job-output"></div>
     </article>`;
   }
 
   function findJobCard(key) {
-    return qa("[data-project-job]", q("#project-plan")).find((element) => element.dataset.projectJob === String(key));
+    const root = q("#project-plan");
+    if (!root) return null;
+    return qa("[data-project-job]", root).find((element) => element.dataset.projectJob === String(key));
   }
 
   function bindResultActions(card, result) {
@@ -208,15 +228,19 @@
 
   function updateJobCard(key, job) {
     const card = findJobCard(key);
-    if (!card) return;
+    if (!card || !job || typeof job !== "object") return;
     const status = job.status || "running";
     card.dataset.state = status;
-    q(".project-job-status", card).textContent = statusLabel(status);
+    const statusElement = q(".project-job-status", card);
+    if (statusElement) statusElement.textContent = statusLabel(status);
     const percent = Math.max(0, Math.min(100, Number(job.percent ?? (status === "completed" ? 100 : 8))));
-    q(".project-job-progress span", card).style.width = `${percent}%`;
+    const progress = q(".project-job-progress span", card);
+    if (progress) progress.style.width = `${percent}%`;
     const phase = job.current_phase || {};
-    q(".project-job-phase", card).textContent = phase.detail || (status === "completed" ? "Coleta, análise e persistência concluídas." : statusLabel(status));
+    const phaseElement = q(".project-job-phase", card);
+    if (phaseElement) phaseElement.textContent = phase.detail || (status === "completed" ? "Coleta, análise e persistência concluídas." : statusLabel(status));
     const output = q(".project-job-output", card);
+    if (!output) return;
 
     if (status === "completed" && job.result) {
       const result = job.result;
@@ -230,19 +254,22 @@
     }
   }
 
-  function renderExecution(response) {
+  function renderExecution(rawResponse) {
+    const response = normalizeExecutionResponse(rawResponse);
     projectState.plan = response.plan || null;
     projectState.results.clear();
     const root = q("#project-plan");
+    if (!root) return response;
     const plan = response.plan || {};
-    const warnings = (plan.warnings || []).length
-      ? `<div class="project-warnings">${plan.warnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div>`
+    const warningsList = asArray(plan.warnings);
+    const warnings = warningsList.length
+      ? `<div class="project-warnings">${warningsList.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div>`
       : "";
     const metas = [
-      ...(response.jobs || []),
-      ...(response.executions || []).map((item) => ({ ...item, job_id: item.investigation_id || item.reference })),
+      ...response.jobs,
+      ...response.executions.map((item) => ({ ...item, job_id: item.investigation_id || item.reference })),
     ];
-    const errors = (response.errors || []).map((item) => `<p class="project-job-error"><strong>${escapeHtml(item.label || item.reference)}</strong>: ${escapeHtml(item.error)}</p>`).join("");
+    const errors = response.errors.map((item) => `<p class="project-job-error"><strong>${escapeHtml(item.label || item.reference)}</strong>: ${escapeHtml(item.error)}</p>`).join("");
 
     root.innerHTML = `<div class="project-plan-summary">
       <div><p class="eyebrow">IA EM EXECUÇÃO</p><h2>${escapeHtml(plan.scenario_label || "Validação automática")}</h2><p>Alvo VPN/TAP: ${escapeHtml(plan.target?.vpn_ip || value("project-target-vpn"))}</p></div>
@@ -256,18 +283,21 @@
     root.hidden = false;
     root.scrollIntoView({ behavior: "smooth", block: "start" });
 
-    (response.executions || []).forEach((item) => {
+    response.executions.forEach((item) => {
       const key = item.investigation_id || item.reference;
       updateJobCard(key, { status: "completed", percent: 100, result: item.result, current_phase: { detail: "Validação executada diretamente pela IA." } });
     });
+    return response;
   }
 
   async function pollJob(meta) {
-    const key = meta.job_id;
+    const key = meta?.job_id;
+    if (!key) return "failed";
     for (;;) {
       let job;
       try {
-        job = await api(`/ui/api/jobs/${encodeURIComponent(meta.job_id)}`);
+        job = await api(`/ui/api/jobs/${encodeURIComponent(key)}`);
+        if (!job || typeof job !== "object") throw new Error("Resposta inválida ao consultar o job da validação.");
       } catch (error) {
         updateJobCard(key, { status: "failed", error: error.message });
         return "failed";
@@ -278,13 +308,15 @@
     }
   }
 
-  async function pollProjectJobs(response) {
-    const jobs = response.jobs || [];
+  async function pollProjectJobs(rawResponse) {
+    const response = normalizeExecutionResponse(rawResponse);
+    const jobs = response.jobs;
     if (!jobs.length) return [];
     const statuses = await Promise.all(jobs.map(pollJob));
     const completed = statuses.filter((status) => status === "completed").length;
     const failed = statuses.filter((status) => status === "failed").length;
-    q("#project-form-status").textContent = `Execução finalizada: ${completed} concluída(s)${failed ? `, ${failed} com falha` : ""}.`;
+    const statusElement = q("#project-form-status");
+    if (statusElement) statusElement.textContent = `Execução finalizada: ${completed} concluída(s)${failed ? `, ${failed} com falha` : ""}.`;
     return statuses;
   }
 
@@ -298,21 +330,26 @@
   async function executeProject(event) {
     event?.preventDefault();
     setPlanning(true);
-    q("#project-form-status").textContent = "A IA está acessando o IP, descobrindo o ambiente e executando as validações. Você não precisa copiar nenhum comando.";
+    const formStatus = q("#project-form-status");
+    if (formStatus) formStatus.textContent = "A IA está acessando o IP, descobrindo o ambiente e executando as validações. Você não precisa copiar nenhum comando.";
     try {
-      const response = await api("/ui/api/projects/start", { method: "POST", body: payload() });
-      renderExecution(response);
+      const rawResponse = await api("/ui/api/projects/start", { method: "POST", body: payload() });
+      const response = renderExecution(rawResponse);
       saveDraft();
       if (response.execution_mode === "queue") {
-        toast(`${response.jobs.length} investigação(ões) iniciada(s). A IA vai executar e analisar automaticamente.`);
+        const count = response.jobs.length;
+        toast(`${count} investigação(ões) iniciada(s). A IA vai executar e analisar automaticamente.`);
+        if (!count) throw new Error("A API informou execução em fila, mas não retornou o job criado.");
         await pollProjectJobs(response);
       } else {
-        q("#project-form-status").textContent = `${response.executions.length} validação(ões) executada(s) diretamente pela IA.`;
+        const count = response.executions.length;
+        if (formStatus) formStatus.textContent = `${count} validação(ões) executada(s) diretamente pela IA.`;
         toast("Validação executada pela IA. Revise a causa e a proposta no resultado.");
       }
     } catch (error) {
-      q("#project-form-status").textContent = error.message;
-      toast(error.message, "error");
+      const message = error instanceof Error ? error.message : String(error || "Falha inesperada na validação do projeto.");
+      if (formStatus) formStatus.textContent = message;
+      toast(message, "error");
     } finally {
       setPlanning(false);
     }
@@ -320,10 +357,12 @@
 
   async function loadTemplates() {
     projectState.templates = await api("/ui/api/projects/templates");
-    const defaults = projectState.templates.defaults || {};
+    const defaults = projectState.templates?.defaults || {};
     const scenario = q("#project-scenario");
-    scenario.innerHTML = (projectState.templates.scenarios || []).map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
-    q("#project-vpn-dns-name").value ||= defaults.vpn_dns_name || "vpn.oracledba.com.br";
+    if (!scenario) return;
+    scenario.innerHTML = asArray(projectState.templates?.scenarios).map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("");
+    const dnsName = q("#project-vpn-dns-name");
+    if (dnsName) dnsName.value ||= defaults.vpn_dns_name || "vpn.oracledba.com.br";
     restoreDraft();
     refreshScenario();
   }
@@ -337,12 +376,16 @@
       if (element.tagName === "TEXTAREA" || element.type === "text") element.addEventListener("input", saveDraft);
     });
     q("#project-clear")?.addEventListener("click", () => {
-      q("#project-form").reset();
+      q("#project-form")?.reset();
       localStorage.removeItem(projectState.draftKey);
       projectState.results.clear();
-      q("#project-plan").hidden = true;
-      q("#project-plan").innerHTML = "";
-      q("#project-form-status").textContent = "";
+      const root = q("#project-plan");
+      if (root) {
+        root.hidden = true;
+        root.innerHTML = "";
+      }
+      const statusElement = q("#project-form-status");
+      if (statusElement) statusElement.textContent = "";
       refreshScenario();
       toast("Dados da validação limpos.");
     });
@@ -353,8 +396,10 @@
     try {
       await loadTemplates();
     } catch (error) {
-      q("#project-form-status").textContent = `Não foi possível carregar os modelos: ${error.message}`;
-      toast(error.message, "error");
+      const message = error instanceof Error ? error.message : String(error || "Falha ao carregar modelos.");
+      const statusElement = q("#project-form-status");
+      if (statusElement) statusElement.textContent = `Não foi possível carregar os modelos: ${message}`;
+      toast(message, "error");
     }
   }
 
