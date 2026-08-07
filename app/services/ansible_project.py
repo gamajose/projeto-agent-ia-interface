@@ -80,9 +80,10 @@ def execute_project_steps(
                 str(item.get("purpose") or item.get("title") or "validação de projeto"),
                 "--monitor-id",
                 access_monitor_id,
-                "--output",
-                str(output),
             ]
+            if item.get("sudo"):
+                argv.append("--sudo")
+            argv.extend(["--output", str(output)])
             tasks.append(
                 {
                     "name": str(item.get("title") or item.get("purpose") or f"Validação {index + 1}"),
