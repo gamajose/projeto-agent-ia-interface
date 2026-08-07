@@ -74,6 +74,17 @@ class Settings(BaseSettings):
     agent_job_ttl_seconds: int = 86400
     agent_queue_block_seconds: int = 5
 
+    # Supervisor NOC orientado a eventos. O Redis mantém o estado operacional
+    # do incidente, deduplica alertas e correlaciona recuperação/flapping.
+    noc_incident_enabled: bool = True
+    noc_incident_prefix: str = "agent-ia:noc"
+    noc_incident_ttl_seconds: int = Field(default=604800, ge=3600, le=2592000)
+    noc_incident_dedup_seconds: int = Field(default=300, ge=0, le=86400)
+    noc_flapping_window_seconds: int = Field(default=1800, ge=60, le=86400)
+    noc_flapping_transition_threshold: int = Field(default=4, ge=2, le=50)
+    noc_auto_investigate: bool = True
+    noc_auto_close_on_ok: bool = True
+
     agent_batch_enabled: bool = True
     agent_batch_max_targets: int = Field(default=50, ge=1, le=500)
     agent_batch_concurrency: int = Field(default=2, ge=1, le=10)
