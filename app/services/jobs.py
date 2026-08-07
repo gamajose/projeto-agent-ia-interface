@@ -239,23 +239,43 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
     )
     try:
         environment = EnvironmentType(job.get("environment") or EnvironmentType.UNKNOWN.value)
+        metadata = dict(job.get("metadata") or {})
         with use_progress(lambda event: _job_phase(client, settings, job_id, event)), use_cancellation(
             lambda: job_cancel_requested(job_id, settings=settings)
         ):
             raise_if_cancelled("Job cancelado antes de iniciar a coleta.")
-            result = run_target_tracked(
-                str(job["reference"]),
-                str(job.get("objective") or ""),
-                environment=environment,
-                mode=str(job.get("mode") or "propose"),
-                approve=bool(job.get("approve", False)),
-                ssh_port=job.get("ssh_port"),
-                provider_name=selection["provider"],
-                model_name=selection["model"] or None,
-                playbook_mode=selection["playbook_mode"],
-                playbook_id=selection["playbook_id"],
-                settings=settings,
-            )
+            if metadata.get("range_scan"):
+                # Import tardio: o worker instala o Ensemble antes de executar o job,
+                # então a síntese da faixa usa o mesmo coordenador cognitivo instrumentado.
+                from app.services.range_investigation import run_range_investigation
+
+                result = run_range_investigation(
+                    str(job["reference"]),
+                    str(job.get("objective") or ""),
+                    environment=environment,
+                    mode=str(job.get("mode") or "propose"),
+                    approve=False,
+                    ssh_port=job.get("ssh_port"),
+                    provider_name=selection["provider"],
+                    model_name=selection["model"] or None,
+                    playbook_mode=selection["playbook_mode"],
+                    playbook_id=selection["playbook_id"],
+                    settings=settings,
+                )
+            else:
+                result = run_target_tracked(
+                    str(job["reference"]),
+                    str(job.get("objective") or ""),
+                    environment=environment,
+                    mode=str(job.get("mode") or "propose"),
+                    approve=bool(job.get("approve", False)),
+                    ssh_port=job.get("ssh_port"),
+                    provider_name=selection["provider"],
+                    model_name=selection["model"] or None,
+                    playbook_mode=selection["playbook_mode"],
+                    playbook_id=selection["playbook_id"],
+                    settings=settings,
+                )
             raise_if_cancelled("Job cancelado antes da persistência final.")
         current = get_job(job_id, settings=settings) or {}
         payload = {
@@ -267,6 +287,7 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
             "percent": 100,
             "investigation_id": result.get("investigation_id"),
             "result": result,
+            "range_scan": bool(metadata.get("range_scan")),
             **selection,
         }
         _store(client, settings, job_id, payload)

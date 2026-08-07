@@ -15,7 +15,8 @@
   <link rel="stylesheet" href="/ui/assets/product-polish.css?v=1.21.2">
   <link rel="stylesheet" href="/ui/assets/investigation-flow.css?v=1.21.2">
   <link rel="stylesheet" href="/ui/assets/execution-live.css?v=1.21.2">
-  <link rel="stylesheet" href="/ui/assets/projects.css?v=1.31.1">
+  <link rel="stylesheet" href="/ui/assets/projects.css?v=1.32.0">
+  <link rel="stylesheet" href="/ui/assets/projects-execution.css?v=1.32.0">
 </head>
 <body>
   <div class="app-shell">
@@ -74,8 +75,8 @@
           <article class="panel project-builder">
             <div class="project-builder-head">
               <p class="eyebrow">VALIDAÇÃO DE PROJETO</p>
-              <h3>A IA descobre o ambiente</h3>
-              <p id="project-scenario-help">Escolha o tipo de validação e informe o IP VPN/TAP. Sistema operacional, IP interno, hardware e interface de gerenciamento são descobertos pela própria ferramenta.</p>
+              <h3>Informe o IP; a IA executa</h3>
+              <p id="project-scenario-help">Informe o IP VPN/TAP. A IA acessa o ambiente, executa as validações do playbook, analisa as evidências e apresenta a causa e a proposta.</p>
             </div>
             <form id="project-form" class="project-form">
               <div class="project-form-grid">
@@ -98,12 +99,12 @@
                   <label><span>DNS do gateway, se aplicável</span><input id="project-gateway-dns" placeholder="192.168.10.1"></label>
                 </div>
               </div>
-              <small class="project-help">Não é necessário informar cliente, ticket, nome do host, SO, IP interno, fabricante ou interface de gerenciamento. Monitor 1, usuário/senha, CMK05 e API do WhatsApp são lidos do .env/Vault.</small>
+              <small class="project-help">Não há mais lista de comandos para copiar. A IA usa o IP informado, acessa o ambiente e executa as coletas/testes seguros. Credenciais e infraestrutura continuam sendo lidas do .env/Vault.</small>
               <div id="project-form-status" class="project-form-status"></div>
-              <div class="project-form-actions"><button type="button" class="secondary-button" id="project-clear">Limpar</button><button type="submit" class="primary-button" id="project-generate">Acessar e montar validação</button></div>
+              <div class="project-form-actions"><button type="button" class="secondary-button" id="project-clear">Limpar</button><button type="submit" class="primary-button" id="project-generate">Executar validação com IA</button></div>
             </form>
           </article>
-          <div id="project-plan" class="project-plan" hidden><div class="project-empty"><div><strong>Nenhuma validação executada</strong><span>Informe o tipo e o IP VPN/TAP. A ferramenta acessará o ambiente para descobrir os demais dados.</span></div></div></div>
+          <div id="project-plan" class="project-plan" hidden><div class="project-empty"><div><strong>Nenhuma validação executada</strong><span>Informe o IP VPN/TAP. A IA fará a descoberta, executará as validações e apresentará o resultado.</span></div></div></div>
         </div>
       </section>
 
@@ -175,7 +176,7 @@
   <script src="/ui/assets/batch.js?v=1.21.2" defer></script>
   <script src="/ui/assets/workspace.js?v=1.21.2" defer></script>
   <script src="/ui/assets/tools.js?v=1.21.2" defer></script>
-  <script src="/ui/assets/projects.js?v=1.31.1" defer></script>
+  <script src="/ui/assets/projects.js?v=1.32.0" defer></script>
   <script src="/ui/assets/settings.js?v=1.21.2" defer></script>
   <script src="/ui/assets/ux-improvements.js?v=1.21.2" defer></script>
   <script src="/ui/assets/execution-tracker.js?v=1.21.2" defer></script>
