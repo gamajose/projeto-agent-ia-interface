@@ -26,7 +26,20 @@ def test_tool_arguments_reject_shell_injection():
     assert result["status"] == "blocked"
 
 
-def test_correction_is_blocked_in_production_before_execution():
+def test_production_correction_still_requires_approval_before_execution():
+    executor = FakeExecutor()
+    result = execute_tool(
+        executor,
+        EnvironmentType.PRODUCTION,
+        "systemd.recover_unit",
+        {"unit": "check-mk-agent.socket", "action": "restart"},
+        approved=False,
+    )
+    assert result["status"] == "approval_required"
+    assert executor.commands == []
+
+
+def test_approved_safe_correction_can_run_in_production_with_validation():
     executor = FakeExecutor()
     result = execute_tool(
         executor,
@@ -35,8 +48,10 @@ def test_correction_is_blocked_in_production_before_execution():
         {"unit": "check-mk-agent.socket", "action": "restart"},
         approved=True,
     )
-    assert result["status"] == "blocked"
-    assert executor.commands == []
+    assert result["status"] == "validated"
+    assert result["preconditions"]
+    assert len(result["validations"]) >= 2
+    assert any(approved for _, approved in executor.commands)
 
 
 def test_correction_requires_approval():
