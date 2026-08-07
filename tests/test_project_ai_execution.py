@@ -87,8 +87,9 @@ def test_project_plan_snapshot_exposes_checklist_without_commands() -> None:
     assert snapshot["target"]["vpn_ip"] == "172.27.232.10"
     assert snapshot["checklist"][0]["title"] == "Identificar host"
     assert snapshot["checklist"][0]["status"] == "pending"
+    assert snapshot["checklist"][0]["kind"] == "command"
     assert "groups" not in snapshot
-    assert "command" not in repr(snapshot)
+    assert all("command" not in item for item in snapshot["checklist"])
 
 
 def test_macro_result_turns_command_output_into_ticket_evidence() -> None:
