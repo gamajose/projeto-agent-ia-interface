@@ -30,6 +30,14 @@
 .batch-import-summary p { margin: 0; color: var(--muted); font-size: .66rem; line-height: 1.45; }
 .batch-import-summary p { margin-top: 8px; }
 
+.access-monitor-grid { margin-top: 4px; align-items: end; }
+.access-monitor-register,
+.range-scan-hint { display: grid; gap: 6px; }
+.access-monitor-register > span,
+.range-scan-hint > span { color: var(--muted); font-size: .63rem; font-weight: 800; text-transform: uppercase; }
+.range-scan-hint small { color: var(--muted); line-height: 1.35; }
+.range-scan-field .project-check-field { min-height: 42px; }
+
 .batch-overview { margin-bottom: 14px; }
 .batch-result-list { display: grid; gap: 10px; }
 .batch-result-item {
@@ -50,10 +58,42 @@
 .batch-result-item small { color: var(--bad); }
 .batch-result-item .ghost-button { white-space: nowrap; }
 
+.execution-evidence { display: grid; gap: 12px; }
+.execution-evidence > p { margin: 0; color: var(--muted); font-size: .7rem; line-height: 1.5; }
+.execution-evidence-list { display: grid; gap: 12px; }
+.execution-evidence-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(255,255,255,.018);
+}
+.execution-evidence-card > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.execution-evidence-card strong { font-size: .75rem; }
+.execution-evidence-card span { color: var(--accent); font-size: .6rem; font-weight: 900; }
+.execution-evidence-card code { color: var(--text); font-size: .68rem; overflow-wrap: anywhere; }
+.execution-evidence-card pre {
+  margin: 0;
+  padding: 12px;
+  max-height: 340px;
+  overflow: auto;
+  border-radius: 10px;
+  background: rgba(1, 8, 18, .46);
+  color: var(--muted);
+  font-size: .68rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.evidence-stderr { color: var(--bad); font-size: .64rem; overflow-wrap: anywhere; }
+
 #target { min-height: 42px; height: 42px; resize: none; }
 
 @media (max-width: 720px) {
   .batch-import-header,
-  .batch-result-item { align-items: flex-start; flex-direction: column; }
+  .batch-result-item,
+  .execution-evidence-card > div { align-items: flex-start; flex-direction: column; }
   .batch-result-item > div:last-child { width: 100%; }
+  .access-monitor-register .secondary-button { width: 100%; }
 }

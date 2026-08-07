@@ -11,6 +11,8 @@ from redis import Redis
 
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
+from app.services.access_monitors import settings_for_access_monitor
+from app.services.ansible_project import evidence_context, execute_project_steps
 from app.services.cancellation import ExecutionCancelled, raise_if_cancelled, use_cancellation
 from app.services.progress import use_progress
 from app.services.redaction import redact_object
@@ -108,11 +110,7 @@ def enqueue_investigation(
     }
     _store(client, settings, job_id, queued)
     client.rpush(settings.agent_queue_name, json.dumps(job, ensure_ascii=False, default=str))
-    return {
-        **queued,
-        "queue": settings.agent_queue_name,
-        "worker_pool": settings.agent_worker_name,
-    }
+    return {**queued, "queue": settings.agent_queue_name, "worker_pool": settings.agent_worker_name}
 
 
 def get_job(job_id: str, *, settings: Settings | None = None) -> dict[str, Any] | None:
@@ -164,14 +162,8 @@ def cancel_job(job_id: str, *, settings: Settings | None = None) -> dict[str, An
         return None
     if current.get("status") in {"completed", "failed", "cancelled"}:
         return current
-
     requested_at = _now()
-    client.setex(
-        _cancel_key(settings, job_id),
-        max(60, int(settings.agent_job_ttl_seconds)),
-        "1",
-    )
-
+    client.setex(_cancel_key(settings, job_id), max(60, int(settings.agent_job_ttl_seconds)), "1")
     removed = 0
     if current.get("status") == "queued" and hasattr(client, "lrange") and hasattr(client, "lrem"):
         for raw in client.lrange(settings.agent_queue_name, 0, -1):
@@ -182,7 +174,6 @@ def cancel_job(job_id: str, *, settings: Settings | None = None) -> dict[str, An
             if str(payload.get("job_id") or "") == str(job_id):
                 removed += int(client.lrem(settings.agent_queue_name, 1, raw) or 0)
                 break
-
     if removed:
         cancelled = {
             **current,
@@ -200,13 +191,7 @@ def cancel_job(job_id: str, *, settings: Settings | None = None) -> dict[str, An
         }
         _store(client, settings, job_id, cancelled)
         return cancelled
-
-    cancelling = {
-        **current,
-        "status": "cancelling",
-        "cancel_requested_at": requested_at,
-        "updated_at": requested_at,
-    }
+    cancelling = {**current, "status": "cancelling", "cancel_requested_at": requested_at, "updated_at": requested_at}
     _store(client, settings, job_id, cancelling)
     return cancelling
 
@@ -240,18 +225,41 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
     try:
         environment = EnvironmentType(job.get("environment") or EnvironmentType.UNKNOWN.value)
         metadata = dict(job.get("metadata") or {})
+        monitor_id = str(metadata.get("access_monitor_id") or "monitor1")
+        execution_settings = settings_for_access_monitor(monitor_id, settings) if metadata.get("access_monitor_id") else settings
+        objective = str(job.get("objective") or "")
+        ansible_evidence: list[dict[str, Any]] = []
+        ansible_diagnostics: dict[str, Any] = {}
+
         with use_progress(lambda event: _job_phase(client, settings, job_id, event)), use_cancellation(
             lambda: job_cancel_requested(job_id, settings=settings)
         ):
             raise_if_cancelled("Job cancelado antes de iniciar a coleta.")
+            if metadata.get("source") == "project_validation" and metadata.get("ansible_steps"):
+                _job_phase(
+                    client,
+                    settings,
+                    job_id,
+                    {
+                        "stage": "ansible_project",
+                        "status": "running",
+                        "detail": "Ansible está executando automaticamente as validações de leitura do projeto.",
+                        "percent": 24,
+                    },
+                )
+                ansible_evidence, ansible_diagnostics = execute_project_steps(
+                    list(metadata.get("ansible_steps") or []),
+                    access_monitor_id=monitor_id,
+                    settings=settings,
+                )
+                objective += evidence_context(ansible_evidence)
+
             if metadata.get("range_scan"):
-                # Import tardio: o worker instala o Ensemble antes de executar o job,
-                # então a síntese da faixa usa o mesmo coordenador cognitivo instrumentado.
                 from app.services.range_investigation import run_range_investigation
 
                 result = run_range_investigation(
                     str(job["reference"]),
-                    str(job.get("objective") or ""),
+                    objective,
                     environment=environment,
                     mode=str(job.get("mode") or "propose"),
                     approve=False,
@@ -260,12 +268,12 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
                     model_name=selection["model"] or None,
                     playbook_mode=selection["playbook_mode"],
                     playbook_id=selection["playbook_id"],
-                    settings=settings,
+                    settings=execution_settings,
                 )
             else:
                 result = run_target_tracked(
                     str(job["reference"]),
-                    str(job.get("objective") or ""),
+                    objective,
                     environment=environment,
                     mode=str(job.get("mode") or "propose"),
                     approve=bool(job.get("approve", False)),
@@ -274,9 +282,14 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
                     model_name=selection["model"] or None,
                     playbook_mode=selection["playbook_mode"],
                     playbook_id=selection["playbook_id"],
-                    settings=settings,
+                    settings=execution_settings,
                 )
             raise_if_cancelled("Job cancelado antes da persistência final.")
+
+        if ansible_evidence:
+            result["evidence"] = [*ansible_evidence, *list(result.get("evidence") or [])]
+        if ansible_diagnostics:
+            result["ansible"] = ansible_diagnostics
         current = get_job(job_id, settings=settings) or {}
         payload = {
             **current,
@@ -288,6 +301,11 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
             "investigation_id": result.get("investigation_id"),
             "result": result,
             "range_scan": bool(metadata.get("range_scan")),
+            "access_monitor": {
+                "id": metadata.get("access_monitor_id"),
+                "label": metadata.get("access_monitor_label"),
+                "host": metadata.get("access_monitor_host"),
+            } if metadata.get("access_monitor_id") else None,
             **selection,
         }
         _store(client, settings, job_id, payload)
@@ -328,11 +346,7 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
         return payload
 
 
-def run_worker_once(
-    *,
-    settings: Settings | None = None,
-    block_seconds: int | None = None,
-) -> dict[str, Any] | None:
+def run_worker_once(*, settings: Settings | None = None, block_seconds: int | None = None) -> dict[str, Any] | None:
     settings = settings or get_settings()
     timeout = settings.agent_queue_block_seconds if block_seconds is None else block_seconds
     item = _redis(settings).blpop(settings.agent_queue_name, timeout=max(0, int(timeout)))

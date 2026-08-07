@@ -12,6 +12,7 @@ from google import genai
 from google.genai import types
 
 from app.core.settings import Settings, get_settings
+from app.services.codex_cli import codex_generate_json
 from app.services.provider_registry import (
     ProviderSpec,
     provider_configured,
@@ -108,6 +109,16 @@ class OllamaProvider:
         return parse_json(text), {"response_chars": len(text), "status_code": response.status_code}
 
 
+@dataclass
+class CodexCLIProvider:
+    settings: Settings
+    model: str = ""
+    name: str = "codex"
+
+    def generate_json(self, prompt: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        return codex_generate_json(prompt, settings=self.settings, model=self.model or None)
+
+
 @dataclass(frozen=True)
 class GatewayRoute:
     label: str
@@ -118,6 +129,7 @@ class GatewayRoute:
 PROVIDER_LABELS = {
     "gemini": "Google Gemini",
     "groq": "Groq (Llama)",
+    "codex": "OpenAI Codex CLI",
     "deepseek": "DeepSeek",
     "openrouter": "OpenRouter",
     "ollama": "Ollama local",
@@ -184,13 +196,9 @@ def direct_provider_status(settings: Settings | None = None) -> list[dict[str, A
     settings = settings or get_settings()
     if not _uses_dynamic_registry(settings):
         return _legacy_direct_status(settings)
-
     active_ids = set(provider_ids(settings))
     display_rank = {"gemini": 0, "groq": 1, "deepseek": 2, "openrouter": 3}
-    specs = sorted(
-        provider_specs(settings),
-        key=lambda spec: (display_rank.get(spec.id, 100), spec.priority, spec.label.casefold()),
-    )
+    specs = sorted(provider_specs(settings), key=lambda spec: (display_rank.get(spec.id, 100), spec.priority, spec.label.casefold()))
     rows: list[dict[str, Any]] = []
     for spec in specs:
         if spec.source != "direct" or spec.id not in active_ids:
@@ -242,11 +250,7 @@ def provider_status(settings: Settings | None = None) -> list[dict[str, Any]]:
 
 
 def _default_omniroute_route(settings: Settings) -> str:
-    return (
-        getattr(settings, "omniroute_default_route", "")
-        or getattr(settings, "omniroute_model", "")
-        or ""
-    ).strip()
+    return (getattr(settings, "omniroute_default_route", "") or getattr(settings, "omniroute_model", "") or "").strip()
 
 
 def omniroute_route_options(settings: Settings | None = None) -> list[GatewayRoute]:
@@ -309,9 +313,7 @@ def _legacy_get_provider(selected: str, selected_model: str, settings: Any) -> A
         key = getattr(settings, "groq_api_key", None)
         if not key:
             raise ProviderError("GROQ_API_KEY não configurada.")
-        return OpenAICompatibleProvider(
-            "groq", key, selected_model or getattr(settings, "groq_model", ""), getattr(settings, "groq_base_url", "")
-        )
+        return OpenAICompatibleProvider("groq", key, selected_model or getattr(settings, "groq_model", ""), getattr(settings, "groq_base_url", ""))
     if selected == "openrouter":
         key = getattr(settings, "openrouter_api_key", None)
         if not key:
@@ -319,9 +321,7 @@ def _legacy_get_provider(selected: str, selected_model: str, settings: Any) -> A
         headers = {"X-Title": getattr(settings, "openrouter_app_name", "Agent IA Infra")}
         if getattr(settings, "openrouter_site_url", None):
             headers["HTTP-Referer"] = settings.openrouter_site_url
-        return OpenAICompatibleProvider(
-            "openrouter", key, selected_model or getattr(settings, "openrouter_model", ""), getattr(settings, "openrouter_base_url", ""), headers
-        )
+        return OpenAICompatibleProvider("openrouter", key, selected_model or getattr(settings, "openrouter_model", ""), getattr(settings, "openrouter_base_url", ""), headers)
     if selected == "ollama":
         return OllamaProvider(selected_model or getattr(settings, "ollama_model", ""), getattr(settings, "ollama_base_url", ""))
     if selected == "omniroute":
@@ -332,18 +332,15 @@ def _legacy_get_provider(selected: str, selected_model: str, settings: Any) -> A
         if not model:
             raise ProviderError("Selecione uma rota/modelo do OmniRoute.")
         return OpenAICompatibleProvider("omniroute", key, model, getattr(settings, "omniroute_base_url", ""))
+    if selected == "codex":
+        return CodexCLIProvider(settings=settings, model=selected_model or getattr(settings, "codex_model", ""))
     raise ProviderError(f"Provedor desconhecido: {selected}.")
 
 
-def get_provider(
-    name: str | None = None,
-    settings: Settings | None = None,
-    model_name: str | None = None,
-) -> AIProvider:
+def get_provider(name: str | None = None, settings: Settings | None = None, model_name: str | None = None) -> AIProvider:
     settings = settings or get_settings()
     selected = (name or current_provider_override() or getattr(settings, "ai_provider", "gemini") or "gemini").strip().lower()
     selected_model = (model_name or current_model_override() or "").strip()
-
     if not _uses_dynamic_registry(settings):
         return _legacy_get_provider(selected, selected_model, settings)
 
@@ -357,6 +354,8 @@ def get_provider(
         return GeminiProvider(api_key, selected_model or spec.default_model)
     if spec.kind == "ollama":
         return OllamaProvider(selected_model or spec.default_model, spec.base_url)
+    if spec.kind == "codex-cli":
+        return CodexCLIProvider(settings=settings, model=selected_model or spec.default_model)
     if spec.kind in {"openai-compatible", "gateway"}:
         api_key = provider_secret(spec, settings)
         if not api_key:

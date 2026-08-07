@@ -46,13 +46,13 @@ def test_codex_status_reads_version(tmp_path: Path):
 
     assert status.available is True
     assert status.version == "codex-cli 1.2.3"
-    runner.assert_called_once_with(
-        [str(binary.resolve()), "--version"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
+    args, kwargs = runner.call_args
+    assert args[0] == [str(binary.resolve()), "--version"]
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+    assert kwargs["timeout"] == 10
+    assert kwargs["check"] is False
+    assert kwargs["env"]["PATH"] == os.environ["PATH"]
 
 
 def test_launch_codex_uses_configured_workdir_without_shell(tmp_path: Path):

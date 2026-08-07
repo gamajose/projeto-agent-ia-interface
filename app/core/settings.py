@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     ssh_strict_host_key_checking: bool = True
     ssh_known_hosts_path: str = "~/.ssh/known_hosts"
 
-    # O servidor VPN funciona como bastion SSH. Os nomes SSH_SRV_VPN_*
-    # preservam compatibilidade com os ambientes já usados pelos operadores.
+    # Credencial operacional comum aos servidores de acesso. SSH_SRV_VPN_* é a
+    # fonte de verdade para usuário/senha/porta também no Monitor 2 e Monitor 5.
     ssh_bastion_host: str | None = Field(
         default=None,
         validation_alias=AliasChoices("SSH_BASTION_HOST", "SSH_SRV_VPN_IP", "SSH_SRV_VPN"),
@@ -55,14 +55,14 @@ class Settings(BaseSettings):
     )
     ssh_bastion_password: str | None = Field(
         default=None,
-        validation_alias=AliasChoices(
-            "SSH_BASTION_PASSWORD",
-            "SSH_SRV_VPN_SENHA",
-            "SSH_PASSWORD_SRV_VPN",
-        ),
+        validation_alias=AliasChoices("SSH_BASTION_PASSWORD", "SSH_SRV_VPN_SENHA", "SSH_PASSWORD_SRV_VPN"),
     )
     ssh_bastion_private_key_path: str | None = None
     ssh_bastion_private_key_passphrase: str | None = None
+    ssh_cmk05: str | None = Field(default=None, validation_alias=AliasChoices("SSH_CMK05", "SSH_CMK05_IP"))
+    ssh_nuvem: str | None = Field(default=None, validation_alias=AliasChoices("SSH_NUVEM", "SSH_NUVEM_IP"))
+    api_whatsapp: str = Field(default="ws.2comconsulting.com.br", validation_alias="API_WHATSAPP")
+    access_monitor_registry_path: str = "/opt/agent-ia/data/access_monitors.json"
 
     postgres_dsn: str = Field(...)
     redis_url: str = "redis://127.0.0.1:6379/1"
@@ -74,8 +74,6 @@ class Settings(BaseSettings):
     agent_job_ttl_seconds: int = 86400
     agent_queue_block_seconds: int = 5
 
-    # Execução em lote usa a mesma API e o mesmo motor por alvo. A concorrência
-    # limita quantas investigações a interface mantém simultaneamente.
     agent_batch_enabled: bool = True
     agent_batch_max_targets: int = Field(default=50, ge=1, le=500)
     agent_batch_concurrency: int = Field(default=2, ge=1, le=10)
@@ -94,9 +92,6 @@ class Settings(BaseSettings):
     agent_adaptive_tools_enabled: bool = True
     agent_tool_recommendation_limit: int = Field(default=10, ge=3, le=30)
 
-    # Núcleo cognitivo: interpreta a missão, valida os contratos JSON de cada
-    # etapa, troca de provedor quando uma IA falha e audita a conclusão com uma
-    # IA crítica independente. O playbook vira contexto, não sequência fixa.
     agent_intelligent_reasoning_enabled: bool = True
     agent_reasoning_provider_fallback: bool = True
     agent_reasoning_max_provider_attempts: int = Field(default=3, ge=1, le=5)
@@ -110,9 +105,12 @@ class Settings(BaseSettings):
     agent_playbook_dir: str = str(PROJECT_ROOT / "config" / "playbooks")
     agent_allow_legacy_read_commands: bool = True
 
-    # Recuperação adaptativa: depois da aprovação humana, cada ação é observada.
-    # Falhas viram novas evidências, ferramentas de leitura mapeiam o bloqueio e
-    # outra ação só é executada quando continua dentro do envelope aprovado.
+    # Ansible atua como orquestrador dos playbooks de projeto. A política do
+    # Agent continua sendo aplicada: coleta automática, mudança só após revisão.
+    agent_ansible_enabled: bool = True
+    agent_ansible_binary: str = "ansible-playbook"
+    agent_ansible_timeout_seconds: int = Field(default=300, ge=30, le=1800)
+
     agent_recovery_enabled: bool = True
     agent_recovery_max_rounds: int = Field(default=3, ge=1, le=8)
     agent_recovery_max_actions: int = Field(default=6, ge=1, le=20)
@@ -120,33 +118,23 @@ class Settings(BaseSettings):
     agent_recovery_max_repeated_action: int = Field(default=2, ge=1, le=3)
 
     ai_provider: str = "gemini"
-    ai_auto_provider_order: str = "groq,omniroute,deepseek,gemini,ollama,openrouter"
+    ai_auto_provider_order: str = "groq,omniroute,codex,deepseek,gemini,ollama,openrouter"
     ai_preflight_timeout_seconds: float = Field(default=8.0, ge=1.0, le=60.0)
-    # O catálogo dinâmico guarda apenas metadados. As chaves continuam no .env
-    # ou Vault e nunca são devolvidas para o navegador.
     ai_provider_registry_path: str = "~/.config/agent-ia/providers.json"
     ai_settings_env_path: str = ""
     ai_settings_ui_enabled: bool = True
     ai_settings_allow_secret_write: bool = True
 
-    # O Gemini consulta a lista de modelos visível para a própria chave. Quando
-    # o modelo configurado não existir, usa o primeiro modelo desta lista que
-    # esteja disponível. Em 429/5xx tenta o próximo modelo da lista.
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-3.5-flash"
     gemini_auto_free: bool = True
     gemini_transient_fallback: bool = True
-    gemini_free_models: str = (
-        "gemini-3.5-flash,gemini-3.1-flash-lite,"
-        "gemini-2.5-flash,gemini-2.5-flash-lite"
-    )
+    gemini_free_models: str = "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-2.5-flash,gemini-2.5-flash-lite"
 
     groq_api_key: str | None = None
     groq_model: str = "llama-3.3-70b-versatile"
     groq_base_url: str = "https://api.groq.com/openai/v1"
 
-    # DeepSeek usa a API OpenAI-compatible oficial. Os aliases antigos
-    # deepseek-chat e deepseek-reasoner foram substituídos pelos modelos V4.
     deepseek_api_key: str | None = None
     deepseek_model: str = "deepseek-v4-flash"
     deepseek_models: str = "deepseek-v4-flash,deepseek-v4-pro"
@@ -158,19 +146,12 @@ class Settings(BaseSettings):
     openrouter_app_name: str = "Agent IA Infra"
     openrouter_site_url: str | None = None
 
-    # O modelo do projeto anterior era gemma3:4b. Se ele não estiver disponível,
-    # o Agent pode selecionar outro modelo já instalado no Ollama. A listagem
-    # usa um probe rápido; a geração real pode aguardar mais no primeiro load.
     ollama_model: str = "gemma3:4b"
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_auto_fallback: bool = True
     ollama_preferred_models: str = "gemma3:4b,llama3.2"
     ollama_preflight_timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
 
-    # OmniRoute é um gateway: o Agent precisa apenas do token e da URL.
-    # A rota/modelo é selecionada no menu, por OMNIROUTE_DEFAULT_ROUTE ou
-    # pela lista opcional OMNIROUTE_ROUTES. OMNIROUTE_MODEL permanece como
-    # alias legado para instalações anteriores.
     omniroute_api_key: str | None = None
     omniroute_base_url: str = "http://127.0.0.1:20128/v1"
     omniroute_default_route: str = ""
@@ -189,13 +170,14 @@ class Settings(BaseSettings):
     helpdesk_webhook_token: str | None = None
     helpdesk_publish_automatically: bool = False
 
+    # Codex usa a sessão já autenticada do Codex CLI/ChatGPT. Não é necessária
+    # OPENAI_API_KEY para este backend; a API OpenAI continua sendo opção separada.
     codex_cli_path: str | None = None
     codex_workdir: str | None = None
     codex_home: str | None = None
+    codex_model: str = ""
+    codex_exec_timeout_seconds: int = Field(default=180, ge=30, le=900)
 
-    # OpenCode usa OmniRoute, mas permanece separado do motor de troubleshooting.
-    # A interface integrada executa `opencode run` no diretório configurado e
-    # nunca recebe automaticamente SSH, bastion ou credenciais de servidores.
     opencode_enabled: bool = True
     opencode_cli_path: str | None = None
     opencode_workdir: str | None = None

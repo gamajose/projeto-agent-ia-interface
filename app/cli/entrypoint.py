@@ -17,9 +17,11 @@ console = Console()
 
 
 def _install_operational_runtime() -> None:
+    from app.services.codex_provider_instrumentation import install_codex_provider_preflight
     from app.services.operational_tool_instrumentation import install_operational_tools
 
     install_operational_tools()
+    install_codex_provider_preflight()
 
 
 def _run_menu() -> None:

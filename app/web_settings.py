@@ -23,7 +23,7 @@ from app.web import InvestigationPayload, _require_access, _require_mutation
 
 router = APIRouter(tags=["interface-settings"])
 _PROVIDER_ID = re.compile(r"^[a-z][a-z0-9_-]{1,47}$")
-_BUILTIN_IDS = {"gemini", "groq", "deepseek", "openrouter", "ollama", "omniroute"}
+_BUILTIN_IDS = {"gemini", "groq", "codex", "deepseek", "openrouter", "ollama", "omniroute"}
 
 
 class ProviderConfigurationPayload(BaseModel):
@@ -70,17 +70,8 @@ def _dynamic_provider_options(result: ProviderPreflight, settings: Settings) -> 
             for route in configured
         ]
         if result.model and result.model not in {item["value"] for item in rows}:
-            rows.insert(
-                0,
-                {
-                    "value": result.model,
-                    "label": result.model,
-                    "default": True,
-                    "available": result.selectable,
-                },
-            )
+            rows.insert(0, {"value": result.model, "label": result.model, "default": True, "available": result.selectable})
         return rows
-
     spec = provider_spec(result.provider, settings)
     models = list(spec.models if spec else ())
     if result.model and result.model not in models:
@@ -99,7 +90,6 @@ def _dynamic_provider_options(result: ProviderPreflight, settings: Settings) -> 
 
 
 def enable_dynamic_provider_payload() -> None:
-    """Permite IDs cadastrados, mantendo rejeição Pydantic para IDs desconhecidos."""
     dynamic_type = Annotated[str | None, AfterValidator(_validate_registered_provider)]
     InvestigationPayload.__annotations__["provider"] = dynamic_type
     InvestigationPayload.model_fields["provider"].annotation = dynamic_type
@@ -144,18 +134,11 @@ def ai_settings(request: Request) -> dict[str, Any]:
     _settings_enabled(settings)
     registry = public_registry(settings)
     diagnostics = _public_diagnostics(settings)
-    providers = [
-        {**item, "diagnostic": diagnostics.get(item["id"])}
-        for item in registry["providers"]
-    ]
+    providers = [{**item, "diagnostic": diagnostics.get(item["id"])} for item in registry["providers"]]
     return {
         "enabled": True,
         "allow_secret_write": settings.ai_settings_allow_secret_write,
-        "automatic_order": [
-            item.strip()
-            for item in settings.ai_auto_provider_order.split(",")
-            if item.strip()
-        ],
+        "automatic_order": [item.strip() for item in settings.ai_auto_provider_order.split(",") if item.strip()],
         "providers": providers,
         "presets": [
             {
@@ -180,8 +163,7 @@ def ai_settings(request: Request) -> dict[str, Any]:
         "registry_path": registry["registry_path"],
         "env_path": registry["env_path"],
         "queue_note": (
-            "As alterações entram imediatamente na interface. Em modo queue, "
-            "reinicie os workers para processos antigos recarregarem o .env."
+            "As alterações entram imediatamente na interface. Em modo queue, reinicie os workers para processos antigos recarregarem o .env."
             if settings.agent_execution_mode.strip().casefold() == "queue"
             else "As alterações entram no próximo diagnóstico ou investigação."
         ),
@@ -189,11 +171,7 @@ def ai_settings(request: Request) -> dict[str, Any]:
 
 
 @router.put("/ui/api/settings/ai/providers/{provider_id}")
-def save_provider_configuration(
-    provider_id: str,
-    payload: ProviderConfigurationPayload,
-    request: Request,
-) -> dict[str, Any]:
+def save_provider_configuration(provider_id: str, payload: ProviderConfigurationPayload, request: Request) -> dict[str, Any]:
     _require_mutation(request)
     settings = _fresh_settings()
     _settings_enabled(settings)
@@ -204,7 +182,6 @@ def save_provider_configuration(
         raise HTTPException(status_code=422, detail="identificador de provedor inválido")
     if payload.api_key and not settings.ai_settings_allow_secret_write:
         raise HTTPException(status_code=403, detail="gravação de chaves está desabilitada")
-
     try:
         if normalized in _BUILTIN_IDS:
             updates = builtin_env_updates(
@@ -216,6 +193,12 @@ def save_provider_configuration(
                 settings=settings,
             )
             if not updates:
+                if normalized == "codex":
+                    return {
+                        "saved": True,
+                        "provider": provider_spec("codex", settings).public_dict(settings),
+                        "message": "Codex usa a sessão autenticada do CLI. Informe somente CODEX_MODEL quando quiser fixar um modelo.",
+                    }
                 raise ValueError("nenhum valor foi informado para atualização")
             update_env_values(updates, settings=settings)
         else:
@@ -234,20 +217,12 @@ def save_provider_configuration(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"não foi possível salvar o provedor: {type(exc).__name__}",
-        ) from exc
-
+        raise HTTPException(status_code=500, detail=f"não foi possível salvar o provedor: {type(exc).__name__}") from exc
     refreshed = _fresh_settings()
     spec = provider_spec(normalized, refreshed)
     if not spec:
         raise HTTPException(status_code=500, detail="provedor salvo, mas não recarregado")
-    return {
-        "saved": True,
-        "provider": spec.public_dict(refreshed),
-        "message": "Configuração salva. A chave foi mantida somente no backend.",
-    }
+    return {"saved": True, "provider": spec.public_dict(refreshed), "message": "Configuração salva. A chave foi mantida somente no backend."}
 
 
 @router.delete("/ui/api/settings/ai/providers/{provider_id}")
@@ -268,11 +243,7 @@ def save_provider_order(payload: ProviderOrderPayload, request: Request) -> dict
     _require_mutation(request)
     settings = _fresh_settings()
     _settings_enabled(settings)
-    registered = {
-        item["id"]
-        for item in public_registry(settings)["providers"]
-        if item.get("enabled", True)
-    }
+    registered = {item["id"] for item in public_registry(settings)["providers"] if item.get("enabled", True)}
     ordered: list[str] = []
     for raw in payload.providers:
         item = raw.strip().lower()
@@ -295,11 +266,5 @@ def test_provider_configuration(provider_id: str, request: Request) -> dict[str,
     try:
         result = preflight_provider(normalized, settings, quick=False)
     except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"falha ao testar provedor: {type(exc).__name__}: {exc}",
-        ) from exc
-    return {
-        **result.model_dump(mode="json"),
-        "state_label": result.state_label,
-    }
+        raise HTTPException(status_code=502, detail=f"falha ao testar provedor: {type(exc).__name__}: {exc}") from exc
+    return {**result.model_dump(mode="json"), "state_label": result.state_label}

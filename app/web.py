@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -14,6 +15,13 @@ from pydantic import BaseModel, Field
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
 from app.db.base import ensure_database_schema
+from app.services.access_monitors import (
+    AccessMonitorError,
+    add_access_monitor,
+    list_access_monitors,
+    resolve_access_monitor,
+    settings_for_access_monitor,
+)
 from app.services.ai_providers import omniroute_route_options
 from app.services.application_health import application_health
 from app.services.approved_execution import execute_approved_investigation
@@ -22,14 +30,13 @@ from app.services.persistence import get_investigation, operational_metrics
 from app.services.playbooks import list_playbooks
 from app.services.provider_preflight import ProviderPreflight, preflight_all, preflight_provider
 from app.services.provider_router import automatic_provider_order
-from app.services.range_investigation import looks_like_ip_range, run_range_investigation
+from app.services.range_investigation import run_range_investigation
 from app.services.runner import run_target
 from app.services.ui_queries import list_hosts, list_investigations
 
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 router = APIRouter(tags=["interface"])
-ProviderName = Literal["auto", "gemini", "groq", "openrouter", "ollama", "omniroute"]
 
 
 class InvestigationPayload(BaseModel):
@@ -38,10 +45,17 @@ class InvestigationPayload(BaseModel):
     environment: EnvironmentType = EnvironmentType.UNKNOWN
     mode: Literal["investigate", "propose", "correct"] = "propose"
     ssh_port: int | None = Field(default=None, ge=1, le=65535)
-    provider: ProviderName | None = None
+    provider: str | None = Field(default=None, max_length=80)
     model: str | None = Field(default=None, max_length=255)
     playbook_mode: Literal["auto", "manual", "none"] = "auto"
     playbook_id: str | None = Field(default=None, max_length=255)
+    access_monitor_id: str = Field(default="monitor1", min_length=1, max_length=80)
+    range_scan: bool = False
+
+
+class AccessMonitorPayload(BaseModel):
+    label: str = Field(min_length=1, max_length=80)
+    host: str = Field(min_length=1, max_length=255)
 
 
 class ApprovalPayload(BaseModel):
@@ -103,6 +117,10 @@ def _operator_name() -> str:
 
 def _compact_result(result: dict[str, Any]) -> dict[str, Any]:
     analysis = dict(result.get("analysis") or {})
+    # As evidências já chegam redigidas pelo motor. A interface recebe a saída
+    # porque o objetivo da automação é permitir ao analista conferir/tirar print,
+    # e não obrigá-lo a repetir os comandos manualmente.
+    evidence = list(result.get("evidence") or [])
     return {
         "investigation_id": result.get("investigation_id"),
         "hostname": result.get("hostname"),
@@ -116,7 +134,8 @@ def _compact_result(result: dict[str, Any]) -> dict[str, Any]:
         "corrections": result.get("corrections") or [],
         "approval_token": result.get("approval_token"),
         "duration_ms": result.get("duration_ms"),
-        "evidence_count": len(result.get("evidence") or []),
+        "evidence_count": len(evidence),
+        "evidence": evidence,
         "history": result.get("history") or [],
         "similar_history": result.get("similar_history") or [],
         "ai_diagnostics": result.get("ai_diagnostics") or analysis.get("ai_diagnostics") or [],
@@ -124,6 +143,7 @@ def _compact_result(result: dict[str, Any]) -> dict[str, Any]:
         "selected_model": result.get("selected_model"),
         "provider_selection": result.get("provider_selection"),
         "automation": result.get("automation"),
+        "range_scan": result.get("range_scan") or analysis.get("range_scan"),
     }
 
 
@@ -157,32 +177,57 @@ def _default_provider(settings: Settings) -> str:
 def _validate_selection(payload: InvestigationPayload, settings: Settings) -> tuple[str, str | None, str]:
     if payload.playbook_mode == "manual" and not (payload.playbook_id or "").strip():
         raise HTTPException(status_code=422, detail="selecione um playbook no modo manual")
-
     provider = (payload.provider or _default_provider(settings)).strip().lower()
     model = (payload.model or "").strip() or None
-
     if provider == "auto":
         if not settings.agent_autopilot_enabled:
             raise HTTPException(status_code=422, detail="autopilot desabilitado na configuração")
         quick_rows = preflight_all(settings, quick=True)
         if not any(item.selectable for item in quick_rows):
-            raise HTTPException(
-                status_code=422,
-                detail="nenhuma IA está disponível para seleção automática; consulte o painel Saúde",
-            )
+            raise HTTPException(status_code=422, detail="nenhuma IA está disponível para seleção automática; consulte o painel Saúde")
         return "auto", None, "propose"
-
     result = preflight_provider(provider, settings, model, quick=False)
     if not result.selectable:
-        raise HTTPException(
-            status_code=422,
-            detail=f"{result.label} não pode iniciar a investigação: {result.detail}",
-        )
-
-    # O modo corrigir continua sendo uma proposta revisada, seguida da aprovação
-    # humana separada. A abertura da investigação nunca executa alterações.
+        raise HTTPException(status_code=422, detail=f"{result.label} não pode iniciar a investigação: {result.detail}")
     effective_mode = "propose" if payload.mode == "correct" else payload.mode
     return provider, model or result.model or None, effective_mode
+
+
+def _normalize_range_target(raw: str) -> str:
+    value = str(raw or "").strip()
+    if "/" in value or "-" in value:
+        try:
+            if "/" in value:
+                network = ipaddress.ip_network(value, strict=False)
+                if not isinstance(network, ipaddress.IPv4Network):
+                    raise ValueError
+                return str(network)
+            left, right = value.split("-", 1)
+            ipaddress.IPv4Address(left.strip())
+            if "." in right:
+                ipaddress.IPv4Address(right.strip())
+            else:
+                last = int(right.strip())
+                if not 0 <= last <= 255:
+                    raise ValueError
+            return value
+        except (ValueError, ipaddress.AddressValueError) as exc:
+            raise HTTPException(status_code=422, detail="faixa IPv4 inválida") from exc
+
+    prefix = re.fullmatch(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.?", value)
+    if prefix:
+        octets = [int(item) for item in prefix.groups()]
+        if any(item > 255 for item in octets):
+            raise HTTPException(status_code=422, detail="prefixo IPv4 inválido")
+        return f"{'.'.join(str(item) for item in octets)}.0/24"
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="com 'Pesquisar por faixa' marcado, informe 172.27.233, um CIDR ou um intervalo IP-inicial-IP-final",
+        ) from exc
+    return str(ipaddress.ip_network(f"{address}/24", strict=False))
 
 
 @router.get("/ui", include_in_schema=False)
@@ -196,6 +241,7 @@ def interface(request: Request) -> FileResponse:
 def ui_session(request: Request) -> dict[str, Any]:
     _require_access(request)
     settings = get_settings()
+    monitors = [item.public_dict() for item in list_access_monitors(settings)]
     return {
         "operator": _operator_name(),
         "execution_mode": settings.agent_execution_mode,
@@ -205,13 +251,32 @@ def ui_session(request: Request) -> dict[str, Any]:
         "autopilot_default": settings.agent_autopilot_default,
         "reviewer_provider": settings.ai_reviewer_provider,
         "review_required": settings.ai_reviewer_required_for_corrections,
+        "access_monitors": monitors,
         "safe_rules": [
-            "Faixas privadas podem ser varridas a partir do Monitor 1; todos os hosts SSH encontrados recebem triagem.",
-            "Produção e standby recebem investigação e proposta, nunca correção automática.",
-            "Reboot, shutdown, bancos de clientes e ciclo de vida de containers permanecem bloqueados.",
+            "A IA executa as coletas e devolve as saídas; o operador não precisa repetir comandos de leitura.",
+            "Varreduras são executadas a partir do servidor de acesso selecionado e cada host encontrado recebe triagem.",
+            "Produção e standby recebem investigação e proposta, nunca correção automática sem aprovação.",
             "Toda ação corretiva exige playbook permitido, segunda IA e aprovação humana.",
         ],
     }
+
+
+@router.get("/ui/api/access-monitors")
+def access_monitors(request: Request) -> dict[str, Any]:
+    _require_access(request)
+    settings = get_settings()
+    items = [item.public_dict() for item in list_access_monitors(settings)]
+    return {"items": items, "default": "monitor1" if any(item["id"] == "monitor1" for item in items) else (items[0]["id"] if items else None)}
+
+
+@router.post("/ui/api/access-monitors")
+def create_access_monitor(payload: AccessMonitorPayload, request: Request) -> dict[str, Any]:
+    _require_mutation(request)
+    try:
+        monitor = add_access_monitor(payload.label, payload.host, get_settings())
+    except AccessMonitorError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return monitor.public_dict()
 
 
 @router.get("/ui/api/ai/providers")
@@ -220,7 +285,6 @@ def ai_providers(request: Request) -> dict[str, Any]:
     settings = get_settings()
     diagnostics = preflight_all(settings, quick=True)
     items: list[dict[str, Any]] = []
-
     selectable = [item for item in diagnostics if item.selectable]
     if settings.agent_autopilot_enabled:
         order = automatic_provider_order(settings)
@@ -231,12 +295,7 @@ def ai_providers(request: Request) -> dict[str, Any]:
                 "state": "available" if selectable else "unavailable",
                 "state_label": "disponível" if selectable else "indisponível",
                 "model": "",
-                "detail": (
-                    "Valida e seleciona automaticamente a primeira IA saudável. "
-                    f"Prioridade: {', '.join(order)}."
-                    if selectable
-                    else "Nenhuma IA passou no catálogo rápido."
-                ),
+                "detail": f"Valida e seleciona automaticamente IAs saudáveis. Prioridade: {', '.join(order)}." if selectable else "Nenhuma IA passou no catálogo rápido.",
                 "latency_ms": None,
                 "selectable": bool(selectable),
                 "valid_routes": [],
@@ -245,21 +304,9 @@ def ai_providers(request: Request) -> dict[str, Any]:
                 "automatic": True,
             }
         )
-
     for result in diagnostics:
-        items.append(
-            {
-                **result.model_dump(mode="json"),
-                "state_label": result.state_label,
-                "options": _provider_options(result, settings),
-                "automatic": False,
-            }
-        )
-    return {
-        "default_provider": _default_provider(settings),
-        "reviewer_provider": settings.ai_reviewer_provider,
-        "items": items,
-    }
+        items.append({**result.model_dump(mode="json"), "state_label": result.state_label, "options": _provider_options(result, settings), "automatic": False})
+    return {"default_provider": _default_provider(settings), "reviewer_provider": settings.ai_reviewer_provider, "items": items}
 
 
 @router.get("/ui/api/health")
@@ -272,11 +319,7 @@ def health(request: Request) -> dict[str, Any]:
 def dashboard(request: Request) -> dict[str, Any]:
     _require_access(request)
     ensure_database_schema()
-    return {
-        "metrics": operational_metrics(),
-        "recent": list_investigations(limit=8),
-        "hosts": list_hosts(limit=6),
-    }
+    return {"metrics": operational_metrics(), "recent": list_investigations(limit=8), "hosts": list_hosts(limit=6)}
 
 
 @router.get("/ui/api/investigations")
@@ -291,29 +334,26 @@ def investigations(
 ) -> dict[str, Any]:
     _require_access(request)
     ensure_database_schema()
-    return list_investigations(
-        limit=limit,
-        offset=offset,
-        query=q,
-        status=status,
-        mode=mode,
-        environment=environment,
-    )
+    return list_investigations(limit=limit, offset=offset, query=q, status=status, mode=mode, environment=environment)
 
 
 @router.post("/ui/api/investigations")
 def create_investigation(payload: InvestigationPayload, request: Request) -> dict[str, Any]:
     _require_mutation(request)
-    settings = get_settings()
+    base_settings = get_settings()
     ensure_database_schema()
-    provider, model, effective_mode = _validate_selection(payload, settings)
-    target_value = payload.target.strip()
-    objective = payload.objective.strip() or (
-        "Realizar análise geral de saúde do ambiente, identificar falhas, diferenciar sintomas de causas, "
-        "encontrar a causa raiz e propor somente correções sustentadas por evidências."
-    )
-    range_scan = looks_like_ip_range(target_value)
+    provider, model, effective_mode = _validate_selection(payload, base_settings)
+    try:
+        monitor = resolve_access_monitor(payload.access_monitor_id, base_settings)
+        execution_settings = settings_for_access_monitor(payload.access_monitor_id, base_settings)
+    except AccessMonitorError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    target_value = _normalize_range_target(payload.target) if payload.range_scan else payload.target.strip()
+    objective = payload.objective.strip() or (
+        "Realizar análise geral de saúde do ambiente, identificar falhas de sistema, rede, recursos, containers, "
+        "Checkmk e serviços, diferenciar sintomas de causas, encontrar a causa raiz e propor correções sustentadas por evidências."
+    )
     common = {
         "environment": payload.environment,
         "mode": effective_mode,
@@ -323,41 +363,44 @@ def create_investigation(payload: InvestigationPayload, request: Request) -> dic
         "model_name": model,
         "playbook_mode": "auto" if provider == "auto" else payload.playbook_mode,
         "playbook_id": None if provider == "auto" else (payload.playbook_id or "").strip() or None,
-        "settings": settings,
+        "settings": execution_settings,
+    }
+    metadata = {
+        "source": "web_ui_range" if payload.range_scan else "web_ui",
+        "operator": _operator_name(),
+        "requested_mode": payload.mode,
+        "autopilot": provider == "auto",
+        "range_scan": payload.range_scan,
+        "access_monitor_id": monitor.id,
+        "access_monitor_label": monitor.label,
+        "access_monitor_host": monitor.host,
     }
 
-    if settings.agent_execution_mode.strip().casefold() == "queue":
+    if base_settings.agent_execution_mode.strip().casefold() == "queue":
         try:
-            return enqueue_investigation(
-                target_value,
-                objective,
-                metadata={
-                    "source": "web_ui_range" if range_scan else "web_ui",
-                    "operator": _operator_name(),
-                    "requested_mode": payload.mode,
-                    "autopilot": provider == "auto",
-                    "range_scan": range_scan,
-                },
-                **common,
-            )
+            queued = enqueue_investigation(target_value, objective, metadata=metadata, **common)
+            return {**queued, "access_monitor": monitor.public_dict(), "range_scan": payload.range_scan, "normalized_target": target_value}
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f"fila indisponível: {type(exc).__name__}: {exc}") from exc
 
     try:
-        result = (
-            run_range_investigation(target_value, objective, **common)
-            if range_scan
-            else run_target(target_value, objective, **common)
-        )
+        result = run_range_investigation(target_value, objective, **common) if payload.range_scan else run_target(target_value, objective, **common)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
     compact = _compact_result(result)
-    compact["requested_mode"] = payload.mode
-    compact["requested_provider"] = provider
-    compact["selected_provider"] = result.get("selected_provider") or provider
-    compact["selected_model"] = result.get("selected_model") or model
+    compact.update(
+        {
+            "requested_mode": payload.mode,
+            "requested_provider": provider,
+            "selected_provider": result.get("selected_provider") or provider,
+            "selected_model": result.get("selected_model") or model,
+            "access_monitor": monitor.public_dict(),
+            "range_scan_requested": payload.range_scan,
+            "normalized_target": target_value,
+        }
+    )
     return compact
 
 
@@ -386,20 +429,11 @@ def investigation_detail(investigation_id: str, request: Request) -> dict[str, A
 
 
 @router.post("/ui/api/investigations/{investigation_id}/approve")
-def approve_investigation(
-    investigation_id: str,
-    payload: ApprovalPayload,
-    request: Request,
-) -> dict[str, Any]:
+def approve_investigation(investigation_id: str, payload: ApprovalPayload, request: Request) -> dict[str, Any]:
     _require_mutation(request)
     ensure_database_schema()
     try:
-        return execute_approved_investigation(
-            investigation_id,
-            payload.token,
-            requested_by=_operator_name(),
-            settings=get_settings(),
-        )
+        return execute_approved_investigation(investigation_id, payload.token, requested_by=_operator_name(), settings=get_settings())
     except Exception as exc:
         raise HTTPException(status_code=409, detail=f"{type(exc).__name__}: {exc}") from exc
 
