@@ -84,19 +84,25 @@ def classify_command(command: str) -> ActionType:
 
 
 def environment_allows_correction(environment: EnvironmentType) -> bool:
-    """Correções automáticas existem apenas no monitoramento e no treinamento.
+    """Ambientes classificados podem executar correções seguras após aprovação.
 
-    Produção e standby são sempre investigados e recebem propostas. Ambiente
-    desconhecido permanece somente leitura até ser classificado no inventário.
+    Isso NÃO significa correção autônoma. Produção e standby continuam exigindo
+    revisão da segunda IA, token ligado às ações e clique explícito do analista.
+    Ambiente desconhecido permanece somente leitura até ser classificado.
     """
-    return environment in {EnvironmentType.MONITORING, EnvironmentType.TRAINING}
+    return environment in {
+        EnvironmentType.PRODUCTION,
+        EnvironmentType.STANDBY,
+        EnvironmentType.MONITORING,
+        EnvironmentType.TRAINING,
+    }
 
 
 def evaluate_action(action: ActionType, environment: EnvironmentType) -> PolicyDecision:
     if action == ActionType.DATABASE_ACCESS:
         return PolicyDecision(False, False, "Acesso a banco de dados do cliente é proibido.", "CUSTOMER_DATABASE_ACCESS_DENIED")
     if action == ActionType.HOST_REBOOT:
-        return PolicyDecision(False, True, "Reboot nunca é executado pelo agente. Em treinamento, pode apenas ser proposto e exige confirmação humana externa.", "HOST_REBOOT_DENIED")
+        return PolicyDecision(False, True, "Reboot nunca é executado pelo agente. Pode apenas ser proposto e exige execução humana externa.", "HOST_REBOOT_DENIED")
     if action == ActionType.CONTAINER_ADJUSTMENT:
         return PolicyDecision(False, False, "Stop, start, restart, kill ou remoção de container são proibidos.", "CONTAINER_LIFECYCLE_DENIED")
     if action == ActionType.DESTRUCTIVE:
@@ -105,6 +111,11 @@ def evaluate_action(action: ActionType, environment: EnvironmentType) -> PolicyD
         if environment == EnvironmentType.UNKNOWN:
             return PolicyDecision(False, True, "O ambiente precisa ser classificado antes de qualquer alteração.", "UNKNOWN_ENVIRONMENT_CHANGE_DENIED")
         if environment in {EnvironmentType.PRODUCTION, EnvironmentType.STANDBY}:
-            return PolicyDecision(False, True, "Produção e standby permitem investigação e proposta, mas não correção automática.", "PROTECTED_ENVIRONMENT_CHANGE_DENIED")
+            return PolicyDecision(
+                True,
+                True,
+                "Ajuste operacional restrito em produção/standby permitido somente após segunda IA e aprovação explícita do analista, com pós-validação obrigatória.",
+                "PROTECTED_ENVIRONMENT_APPROVED_CHANGE",
+            )
         return PolicyDecision(True, True, "Ajuste operacional restrito autorizado, com aprovação e validação funcional obrigatórias.", "SAFE_ADJUSTMENT_ALLOWED")
     return PolicyDecision(True, False, "Comando somente leitura permitido.", "READ_ONLY_ALLOWED")

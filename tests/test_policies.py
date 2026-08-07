@@ -45,15 +45,25 @@ def test_service_adjustments_require_approval_in_monitoring():
         assert decision.requires_approval
 
 
-def test_changes_are_blocked_in_unknown_production_and_standby():
-    for environment in (EnvironmentType.UNKNOWN, EnvironmentType.PRODUCTION, EnvironmentType.STANDBY):
+def test_unknown_blocks_changes_but_production_and_standby_allow_only_approved_safe_adjustments():
+    unknown = evaluate_action(ActionType.SERVICE_ADJUSTMENT, EnvironmentType.UNKNOWN)
+    assert not unknown.allowed
+    assert unknown.requires_approval
+
+    for environment in (EnvironmentType.PRODUCTION, EnvironmentType.STANDBY):
         decision = evaluate_action(ActionType.SERVICE_ADJUSTMENT, environment)
-        assert not decision.allowed
+        assert decision.allowed
         assert decision.requires_approval
+        assert decision.policy_code == "PROTECTED_ENVIRONMENT_APPROVED_CHANGE"
 
 
-def test_omd_adjustments_are_allowed_only_in_monitoring_or_training():
-    for environment in (EnvironmentType.MONITORING, EnvironmentType.TRAINING):
+def test_omd_adjustments_are_allowed_after_approval_in_classified_environments():
+    for environment in (
+        EnvironmentType.PRODUCTION,
+        EnvironmentType.STANDBY,
+        EnvironmentType.MONITORING,
+        EnvironmentType.TRAINING,
+    ):
         decision = evaluate_action(ActionType.OMD_ADJUSTMENT, environment)
         assert decision.allowed
         assert decision.requires_approval

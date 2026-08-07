@@ -218,7 +218,7 @@ def test_runner_autopilot_accesses_analyzes_and_never_corrects_without_approval(
     }
     assert result["selected_provider"] == "groq"
     assert result["automation"]["mode"] == "safe_autopilot"
-    assert result["automation"]["safety"]["production_changes"] == "blocked"
+    assert result["automation"]["safety"]["production_changes"] == "approval_required"
     assert result["automation"]["human_approval_available"] is True
     correction_phase = result["automation"]["phases"][-1]
     assert correction_phase["status"] == "approval_required"
