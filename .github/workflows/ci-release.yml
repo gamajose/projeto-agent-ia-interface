@@ -233,7 +233,22 @@ jobs:
         env:
           AGENT_DEPLOY_APPROVED_SHA: ${{ env.RELEASE_SHA }}
           AGENT_RELEASE_SHA: ${{ env.RELEASE_SHA }}
-        run: bash deploy/scripts/deploy_release.sh --activate
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHON311_DIR="/opt/agent-ia/venv/bin"
+          if [[ -x "$PYTHON311_DIR/python3" ]]; then
+            export PATH="$PYTHON311_DIR:$PATH"
+          fi
+          python3 - <<'PY'
+          import sys
+          if sys.version_info < (3, 11):
+              raise SystemExit(
+                  "Deploy exige Python >= 3.11; encontrado " + sys.version.split()[0]
+              )
+          print("Python de deploy:", sys.executable, sys.version.split()[0])
+          PY
+          bash deploy/scripts/deploy_release.sh --activate
 
       - name: Instalar e configurar OpenCode integrado
         env:
