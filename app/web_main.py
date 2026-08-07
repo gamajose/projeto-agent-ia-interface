@@ -6,6 +6,7 @@ import uvicorn
 
 from app.main import app
 from app.services.ai_instrumentation import install_ai_instrumentation
+from app.services.codex_provider_instrumentation import install_codex_provider_preflight
 from app.services.ensemble_instrumentation import install_ensemble_reasoning
 from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.multi_host_instrumentation import install_multi_host_instrumentation
@@ -16,6 +17,7 @@ install_operational_tools()
 install_multi_host_instrumentation()
 install_ensemble_reasoning()
 install_project_playbook_instrumentation()
+install_codex_provider_preflight()
 
 from app.web import register_ui
 from app.web_batch import router as batch_router
