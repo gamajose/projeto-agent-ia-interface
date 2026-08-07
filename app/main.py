@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+from importlib.metadata import PackageNotFoundError, version as package_version
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException
@@ -18,7 +19,15 @@ from app.services.runner import run_target
 from app.services.secrets import get_secret, secret_backend_status
 
 
-app = FastAPI(title="Agent IA Infra", version="1.2.2")
+def _application_version() -> str:
+    """Usa a mesma versão empacotada no pyproject para API e smoke test."""
+    try:
+        return package_version("agent-ia-infra")
+    except PackageNotFoundError:
+        return "0.0.0-dev"
+
+
+app = FastAPI(title="Agent IA Infra", version=_application_version())
 
 
 class CheckmkWebhookPayload(BaseModel):
