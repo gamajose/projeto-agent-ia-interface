@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
+from app.services.ansible_project import evidence_context, execute_project_steps
 from app.services.jobs import enqueue_investigation
 from app.services.project_validation import ProjectPlanError, build_project_plan, project_templates
 from app.services.provider_router import resolve_automatic_provider
@@ -57,11 +58,6 @@ def _plan(payload: ProjectPayload, *, discover: bool = True) -> dict[str, Any]:
 
 
 def _plan_snapshot(plan: dict[str, Any]) -> dict[str, Any]:
-    """Retorna à interface somente o que ajuda a acompanhar a execução.
-
-    Os comandos continuam dentro do playbook/motor operacional; a tela não precisa
-    funcionar como uma folha de comandos para o analista copiar e executar.
-    """
     return {
         "plan_id": plan.get("plan_id"),
         "scenario": plan.get("scenario"),
@@ -78,8 +74,6 @@ def _plan_snapshot(plan: dict[str, Any]) -> dict[str, Any]:
 @router.post("/plan")
 def plan_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
     _require_mutation(request)
-    # Mantido para integrações existentes. A interface principal usa /start e já
-    # inicia a investigação depois da descoberta, sem parar numa lista de comandos.
     return _plan(payload, discover=True)
 
 
@@ -120,14 +114,43 @@ def _run_kwargs(
     }
 
 
+def _ansible_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Transforma somente coletas automáticas do plano em tarefas Ansible.
+
+    Etapas manuais e mudanças não entram aqui. O endereço do grupo define em qual
+    servidor a tarefa será executada; os endereços internos continuam sendo
+    descobertos pela própria aplicação antes de montar os testes dependentes.
+    """
+    environment_by_reference = {
+        str(item.get("reference") or ""): str(item.get("environment") or "unknown")
+        for item in plan.get("execution_targets") or []
+    }
+    default_environment = next(iter(environment_by_reference.values()), "unknown")
+    rows: list[dict[str, Any]] = []
+    for group in plan.get("groups") or []:
+        reference = str(group.get("target") or "").strip()
+        if not reference or str(group.get("kind") or "remote") == "manual":
+            continue
+        environment = environment_by_reference.get(reference, default_environment)
+        for item in group.get("items") or []:
+            if item.get("kind") != "command" or not item.get("automated") or not str(item.get("command") or "").strip():
+                continue
+            rows.append(
+                {
+                    "reference": reference,
+                    "environment": environment,
+                    "title": item.get("title"),
+                    "purpose": item.get("purpose"),
+                    "command": item.get("command"),
+                    "automated": True,
+                }
+            )
+    return rows
+
+
 @router.post("/start")
 def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
-    """Descobre o ambiente e já manda a IA executar a validação aplicável.
-
-    O operador informa o IP e, quando quiser, restringe o cenário. Comandos de
-    leitura não voltam para a interface como tarefas manuais: são executados pelo
-    motor da IA. Mudanças continuam separadas em proposta/revisão/aprovação.
-    """
+    """Recebe o IP e executa o processo; não devolve uma folha de comandos."""
     _require_mutation(request)
     settings = get_settings()
     plan = _plan(payload, discover=True)
@@ -137,19 +160,14 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
 
     provider_name, model_name, automatic_selection = _provider_selection(payload, settings)
     queue_mode = settings.agent_execution_mode.strip().casefold() == "queue"
+    ansible_steps = _ansible_steps(plan)
     jobs: list[dict[str, Any]] = []
     executions: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
 
     for item in targets:
         environment = _environment(item.get("environment"))
-        common = _run_kwargs(
-            item,
-            environment,
-            settings,
-            provider_name=provider_name,
-            model_name=model_name,
-        )
+        common = _run_kwargs(item, environment, settings, provider_name=provider_name, model_name=model_name)
         metadata = {
             "source": "project_validation",
             "plan_id": plan["plan_id"],
@@ -161,15 +179,14 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
             "selected_provider": provider_name,
             "selected_model": model_name,
             "discovery_source": (plan.get("discovery") or {}).get("source"),
+            "access_monitor_id": "monitor1",
+            "access_monitor_label": "Monitor 1",
+            "access_monitor_host": settings.ssh_bastion_host,
+            "ansible_steps": ansible_steps,
         }
         try:
             if queue_mode:
-                queued = enqueue_investigation(
-                    str(item["reference"]),
-                    str(item["objective"]),
-                    metadata=metadata,
-                    **common,
-                )
+                queued = enqueue_investigation(str(item["reference"]), str(item["objective"]), metadata=metadata, **common)
                 jobs.append(
                     {
                         "job_id": queued["job_id"],
@@ -182,12 +199,14 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
                 )
                 continue
 
-            result = run_target_tracked(
-                str(item["reference"]),
-                str(item["objective"]),
-                **common,
-            )
+            ansible_evidence, ansible_diagnostics = execute_project_steps(ansible_steps, access_monitor_id="monitor1", settings=settings)
+            objective = str(item["objective"]) + evidence_context(ansible_evidence)
+            result = run_target_tracked(str(item["reference"]), objective, **common)
+            if ansible_evidence:
+                result["evidence"] = [*ansible_evidence, *list(result.get("evidence") or [])]
+            result["ansible"] = ansible_diagnostics
             compact = _compact_result(result)
+            compact["ansible"] = ansible_diagnostics
             executions.append(
                 {
                     "status": "completed",
@@ -219,13 +238,14 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
         "provider_selection": automatic_selection,
         "selected_provider": provider_name,
         "selected_model": model_name,
+        "orchestrator": "ansible" if settings.agent_ansible_enabled else "agent",
         "plan": _plan_snapshot(plan),
         "jobs": jobs,
         "executions": executions,
         "errors": errors,
         "message": (
-            "A IA já iniciou as validações no(s) host(s). Ela executa as coletas e testes de leitura, "
-            "analisa as evidências e apresenta causa provável e proposta. Alterações só seguem depois "
-            "da revisão e aprovação previstas pelas políticas."
+            "A IA iniciou a validação operacional. O Ansible executa automaticamente as coletas previstas pelo playbook, "
+            "as saídas entram como evidência da análise e a IA devolve o diagnóstico. Etapas corretivas continuam sujeitas "
+            "à revisão e aprovação humana."
         ),
     }
