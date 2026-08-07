@@ -18,19 +18,24 @@ def project_blueprint(plan: dict[str, Any], *, reference: str | None = None, inc
 
     O comando permanece apenas no backend para casar a evidência com a etapa. A
     interface recebe uma versão sanitizada sem depender de uma lista de comandos.
+    Quando o resultado é do alvo principal, etapas não automatizadas de outros
+    contextos (ex.: Monitor 1) continuam visíveis como parte da macro.
     """
     rows: list[dict[str, Any]] = []
     for group in plan.get("groups") or []:
         group_reference = str(group.get("target") or "").strip()
         group_kind = str(group.get("kind") or "remote")
-        if reference and group_reference and group_reference != reference:
-            continue
-        if reference and not group_reference and not include_manual:
-            continue
         for item in group.get("items") or []:
             kind = str(item.get("kind") or "manual")
-            if reference and group_kind == "manual" and not include_manual:
-                continue
+            automated = bool(item.get("automated")) and kind == "command"
+            if reference:
+                if not group_reference and not include_manual:
+                    continue
+                if group_reference and group_reference != reference:
+                    if not include_manual or automated:
+                        continue
+                if group_kind == "manual" and not include_manual:
+                    continue
             rows.append(
                 {
                     "id": str(item.get("id") or ""),
@@ -38,7 +43,7 @@ def project_blueprint(plan: dict[str, Any], *, reference: str | None = None, inc
                     "context": str(group.get("label") or item.get("context") or "Ambiente"),
                     "reference": group_reference,
                     "kind": kind,
-                    "automated": bool(item.get("automated")) and kind == "command",
+                    "automated": automated,
                     "command": str(item.get("command") or ""),
                     "purpose": str(item.get("purpose") or ""),
                     "evidence_hint": str(item.get("evidence") or ""),
@@ -167,10 +172,7 @@ def build_project_macro_result(
             found = by_id.get(str(step.get("id") or "")) or by_command.get(
                 (str(step.get("reference") or ""), str(step.get("command") or ""))
             )
-            if found is None:
-                status = "failed"
-            else:
-                status = "completed" if int(found.get("exit_code") or 0) == 0 else "failed"
+            status = "completed" if found is not None and int(found.get("exit_code") or 0) == 0 else "failed"
             checklist.append(
                 {
                     "id": step.get("id"),
@@ -190,7 +192,9 @@ def build_project_macro_result(
                     "notes": list(step.get("notes") or []),
                 }
             )
-        else:
+            continue
+
+        if step.get("id") == "management-classification" and facts.get("management_type") not in {"unknown", "none", ""}:
             checklist.append(
                 {
                     "id": step.get("id"),
@@ -198,14 +202,35 @@ def build_project_macro_result(
                     "context": step.get("context"),
                     "reference": step.get("reference"),
                     "kind": step.get("kind"),
-                    "automated": False,
-                    "status": "manual",
-                    "summary": "Etapa manual prevista na macro.",
-                    "evidence": None,
+                    "automated": True,
+                    "status": "completed",
+                    "summary": _friendly_summary({**step, "id": "management-detect"}, by_id.get("management-detect"), facts),
+                    "evidence": {
+                        "exit_code": (by_id.get("management-detect") or {}).get("exit_code"),
+                        "stdout": _stdout_for("management-detect", by_id),
+                        "stderr": str((by_id.get("management-detect") or {}).get("stderr") or ""),
+                    },
                     "evidence_hint": step.get("evidence_hint"),
                     "notes": list(step.get("notes") or []),
                 }
             )
+            continue
+
+        checklist.append(
+            {
+                "id": step.get("id"),
+                "title": step.get("title"),
+                "context": step.get("context"),
+                "reference": step.get("reference"),
+                "kind": step.get("kind"),
+                "automated": False,
+                "status": "manual",
+                "summary": "Etapa manual prevista na macro.",
+                "evidence": None,
+                "evidence_hint": step.get("evidence_hint"),
+                "notes": list(step.get("notes") or []),
+            }
+        )
 
     completed = sum(item["status"] == "completed" for item in checklist)
     failed = sum(item["status"] == "failed" for item in checklist)
