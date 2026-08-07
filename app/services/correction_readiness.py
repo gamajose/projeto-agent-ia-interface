@@ -121,7 +121,10 @@ def assess_correction_readiness(
 
     automatic_correction = environment_allows_correction(environment)
     if environment in {EnvironmentType.PRODUCTION, EnvironmentType.STANDBY}:
-        policy_message = "Produção e standby recebem proposta e validação, mas não alteração automática."
+        policy_message = (
+            "Produção e standby permitem somente correções operacionais restritas depois da revisão da segunda IA "
+            "e da aprovação explícita do analista; nenhuma alteração é disparada durante a investigação."
+        )
     elif environment == EnvironmentType.MONITORING:
         policy_message = "Ações restritas de monitoramento podem ser executadas após aprovação; reinício da máquina permanece manual."
     elif environment == EnvironmentType.TRAINING:
