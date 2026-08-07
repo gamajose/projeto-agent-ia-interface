@@ -13,6 +13,13 @@ from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.approved_execution import execute_approved_investigation
 from app.services.jobs import enqueue_investigation, get_job
+from app.services.noc_incidents import (
+    apply_investigation_result,
+    attach_job,
+    incident_objective,
+    normalize_checkmk_state,
+    register_checkmk_event,
+)
 from app.services.persistence import get_investigation, operational_metrics
 from app.services.replay import replay_investigation
 from app.services.runner import run_target
@@ -73,6 +80,8 @@ def health() -> dict[str, Any]:
         "worker_pool": settings.agent_worker_name,
         "strict_host_key_checking": settings.ssh_strict_host_key_checking,
         "review_required_for_corrections": settings.ai_reviewer_required_for_corrections,
+        "noc_incident_manager": settings.noc_incident_enabled,
+        "noc_auto_investigate": settings.noc_auto_investigate,
         "secret_backend": secret_backend_status(settings),
     }
 
@@ -86,23 +95,88 @@ def checkmk_webhook(
     webhook_token = get_secret("CHECKMK_WEBHOOK_TOKEN", settings.checkmk_webhook_token, settings=settings)
     _require_token(x_agent_token, webhook_token, "CHECKMK_WEBHOOK_TOKEN")
     ensure_database_schema()
+
+    normalized_state = normalize_checkmk_state(payload.state)
+    incident_event: dict[str, Any] | None = None
+    incident_error: str | None = None
+    if settings.noc_incident_enabled:
+        try:
+            incident_event = register_checkmk_event(
+                host=payload.host,
+                service=payload.service,
+                state=payload.state,
+                output=payload.output,
+                site=payload.site,
+                environment=payload.environment.value,
+                requested_auto_correct=payload.auto_correct,
+                settings=settings,
+            )
+        except Exception as exc:
+            # O supervisor de incidente é uma camada adicional. Se Redis/estado
+            # operacional falhar, o troubleshooting antigo continua disponível.
+            incident_error = f"{type(exc).__name__}: {exc}"
+
+    if incident_event and not incident_event.get("should_investigate", True):
+        return {
+            "incident_action": incident_event.get("action"),
+            "incident": incident_event.get("incident"),
+            "state": normalized_state,
+            "investigation_started": False,
+        }
+
+    # Recuperações nunca abrem troubleshooting novo. Quando o supervisor está
+    # saudável ele já encerrou o incidente acima; em degradação, ainda evitamos
+    # criar uma investigação inútil para um estado OK/UP.
+    if normalized_state["kind"] == "ok":
+        return {
+            "incident_action": "recovery_degraded" if incident_error else "recovery_without_open_incident",
+            "incident": incident_event.get("incident") if incident_event else None,
+            "state": normalized_state,
+            "investigation_started": False,
+            "noc_error": incident_error,
+        }
+
     mode = "correct" if payload.auto_correct and settings.checkmk_webhook_auto_correct else "propose"
-    objective = (
+    incident = dict((incident_event or {}).get("incident") or {})
+    objective = incident_objective(incident) if incident else (
         f"Alerta Checkmk no serviço '{payload.service}', estado {payload.state}. "
         f"Site: {payload.site or 'não informado'}. Saída do alerta: {payload.output}"
     )
+    incident_id = str(incident.get("id") or "") or None
+    metadata = {
+        "source": "checkmk",
+        "site": payload.site,
+        "service": payload.service,
+        "state": payload.state,
+        "noc_incident_id": incident_id,
+        "noc_fingerprint": incident.get("fingerprint"),
+        "noc_flapping": bool(incident.get("flapping")),
+    }
+
     if settings.agent_execution_mode.strip().casefold() == "queue":
         try:
-            return enqueue_investigation(
+            queued = enqueue_investigation(
                 payload.host,
                 objective,
                 environment=payload.environment,
                 mode=mode,
                 approve=False,
                 ssh_port=payload.ssh_port,
-                metadata={"source": "checkmk", "site": payload.site, "service": payload.service, "state": payload.state},
+                metadata=metadata,
                 settings=settings,
             )
+            if incident_id:
+                try:
+                    incident = attach_job(incident_id, str(queued["job_id"]), settings=settings) or incident
+                except Exception as exc:
+                    incident_error = f"{type(exc).__name__}: {exc}"
+            return {
+                **queued,
+                "incident_action": (incident_event or {}).get("action") or "degraded",
+                "incident": incident or None,
+                "investigation_started": True,
+                "noc_error": incident_error,
+            }
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f"fila indisponível: {type(exc).__name__}: {exc}") from exc
 
@@ -120,6 +194,13 @@ def checkmk_webhook(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    if incident_id:
+        try:
+            incident = apply_investigation_result(incident_id, result, settings=settings) or incident
+        except Exception as exc:
+            incident_error = f"{type(exc).__name__}: {exc}"
+
     analysis = result.get("analysis") or {}
     return {
         "investigation_id": result.get("investigation_id"),
@@ -136,6 +217,10 @@ def checkmk_webhook(
         "review": result.get("review"),
         "corrections": result.get("corrections") or [],
         "approval_token": result.get("approval_token"),
+        "incident_action": (incident_event or {}).get("action") or "degraded",
+        "incident": incident or None,
+        "investigation_started": True,
+        "noc_error": incident_error,
     }
 
 
