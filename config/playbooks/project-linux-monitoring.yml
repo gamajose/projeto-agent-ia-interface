@@ -25,17 +25,17 @@ steps:
     purpose: Mapear a interface de gerenciamento quando existir.
   - tool: checkmk.inspect_agent_socket
     purpose: Validar agente e listener local 6556.
-  - command: ping -c 4 10.17.181.1
-    purpose: Validar comunicação ICMP com o Monitor 1.
+  - command: ping -c 4 {{monitor1_ip}}
+    purpose: Validar comunicação ICMP com o Monitor 1 definido no ambiente.
   - tool: network.test_port
-    arguments: {host: "10.17.181.1", port: 6556}
-    purpose: Validar comunicação com o Monitor 1.
+    arguments: {host: "{{monitor1_ip}}", port: 6556}
+    purpose: Validar comunicação com o Monitor 1 definido no ambiente.
   - tool: network.test_port
-    arguments: {host: "10.17.181.44", port: 6557}
-    purpose: Validar comunicação com o Monitor 5 enquanto o listener estiver aberto.
+    arguments: {host: "{{cmk05_ip}}", port: 6557}
+    purpose: Validar comunicação com o Monitor 5 definido no ambiente enquanto o listener estiver aberto.
   - tool: network.test_port
-    arguments: {host: "ws.2comconsulting.com.br", port: 443}
-    purpose: Validar comunicação com a API do WhatsApp.
+    arguments: {host: "{{whatsapp_host}}", port: 443}
+    purpose: Validar comunicação com a API do WhatsApp definida no ambiente.
 allowed_corrections: []
 validation:
   - tool: network.interfaces
