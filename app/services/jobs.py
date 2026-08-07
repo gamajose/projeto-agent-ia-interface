@@ -15,6 +15,7 @@ from app.services.access_monitors import settings_for_access_monitor
 from app.services.ansible_project import evidence_context, execute_project_steps
 from app.services.cancellation import ExecutionCancelled, raise_if_cancelled, use_cancellation
 from app.services.progress import use_progress
+from app.services.project_macro_result import build_project_macro_result
 from app.services.redaction import redact_object
 from app.services.tracked_runner import run_target_tracked
 
@@ -230,6 +231,7 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
         objective = str(job.get("objective") or "")
         ansible_evidence: list[dict[str, Any]] = []
         ansible_diagnostics: dict[str, Any] = {}
+        result: dict[str, Any]
 
         with use_progress(lambda event: _job_phase(client, settings, job_id, event)), use_cancellation(
             lambda: job_cancel_requested(job_id, settings=settings)
@@ -243,7 +245,7 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
                     {
                         "stage": "ansible_project",
                         "status": "running",
-                        "detail": "Ansible está executando automaticamente as validações de leitura do projeto.",
+                        "detail": "Ansible está executando somente as validações previstas na macro do projeto.",
                         "percent": 24,
                     },
                 )
@@ -252,44 +254,71 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
                     access_monitor_id=monitor_id,
                     settings=settings,
                 )
-                objective += evidence_context(ansible_evidence)
 
-            if metadata.get("range_scan"):
-                from app.services.range_investigation import run_range_investigation
-
-                result = run_range_investigation(
-                    str(job["reference"]),
-                    objective,
-                    environment=environment,
-                    mode=str(job.get("mode") or "propose"),
-                    approve=False,
-                    ssh_port=job.get("ssh_port"),
-                    provider_name=selection["provider"],
-                    model_name=selection["model"] or None,
-                    playbook_mode=selection["playbook_mode"],
-                    playbook_id=selection["playbook_id"],
-                    settings=execution_settings,
+            if metadata.get("source") == "project_validation" and metadata.get("project_macro_only"):
+                _job_phase(
+                    client,
+                    settings,
+                    job_id,
+                    {
+                        "stage": "project_macro_result",
+                        "status": "running",
+                        "detail": "Organizando as evidências da macro para o analista.",
+                        "percent": 88,
+                    },
                 )
+                result = build_project_macro_result(
+                    blueprint=list(metadata.get("project_blueprint") or []),
+                    evidence=ansible_evidence,
+                    diagnostics=ansible_diagnostics,
+                    target=dict(metadata.get("project_target") or {"vpn_ip": str(job["reference"])}),
+                    scenario=str(metadata.get("scenario") or ""),
+                    scenario_label=str(metadata.get("scenario_label") or "Validação de projeto"),
+                    ticket_macro=str(metadata.get("ticket_macro") or ""),
+                )
+                raise_if_cancelled("Job cancelado antes da persistência final.")
             else:
-                result = run_target_tracked(
-                    str(job["reference"]),
-                    objective,
-                    environment=environment,
-                    mode=str(job.get("mode") or "propose"),
-                    approve=bool(job.get("approve", False)),
-                    ssh_port=job.get("ssh_port"),
-                    provider_name=selection["provider"],
-                    model_name=selection["model"] or None,
-                    playbook_mode=selection["playbook_mode"],
-                    playbook_id=selection["playbook_id"],
-                    settings=execution_settings,
-                )
-            raise_if_cancelled("Job cancelado antes da persistência final.")
+                if ansible_evidence:
+                    objective += evidence_context(ansible_evidence)
 
-        if ansible_evidence:
-            result["evidence"] = [*ansible_evidence, *list(result.get("evidence") or [])]
-        if ansible_diagnostics:
-            result["ansible"] = ansible_diagnostics
+                if metadata.get("range_scan"):
+                    from app.services.range_investigation import run_range_investigation
+
+                    result = run_range_investigation(
+                        str(job["reference"]),
+                        objective,
+                        environment=environment,
+                        mode=str(job.get("mode") or "propose"),
+                        approve=False,
+                        ssh_port=job.get("ssh_port"),
+                        provider_name=selection["provider"],
+                        model_name=selection["model"] or None,
+                        playbook_mode=selection["playbook_mode"],
+                        playbook_id=selection["playbook_id"],
+                        settings=execution_settings,
+                    )
+                else:
+                    result = run_target_tracked(
+                        str(job["reference"]),
+                        objective,
+                        environment=environment,
+                        mode=str(job.get("mode") or "propose"),
+                        approve=bool(job.get("approve", False)),
+                        ssh_port=job.get("ssh_port"),
+                        provider_name=selection["provider"],
+                        model_name=selection["model"] or None,
+                        playbook_mode=selection["playbook_mode"],
+                        playbook_id=selection["playbook_id"],
+                        settings=execution_settings,
+                    )
+                raise_if_cancelled("Job cancelado antes da persistência final.")
+
+        if metadata.get("source") != "project_validation" or not metadata.get("project_macro_only"):
+            if ansible_evidence:
+                result["evidence"] = [*ansible_evidence, *list(result.get("evidence") or [])]
+            if ansible_diagnostics:
+                result["ansible"] = ansible_diagnostics
+
         current = get_job(job_id, settings=settings) or {}
         payload = {
             **current,
@@ -301,6 +330,7 @@ def _execute_job(job: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
             "investigation_id": result.get("investigation_id"),
             "result": result,
             "range_scan": bool(metadata.get("range_scan")),
+            "project_macro_only": bool(metadata.get("project_macro_only")),
             "access_monitor": {
                 "id": metadata.get("access_monitor_id"),
                 "label": metadata.get("access_monitor_label"),
