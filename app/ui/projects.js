@@ -1,15 +1,16 @@
 (() => {
-  viewMeta.projects = ["VALIDAÇÃO ASSISTIDA", "Projetos"];
+  viewMeta.projects = ["VALIDAÇÃO AUTOMÁTICA", "Projetos"];
 
   const projectState = {
     templates: null,
     plan: null,
-    draftKey: "agent-ui-project-validation-draft-v2",
-    completedKey: "agent-ui-project-validation-completed-v2",
+    results: new Map(),
+    draftKey: "agent-ui-project-validation-draft-v3",
   };
 
   const q = (selector, root = document) => root.querySelector(selector);
   const qa = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   function value(id) {
     return String(q(`#${id}`)?.value || "").trim();
@@ -20,9 +21,9 @@
   }
 
   function normalizeRole(raw) {
-    const value = String(raw || "").trim().toLowerCase();
-    if (["production", "producao", "produção", "prod"].includes(value)) return "production";
-    if (["standby", "std"].includes(value)) return "standby";
+    const normalized = String(raw || "").trim().toLowerCase();
+    if (["production", "producao", "produção", "prod"].includes(normalized)) return "production";
+    if (["standby", "std"].includes(normalized)) return "standby";
     return "server";
   }
 
@@ -82,14 +83,14 @@
     }
 
     const descriptions = {
-      linux_prod_std: "Informe somente se é Produção ou Standby e o IP VPN/TAP. A ferramenta acessa o host e descobre SO, IP interno, hardware e interface de gerenciamento.",
-      linux_monitoring: "Informe o IP VPN/TAP do monitor e, se houver, os IPs VPN dos outros hosts. A ferramenta descobre os IPs internos antes dos testes 6556.",
-      management_interface: "Informe o IP VPN/TAP do servidor físico. A ferramenta descobre fabricante, modelo, iDRAC/iLO/ILOM/xClarity e o IP da controladora com dmidecode/ipmitool.",
-      firewall: "Informe apenas o IP VPN/TAP. A ferramenta identifica o fabricante/versão e valida agente e comunicação.",
-      windows: "O fluxo Windows permanece com Socat/RDP. Se houver monitor do cliente, informe somente o IP VPN dele.",
-      dns_vpn: "Informe o IP VPN/TAP do servidor. O SO é descoberto automaticamente antes de preparar qualquer ajuste de DNS.",
+      linux_prod_std: "Informe o IP VPN/TAP. A IA entra no host, descobre o ambiente e executa automaticamente as validações de leitura do playbook de Produção/Standby.",
+      linux_monitoring: "Informe o IP VPN/TAP do monitor. A IA descobre IPs internos, acessa os hosts relacionados e executa os testes de monitoramento aplicáveis.",
+      management_interface: "Informe o IP VPN/TAP do servidor físico. A IA identifica fabricante, BMC e executa as validações disponíveis sem entregar comandos para copiar.",
+      firewall: "Informe o IP VPN/TAP. A IA identifica o equipamento e executa as coletas e testes seguros aplicáveis.",
+      windows: "Informe o IP VPN/TAP. A IA conduz o fluxo disponível e registra claramente o que depende de acesso Windows/RDP.",
+      dns_vpn: "Informe o IP VPN/TAP. A IA investiga DNS e VPN; qualquer alteração fica como proposta sujeita às políticas de aprovação.",
     };
-    q("#project-scenario-help").textContent = descriptions[scenario] || "Escolha o tipo de validação e informe o IP VPN/TAP.";
+    q("#project-scenario-help").textContent = descriptions[scenario] || "Informe o IP VPN/TAP e execute. Os comandos ficam dentro da IA.";
     saveDraft();
   }
 
@@ -120,49 +121,6 @@
     }
   }
 
-  function completedItems() {
-    try {
-      return new Set(JSON.parse(localStorage.getItem(projectState.completedKey) || "[]"));
-    } catch (_) {
-      return new Set();
-    }
-  }
-
-  function persistCompleted(root) {
-    const ids = qa("[data-project-check]:checked", root).map((input) => input.dataset.projectCheck);
-    localStorage.setItem(projectState.completedKey, JSON.stringify(ids));
-  }
-
-  function kindLabel(item) {
-    if (item.kind === "change") return "alteração manual";
-    if (item.kind === "listener") return "terminal aberto";
-    if (item.kind === "manual") return "manual";
-    if (item.automated) return "coleta pela IA";
-    return "comando assistido";
-  }
-
-  function itemMarkup(item, completed) {
-    const notes = (item.notes || []).length
-      ? `<ul class="project-item-notes">${item.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>`
-      : "";
-    const command = item.command
-      ? `<div class="project-command"><pre>${escapeHtml(item.command)}</pre><button type="button" class="ghost-button project-copy-command" data-command="${escapeHtml(item.command)}">Copiar</button></div>`
-      : "";
-    const approval = item.approval_required
-      ? '<p class="project-approval-warning">Não será executado automaticamente. Exige revisão e autorização.</p>'
-      : "";
-    return `<article class="project-step ${item.kind}" data-project-item="${escapeHtml(item.id)}">
-      <label class="project-step-check"><input type="checkbox" data-project-check="${escapeHtml(item.id)}"${completed.has(item.id) ? " checked" : ""}><span></span></label>
-      <div class="project-step-body">
-        <div class="project-step-head"><div><h4>${escapeHtml(item.title)}</h4><p>${escapeHtml(item.purpose)}</p></div><span class="project-kind ${escapeHtml(item.kind)}">${escapeHtml(kindLabel(item))}</span></div>
-        ${command}
-        ${approval}
-        ${notes}
-        <div class="project-evidence"><strong>Evidência:</strong> ${escapeHtml(item.evidence)}</div>
-      </div>
-    </article>`;
-  }
-
   function managementLabel(facts) {
     const labels = { idrac: "iDRAC", ilo: "iLO", ilom: "ILOM", xclarity: "xClarity", unknown: "Não identificada", none: "Não identificada" };
     const type = labels[facts?.management_type] || facts?.management_type || "Não identificada";
@@ -188,114 +146,175 @@
   }
 
   function discoveryMarkup(plan) {
-    const discovery = plan.discovery || {};
-    const target = discoveryCard(plan.target?.name || "Alvo", discovery.target || {});
+    const discovery = plan?.discovery || {};
+    const target = discoveryCard(plan?.target?.name || "Alvo", discovery.target || {});
     const monitor = discovery.monitoring_server ? discoveryCard("Servidor de monitoramento", discovery.monitoring_server) : "";
     const related = (discovery.related_hosts || []).map((item, index) => discoveryCard(`Host relacionado ${index + 1}`, item, item.role || "")).join("");
     if (!target && !monitor && !related) return "";
-    return `<section class="project-discovery"><div class="project-discovery-title"><p class="eyebrow">DESCOBERTA AUTOMÁTICA</p><h3>Dados obtidos pela própria ferramenta</h3><p>Esses dados não são pedidos no formulário. A ferramenta acessa os IPs VPN e coleta o ambiente.</p></div><div class="project-discovery-grid">${target}${monitor}${related}</div></section>`;
+    return `<section class="project-discovery"><div class="project-discovery-title"><p class="eyebrow">DESCOBERTA AUTOMÁTICA</p><h3>O que a IA encontrou antes da análise profunda</h3><p>Esses dados foram coletados pela própria aplicação a partir do IP informado.</p></div><div class="project-discovery-grid">${target}${monitor}${related}</div></section>`;
   }
 
-  function renderPlan(plan) {
-    projectState.plan = plan;
-    const root = q("#project-plan");
-    const completed = completedItems();
-    const warnings = (plan.warnings || []).length
-      ? `<div class="project-warnings">${plan.warnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div>`
+  function statusLabel(status) {
+    const labels = {
+      queued: "Na fila",
+      running: "Executando",
+      cancelling: "Cancelando",
+      completed: "Concluído",
+      failed: "Falhou",
+      cancelled: "Cancelado",
+    };
+    return labels[status] || status || "Aguardando";
+  }
+
+  function analysisMarkup(result) {
+    const analysis = result?.analysis || {};
+    const recommendations = analysis.recommendations || [];
+    const cause = analysis.probable_cause || "A IA ainda não confirmou uma causa provável.";
+    const conclusion = analysis.conclusion || analysis.summary || "Análise concluída.";
+    const approval = result?.approval_token
+      ? '<button type="button" class="primary-button project-review-result">Revisar proposta e aprovar</button>'
       : "";
-    const groups = (plan.groups || []).map((group) => `<section class="project-context-card">
-      <header><div><p class="eyebrow">ONDE EXECUTAR</p><h3>${escapeHtml(group.label)}</h3>${group.target ? `<span>${escapeHtml(group.target)}</span>` : ""}</div><span class="project-context-kind">${escapeHtml(group.kind === "manual" ? "manual" : "terminal")}</span></header>
-      <div class="project-steps">${group.items.map((item) => itemMarkup(item, completed)).join("")}</div>
-    </section>`).join("");
-
-    root.innerHTML = `<div class="project-plan-summary">
-      <div><p class="eyebrow">PLANO GERADO</p><h2>${escapeHtml(plan.scenario_label)}</h2><p>Alvo VPN/TAP: ${escapeHtml(plan.target.vpn_ip)}</p></div>
-      <div class="project-summary-metrics"><span><b>${escapeHtml(plan.summary.total_steps)}</b> etapas</span><span><b>${escapeHtml(plan.summary.automatic_read_only_steps)}</b> coletas IA</span><span><b>${escapeHtml(plan.summary.change_steps)}</b> alterações manuais</span></div>
-    </div>
-    ${discoveryMarkup(plan)}
-    ${warnings}
-    <div class="project-safety-note"><strong>Escopo automático:</strong> ${escapeHtml(plan.safety.automatic_scope)} <strong>Fora do automático:</strong> ${escapeHtml(plan.safety.manual_scope)}<br><strong>Infraestrutura:</strong> ${escapeHtml(plan.safety.credentials)}</div>
-    <div class="project-plan-actions"><button type="button" class="primary-button" id="project-start-ai">Continuar validação com a IA</button><button type="button" class="secondary-button" id="project-copy-all">Copiar comandos</button><button type="button" class="secondary-button" id="project-copy-macro">Copiar macro</button></div>
-    <div class="project-context-list">${groups}</div>
-    <section class="project-macro-card"><div><p class="eyebrow">TEXTO DO TICKET</p><h3>Macro preparada com o que foi descoberto</h3></div><pre id="project-ticket-macro">${escapeHtml(plan.ticket_macro)}</pre></section>
-    <div id="project-jobs" class="project-jobs" hidden></div>`;
-    root.hidden = false;
-
-    qa("[data-project-check]", root).forEach((input) => input.addEventListener("change", () => persistCompleted(root)));
-    qa(".project-copy-command", root).forEach((button) => button.addEventListener("click", () => copyText(button.dataset.command, "Comando copiado.")));
-    q("#project-copy-all")?.addEventListener("click", copyAllCommands);
-    q("#project-copy-macro")?.addEventListener("click", () => copyText(plan.ticket_macro, "Macro copiada."));
-    q("#project-start-ai")?.addEventListener("click", startProject);
-    root.scrollIntoView({ behavior: "smooth", block: "start" });
+    return `<div class="project-job-result">
+      <div class="project-result-line"><strong>Status</strong><span>${escapeHtml(labelStatus(analysis.status || result?.status || "inconclusive"))} · ${escapeHtml(analysis.confidence ?? result?.confidence ?? 0)}%</span></div>
+      <div class="project-result-block"><strong>Causa provável</strong><p>${escapeHtml(cause)}</p></div>
+      <div class="project-result-block"><strong>Conclusão</strong><p>${escapeHtml(conclusion)}</p></div>
+      ${recommendations.length ? `<div class="project-result-block"><strong>Próximas ações</strong><ul>${recommendations.slice(0, 6).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>` : ""}
+      <div class="project-result-actions">${approval}${result?.investigation_id ? '<button type="button" class="secondary-button project-open-investigation">Ver evidências</button>' : ""}</div>
+    </div>`;
   }
 
-  async function copyText(text, message) {
-    try {
-      await navigator.clipboard.writeText(String(text || ""));
-      toast(message);
-    } catch (_) {
-      toast("Não foi possível copiar automaticamente.", "error");
+  function jobCard(meta) {
+    return `<article class="project-job-card" data-project-job="${escapeHtml(meta.job_id || meta.investigation_id || meta.reference)}" data-state="${escapeHtml(meta.status || "queued")}">
+      <div class="project-job-card-head"><div><span class="pulse-dot"></span><strong>${escapeHtml(meta.label || meta.reference)}</strong></div><span class="project-job-status">${escapeHtml(statusLabel(meta.status))}</span></div>
+      <p>${escapeHtml(meta.reference)} · ${escapeHtml(meta.environment || "unknown")}</p>
+      <div class="project-job-progress"><span style="width:${meta.status === "completed" ? 100 : 4}%"></span></div>
+      <small class="project-job-phase">${meta.status === "completed" ? "Validação concluída." : "A IA vai executar os testes do playbook e analisar as saídas."}</small>
+      <div class="project-job-output"></div>
+    </article>`;
+  }
+
+  function findJobCard(key) {
+    return qa("[data-project-job]", q("#project-plan")).find((element) => element.dataset.projectJob === String(key));
+  }
+
+  function bindResultActions(card, result) {
+    q(".project-review-result", card)?.addEventListener("click", () => {
+      if (typeof showResult === "function") showResult(result);
+    });
+    q(".project-open-investigation", card)?.addEventListener("click", () => {
+      if (result?.investigation_id && typeof openInvestigation === "function") openInvestigation(result.investigation_id);
+    });
+  }
+
+  function updateJobCard(key, job) {
+    const card = findJobCard(key);
+    if (!card) return;
+    const status = job.status || "running";
+    card.dataset.state = status;
+    q(".project-job-status", card).textContent = statusLabel(status);
+    const percent = Math.max(0, Math.min(100, Number(job.percent ?? (status === "completed" ? 100 : 8))));
+    q(".project-job-progress span", card).style.width = `${percent}%`;
+    const phase = job.current_phase || {};
+    q(".project-job-phase", card).textContent = phase.detail || (status === "completed" ? "Coleta, análise e persistência concluídas." : statusLabel(status));
+    const output = q(".project-job-output", card);
+
+    if (status === "completed" && job.result) {
+      const result = job.result;
+      projectState.results.set(String(key), result);
+      output.innerHTML = analysisMarkup(result);
+      bindResultActions(card, result);
+    } else if (status === "failed") {
+      output.innerHTML = `<p class="project-job-error">${escapeHtml(job.error || "A execução falhou sem detalhe adicional.")}</p>`;
+    } else if (status === "cancelled") {
+      output.innerHTML = '<p class="project-job-error">Execução cancelada.</p>';
     }
   }
 
-  function copyAllCommands() {
-    if (!projectState.plan) return;
-    const sections = [];
-    (projectState.plan.groups || []).forEach((group) => {
-      const commands = group.items.filter((item) => item.command).map((item) => `# ${item.title}\n${item.command}`);
-      if (commands.length) sections.push(`## ${group.label}${group.target ? ` — ${group.target}` : ""}\n${commands.join("\n\n")}`);
+  function renderExecution(response) {
+    projectState.plan = response.plan || null;
+    projectState.results.clear();
+    const root = q("#project-plan");
+    const plan = response.plan || {};
+    const warnings = (plan.warnings || []).length
+      ? `<div class="project-warnings">${plan.warnings.map((warning) => `<p>⚠ ${escapeHtml(warning)}</p>`).join("")}</div>`
+      : "";
+    const metas = [
+      ...(response.jobs || []),
+      ...(response.executions || []).map((item) => ({ ...item, job_id: item.investigation_id || item.reference })),
+    ];
+    const errors = (response.errors || []).map((item) => `<p class="project-job-error"><strong>${escapeHtml(item.label || item.reference)}</strong>: ${escapeHtml(item.error)}</p>`).join("");
+
+    root.innerHTML = `<div class="project-plan-summary">
+      <div><p class="eyebrow">IA EM EXECUÇÃO</p><h2>${escapeHtml(plan.scenario_label || "Validação automática")}</h2><p>Alvo VPN/TAP: ${escapeHtml(plan.target?.vpn_ip || value("project-target-vpn"))}</p></div>
+      <div class="project-summary-metrics"><span><b>${escapeHtml(metas.length)}</b> investigação(ões)</span><span><b>${escapeHtml(plan.summary?.automatic_read_only_steps ?? "—")}</b> coletas previstas</span><span><b>0</b> comandos para copiar</span></div>
+    </div>
+    ${discoveryMarkup(plan)}
+    ${warnings}
+    <div class="project-safety-note"><strong>Execução:</strong> a IA executa coletas e testes de leitura automaticamente. <strong>Alterações:</strong> permanecem como proposta e só avançam quando as políticas permitirem e houver revisão/aprovação.</div>
+    <section class="project-jobs"><div class="project-jobs-head"><div><p class="eyebrow">EXECUÇÃO OPERACIONAL</p><h3>A IA está fazendo o trabalho</h3><p>${escapeHtml(response.message || "Validação iniciada.")}</p></div></div><div class="project-job-grid">${metas.map(jobCard).join("")}</div>${errors}</section>
+    ${plan.ticket_macro ? `<section class="project-macro-card"><div><p class="eyebrow">TEXTO DO TICKET</p><h3>Macro de apoio</h3></div><pre id="project-ticket-macro">${escapeHtml(plan.ticket_macro)}</pre></section>` : ""}`;
+    root.hidden = false;
+    root.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    (response.executions || []).forEach((item) => {
+      const key = item.investigation_id || item.reference;
+      updateJobCard(key, { status: "completed", percent: 100, result: item.result, current_phase: { detail: "Validação executada diretamente pela IA." } });
     });
-    copyText(sections.join("\n\n"), "Comandos do plano copiados.");
+  }
+
+  async function pollJob(meta) {
+    const key = meta.job_id;
+    for (;;) {
+      let job;
+      try {
+        job = await api(`/ui/api/jobs/${encodeURIComponent(meta.job_id)}`);
+      } catch (error) {
+        updateJobCard(key, { status: "failed", error: error.message });
+        return "failed";
+      }
+      updateJobCard(key, job);
+      if (["completed", "failed", "cancelled"].includes(job.status)) return job.status;
+      await wait(1400);
+    }
+  }
+
+  async function pollProjectJobs(response) {
+    const jobs = response.jobs || [];
+    if (!jobs.length) return [];
+    const statuses = await Promise.all(jobs.map(pollJob));
+    const completed = statuses.filter((status) => status === "completed").length;
+    const failed = statuses.filter((status) => status === "failed").length;
+    q("#project-form-status").textContent = `Execução finalizada: ${completed} concluída(s)${failed ? `, ${failed} com falha` : ""}.`;
+    return statuses;
   }
 
   function setPlanning(active) {
     const button = q("#project-generate");
     if (!button) return;
     button.disabled = active;
-    button.textContent = active ? "Acessando IP VPN e descobrindo ambiente..." : "Acessar e montar validação";
+    button.textContent = active ? "IA acessando e executando..." : "Executar validação com IA";
   }
 
-  async function generatePlan(event) {
+  async function executeProject(event) {
     event?.preventDefault();
     setPlanning(true);
-    q("#project-form-status").textContent = "Conectando pelo fluxo VPN já configurado e coletando SO, interfaces, hardware e gerenciamento...";
+    q("#project-form-status").textContent = "A IA está acessando o IP, descobrindo o ambiente e executando as validações. Você não precisa copiar nenhum comando.";
     try {
-      const plan = await api("/ui/api/projects/plan", { method: "POST", body: payload() });
-      renderPlan(plan);
-      q("#project-form-status").textContent = "Pré-descoberta concluída. Revise as evidências e continue com a IA quando desejar.";
-      toast("Ambiente acessado e plano montado com os dados descobertos.");
+      const response = await api("/ui/api/projects/start", { method: "POST", body: payload() });
+      renderExecution(response);
       saveDraft();
+      if (response.execution_mode === "queue") {
+        toast(`${response.jobs.length} investigação(ões) iniciada(s). A IA vai executar e analisar automaticamente.`);
+        await pollProjectJobs(response);
+      } else {
+        q("#project-form-status").textContent = `${response.executions.length} validação(ões) executada(s) diretamente pela IA.`;
+        toast("Validação executada pela IA. Revise a causa e a proposta no resultado.");
+      }
     } catch (error) {
       q("#project-form-status").textContent = error.message;
       toast(error.message, "error");
     } finally {
       setPlanning(false);
-    }
-  }
-
-  function renderJobs(response) {
-    const root = q("#project-jobs");
-    const errors = (response.errors || []).map((item) => `<p class="project-job-error"><strong>${escapeHtml(item.label || item.reference)}</strong>: ${escapeHtml(item.error)}</p>`).join("");
-    root.innerHTML = `<div class="project-jobs-head"><div><p class="eyebrow">FILA OPERACIONAL</p><h3>Validações iniciadas</h3><p>${escapeHtml(response.message)}</p></div></div>
-      <div class="project-job-grid">${(response.jobs || []).map((job) => `<article><span class="pulse-dot"></span><div><strong>${escapeHtml(job.label || job.reference)}</strong><p>${escapeHtml(job.reference)} · ${escapeHtml(job.environment)}</p><code>${escapeHtml(job.job_id)}</code></div></article>`).join("")}</div>${errors}`;
-    root.hidden = false;
-    root.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-
-  async function startProject() {
-    const button = q("#project-start-ai");
-    if (!button) return;
-    button.disabled = true;
-    button.textContent = "Enfileirando validações...";
-    try {
-      const response = await api("/ui/api/projects/start", { method: "POST", body: payload() });
-      renderJobs(response);
-      toast(`${response.jobs.length} validação(ões) enviada(s) ao worker.`);
-    } catch (error) {
-      toast(error.message, "error");
-    } finally {
-      button.disabled = false;
-      button.textContent = "Continuar validação com a IA";
     }
   }
 
@@ -310,7 +329,7 @@
   }
 
   function bind() {
-    q("#project-form")?.addEventListener("submit", generatePlan);
+    q("#project-form")?.addEventListener("submit", executeProject);
     q("#project-scenario")?.addEventListener("change", refreshScenario);
     q("#project-has-monitor")?.addEventListener("change", refreshScenario);
     qa("#project-form input, #project-form select, #project-form textarea").forEach((element) => {
@@ -320,12 +339,12 @@
     q("#project-clear")?.addEventListener("click", () => {
       q("#project-form").reset();
       localStorage.removeItem(projectState.draftKey);
-      localStorage.removeItem(projectState.completedKey);
+      projectState.results.clear();
       q("#project-plan").hidden = true;
       q("#project-plan").innerHTML = "";
       q("#project-form-status").textContent = "";
       refreshScenario();
-      toast("Rascunho da validação limpo.");
+      toast("Dados da validação limpos.");
     });
   }
 
