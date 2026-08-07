@@ -7,12 +7,15 @@ from pydantic import BaseModel, Field
 
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
-from app.services.ansible_project import evidence_context, execute_project_steps
+from app.services.ansible_project import execute_project_steps
 from app.services.jobs import enqueue_investigation
+from app.services.project_macro_result import (
+    build_project_macro_result,
+    project_blueprint,
+    public_checklist,
+)
 from app.services.project_validation import ProjectPlanError, build_project_plan, project_templates
-from app.services.provider_router import resolve_automatic_provider
-from app.services.tracked_runner import run_target_tracked
-from app.web import _compact_result, _require_access, _require_mutation
+from app.web import _require_access, _require_mutation
 
 
 router = APIRouter(prefix="/ui/api/projects", tags=["interface-projects"])
@@ -57,26 +60,6 @@ def _plan(payload: ProjectPayload, *, discover: bool = True) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _plan_snapshot(plan: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "plan_id": plan.get("plan_id"),
-        "scenario": plan.get("scenario"),
-        "scenario_label": plan.get("scenario_label"),
-        "target": plan.get("target") or {},
-        "discovery": plan.get("discovery") or {},
-        "warnings": plan.get("warnings") or [],
-        "summary": plan.get("summary") or {},
-        "safety": plan.get("safety") or {},
-        "ticket_macro": plan.get("ticket_macro"),
-    }
-
-
-@router.post("/plan")
-def plan_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
-    _require_mutation(request)
-    return _plan(payload, discover=True)
-
-
 def _environment(value: Any) -> EnvironmentType:
     try:
         return EnvironmentType(str(value or "unknown"))
@@ -84,43 +67,14 @@ def _environment(value: Any) -> EnvironmentType:
         return EnvironmentType.UNKNOWN
 
 
-def _provider_selection(payload: ProjectPayload, settings: Any) -> tuple[str, str | None, dict[str, Any] | None]:
-    requested = (payload.provider or "auto").strip().lower()
-    requested_model = (payload.model or "").strip() or None
-    if requested != "auto":
-        return requested, requested_model, None
-    selection = resolve_automatic_provider(settings)
-    return selection.provider, selection.model, selection.as_dict()
-
-
-def _run_kwargs(
-    item: dict[str, Any],
-    environment: EnvironmentType,
-    settings: Any,
-    *,
-    provider_name: str,
-    model_name: str | None,
-) -> dict[str, Any]:
-    return {
-        "environment": environment,
-        "mode": "propose",
-        "approve": False,
-        "ssh_port": int(item.get("ssh_port") or 22),
-        "provider_name": provider_name,
-        "model_name": model_name,
-        "playbook_mode": "manual",
-        "playbook_id": str(item["playbook_id"]),
-        "settings": settings,
-    }
-
-
-def _needs_sudo(command: str) -> bool:
-    normalized = command.strip().casefold()
-    return normalized.startswith("dmidecode ") or normalized.startswith("ipmitool ")
+def _needs_sudo(item: dict[str, Any]) -> bool:
+    step_id = str(item.get("id") or "")
+    command = str(item.get("command") or "").strip().casefold()
+    return step_id in {"root-access", "hardware", "management-detect"} or command.startswith("dmidecode ") or command.startswith("ipmitool ")
 
 
 def _ansible_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:
-    """Transforma somente coletas automáticas do plano em tarefas Ansible."""
+    """Transforma somente as validações automáticas da macro em tarefas Ansible."""
     environment_by_reference = {
         str(item.get("reference") or ""): str(item.get("environment") or "unknown")
         for item in plan.get("execution_targets") or []
@@ -138,25 +92,48 @@ def _ansible_steps(plan: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             rows.append(
                 {
+                    "id": item.get("id"),
                     "reference": reference,
                     "environment": environment,
                     "title": item.get("title"),
                     "purpose": item.get("purpose"),
                     "command": command,
-                    "sudo": _needs_sudo(command),
+                    "sudo": _needs_sudo(item),
                     "automated": True,
                 }
             )
     return rows
 
 
+def _plan_snapshot(plan: dict[str, Any]) -> dict[str, Any]:
+    blueprint = project_blueprint(plan)
+    return {
+        "plan_id": plan.get("plan_id"),
+        "scenario": plan.get("scenario"),
+        "scenario_label": plan.get("scenario_label"),
+        "target": plan.get("target") or {},
+        "warnings": plan.get("warnings") or [],
+        "summary": plan.get("summary") or {},
+        "safety": plan.get("safety") or {},
+        "ticket_macro": plan.get("ticket_macro"),
+        "checklist": public_checklist(blueprint),
+    }
+
+
+@router.post("/plan")
+def plan_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
+    _require_mutation(request)
+    return _plan(payload, discover=True)
+
+
 @router.post("/start")
 def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
-    """Recebe o IP e executa o processo; não devolve uma folha de comandos.
+    """Executa exclusivamente a macro de projeto.
 
-    Quando a execução é em fila, a descoberta não abre uma sessão SSH separada
-    no processo web. O worker assume a coleta inteira para evitar reconexões
-    desnecessárias ao Monitor e ao servidor cliente.
+    Esta rota não inicia troubleshooting, não procura causa raiz e não gera
+    proposta corretiva. Projetos é um checklist operacional: executa o que pode
+    ser automatizado, preserva as saídas para print e marca o restante como
+    manual/pendente conforme a macro.
     """
     _require_mutation(request)
     settings = get_settings()
@@ -164,30 +141,28 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
     plan = _plan(payload, discover=not queue_mode)
     targets = list(plan.get("execution_targets") or [])
     if not targets:
-        raise HTTPException(status_code=422, detail="o plano não possui alvo elegível para validação automática")
+        raise HTTPException(status_code=422, detail="a macro não possui alvo elegível para validação")
 
-    provider_name, model_name, automatic_selection = _provider_selection(payload, settings)
     all_ansible_steps = _ansible_steps(plan)
     jobs: list[dict[str, Any]] = []
     executions: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
 
-    for item in targets:
+    for index, item in enumerate(targets):
         reference = str(item["reference"])
         environment = _environment(item.get("environment"))
-        common = _run_kwargs(item, environment, settings, provider_name=provider_name, model_name=model_name)
         target_ansible_steps = [step for step in all_ansible_steps if str(step.get("reference")) == reference]
+        blueprint = project_blueprint(plan, reference=reference, include_manual=index == 0)
         metadata = {
             "source": "project_validation",
+            "project_macro_only": True,
             "plan_id": plan["plan_id"],
             "scenario": plan["scenario"],
+            "scenario_label": plan["scenario_label"],
             "target_label": item.get("label"),
-            "automatic_scope": "execute_read_only_then_propose",
-            "input_contract": "vpn_ip_first",
-            "requested_provider": (payload.provider or "auto").strip().lower(),
-            "selected_provider": provider_name,
-            "selected_model": model_name,
-            "discovery_source": (plan.get("discovery") or {}).get("source"),
+            "project_target": {"name": item.get("label"), "vpn_ip": reference},
+            "ticket_macro": plan.get("ticket_macro") or "",
+            "project_blueprint": blueprint,
             "access_monitor_id": "monitor1",
             "access_monitor_label": "Monitor 1",
             "access_monitor_host": settings.ssh_bastion_host,
@@ -195,40 +170,50 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
         }
         try:
             if queue_mode:
-                queued = enqueue_investigation(reference, str(item["objective"]), metadata=metadata, **common)
+                queued = enqueue_investigation(
+                    reference,
+                    f"Executar somente a macro de projeto {plan['scenario_label']}.",
+                    environment=environment,
+                    mode="investigate",
+                    approve=False,
+                    ssh_port=int(item.get("ssh_port") or 22),
+                    playbook_mode="none",
+                    playbook_id=None,
+                    metadata=metadata,
+                    settings=settings,
+                )
                 jobs.append(
                     {
                         "job_id": queued["job_id"],
                         "status": queued["status"],
                         "reference": reference,
                         "label": item.get("label"),
-                        "playbook_id": item["playbook_id"],
                         "environment": environment.value,
                     }
                 )
                 continue
 
-            ansible_evidence, ansible_diagnostics = execute_project_steps(
+            evidence, diagnostics = execute_project_steps(
                 target_ansible_steps,
                 access_monitor_id="monitor1",
                 settings=settings,
             )
-            objective = str(item["objective"]) + evidence_context(ansible_evidence)
-            result = run_target_tracked(reference, objective, **common)
-            if ansible_evidence:
-                result["evidence"] = [*ansible_evidence, *list(result.get("evidence") or [])]
-            result["ansible"] = ansible_diagnostics
-            compact = _compact_result(result)
-            compact["ansible"] = ansible_diagnostics
+            result = build_project_macro_result(
+                blueprint=blueprint,
+                evidence=evidence,
+                diagnostics=diagnostics,
+                target={"name": item.get("label"), "vpn_ip": reference},
+                scenario=str(plan["scenario"]),
+                scenario_label=str(plan["scenario_label"]),
+                ticket_macro=str(plan.get("ticket_macro") or ""),
+            )
             executions.append(
                 {
                     "status": "completed",
                     "reference": reference,
                     "label": item.get("label"),
-                    "playbook_id": item["playbook_id"],
                     "environment": environment.value,
-                    "investigation_id": result.get("investigation_id"),
-                    "result": compact,
+                    "result": result,
                 }
             )
         except Exception as exc:
@@ -241,24 +226,21 @@ def start_project(payload: ProjectPayload, request: Request) -> dict[str, Any]:
             )
 
     if not jobs and not executions:
-        detail = errors[0]["error"] if errors else "nenhuma execução iniciada"
-        raise HTTPException(status_code=503, detail=f"nenhuma validação foi executada: {detail}")
+        detail = errors[0]["error"] if errors else "nenhuma validação iniciada"
+        raise HTTPException(status_code=503, detail=f"a macro não pôde ser executada: {detail}")
 
     return {
         "plan_id": plan["plan_id"],
         "scenario": plan["scenario"],
         "execution_mode": "queue" if queue_mode else "inline",
-        "provider_selection": automatic_selection,
-        "selected_provider": provider_name,
-        "selected_model": model_name,
         "orchestrator": "ansible" if settings.agent_ansible_enabled else "agent",
         "plan": _plan_snapshot(plan),
         "jobs": jobs,
         "executions": executions,
         "errors": errors,
         "message": (
-            "A IA iniciou a validação operacional. O worker abre o acesso ao cliente somente quando precisa executar a coleta; "
-            "o Ansible agrupa as validações do mesmo alvo em uma única sessão SSH, preserva as saídas como evidência e a IA "
-            "devolve o diagnóstico. Etapas corretivas continuam sujeitas à revisão e aprovação humana."
+            "Executando somente as validações previstas na macro do projeto. "
+            "As etapas automáticas são coletadas pelo Ansible e as etapas realmente manuais ficam marcadas para o analista. "
+            "Esta tela não inicia investigação de causa raiz nem proposta de correção."
         ),
     }
