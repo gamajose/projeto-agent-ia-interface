@@ -143,7 +143,7 @@ def test_preflight_all_uses_quick_catalog_by_default():
     ) as provider:
         result = preflight_all(_settings())
 
-    assert len(result) == 5
+    assert len(result) == 6
     assert all(call.kwargs["quick"] is True for call in provider.call_args_list)
 
 
