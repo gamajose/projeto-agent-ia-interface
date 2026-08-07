@@ -121,6 +121,7 @@ jobs:
         run: |
           bash -n deploy/scripts/deploy_release.sh
           bash deploy/scripts/deploy_release.sh --help >/dev/null
+          bash -n deploy/scripts/migrate_legacy_services.sh
           bash -n deploy/scripts/bootstrap_opencode.sh
 
       - name: Executar testes
@@ -248,7 +249,14 @@ jobs:
               )
           print("Python de deploy:", sys.executable, sys.version.split()[0])
           PY
-          bash deploy/scripts/deploy_release.sh --activate
+
+          LEGACY_STATE="/tmp/agent-ia-legacy-${RELEASE_SHA}.state"
+          bash deploy/scripts/migrate_legacy_services.sh --stop "$LEGACY_STATE"
+          if ! bash deploy/scripts/deploy_release.sh --activate; then
+            bash deploy/scripts/migrate_legacy_services.sh --restore "$LEGACY_STATE" || true
+            exit 1
+          fi
+          bash deploy/scripts/migrate_legacy_services.sh --disable "$LEGACY_STATE"
 
       - name: Instalar e configurar OpenCode integrado
         env:
