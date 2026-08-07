@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -35,8 +35,15 @@ def ansible_status(settings: Settings | None = None) -> dict[str, Any]:
     return {"enabled": True, "available": True, "binary": binary, "detail": "Ansible disponível para orquestração dos playbooks de projeto."}
 
 
-def _encoded(command: str) -> str:
-    return base64.urlsafe_b64encode(command.encode("utf-8")).decode("ascii")
+def _group_steps(steps: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for item in steps:
+        reference = str(item.get("reference") or "").strip()
+        environment = str(item.get("environment") or "unknown").strip() or "unknown"
+        if not reference:
+            continue
+        grouped[(reference, environment)].append(dict(item))
+    return grouped
 
 
 def execute_project_steps(
@@ -50,43 +57,43 @@ def execute_project_steps(
     if not status["available"]:
         return [], status
     safe_steps = [
-        item
+        dict(item)
         for item in steps
         if str(item.get("command") or "").strip()
         and str(item.get("reference") or "").strip()
         and bool(item.get("automated", True))
     ]
     if not safe_steps:
-        return [], {**status, "executed": 0, "detail": "Nenhuma coleta Ansible aplicável ao alvo."}
+        return [], {**status, "executed": 0, "requested": 0, "connections_requested": 0, "detail": "Nenhuma coleta Ansible aplicável ao alvo."}
 
+    grouped = _group_steps(safe_steps)
     with tempfile.TemporaryDirectory(prefix="agent-ansible-project-") as temporary:
         root = Path(temporary)
         tasks: list[dict[str, Any]] = []
         outputs: list[Path] = []
-        for index, item in enumerate(safe_steps):
-            output = root / f"step-{index:03d}.json"
-            outputs.append(output)
+        for index, ((reference, environment_name), batch_steps) in enumerate(grouped.items()):
+            input_path = root / f"batch-{index:03d}-steps.json"
+            output_path = root / f"batch-{index:03d}-result.json"
+            input_path.write_text(json.dumps(batch_steps, ensure_ascii=False), encoding="utf-8")
+            outputs.append(output_path)
             argv = [
                 sys.executable,
                 "-m",
-                "app.services.ansible_remote_exec",
+                "app.services.ansible_remote_batch",
                 "--reference",
-                str(item["reference"]),
+                reference,
                 "--environment",
-                str(item.get("environment") or "unknown"),
-                "--command-b64",
-                _encoded(str(item["command"])),
-                "--purpose",
-                str(item.get("purpose") or item.get("title") or "validação de projeto"),
+                environment_name,
+                "--steps-file",
+                str(input_path),
                 "--monitor-id",
                 access_monitor_id,
+                "--output",
+                str(output_path),
             ]
-            if item.get("sudo"):
-                argv.append("--sudo")
-            argv.extend(["--output", str(output)])
             tasks.append(
                 {
-                    "name": str(item.get("title") or item.get("purpose") or f"Validação {index + 1}"),
+                    "name": f"Validar {reference} em uma única sessão SSH",
                     "ansible.builtin.command": {"argv": argv},
                     "changed_when": False,
                     "failed_when": False,
@@ -107,25 +114,35 @@ def execute_project_steps(
             timeout=int(settings.agent_ansible_timeout_seconds),
             check=False,
         )
+
         evidence: list[dict[str, Any]] = []
-        for output in outputs:
-            if not output.is_file():
+        connection_errors: list[dict[str, str]] = []
+        for output_path in outputs:
+            if not output_path.is_file():
                 continue
             try:
-                row = json.loads(output.read_text(encoding="utf-8"))
+                row = json.loads(output_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            if isinstance(row, dict):
-                evidence.append(row)
+            if not isinstance(row, dict):
+                continue
+            batch_evidence = row.get("evidence") or []
+            if isinstance(batch_evidence, list):
+                evidence.extend(dict(item) for item in batch_evidence if isinstance(item, dict))
+            if row.get("connection_error"):
+                connection_errors.append({"reference": str(row.get("reference") or ""), "error": str(row.get("connection_error"))})
+
         diagnostics = {
             **status,
             "executed": len(evidence),
             "requested": len(safe_steps),
+            "connections_requested": len(grouped),
+            "connection_errors": connection_errors,
             "return_code": int(completed.returncode),
             "stdout_excerpt": (completed.stdout or "")[-2500:],
             "stderr_excerpt": (completed.stderr or "")[-1200:],
             "detail": (
-                f"Ansible executou {len(evidence)}/{len(safe_steps)} coleta(s) automaticamente."
+                f"Ansible executou {len(evidence)}/{len(safe_steps)} coleta(s) usando {len(grouped)} sessão(ões) SSH."
                 if completed.returncode == 0
                 else f"Ansible terminou com código {completed.returncode}; as evidências produzidas foram preservadas."
             ),
