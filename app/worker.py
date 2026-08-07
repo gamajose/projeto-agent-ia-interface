@@ -8,6 +8,7 @@ from rich.panel import Panel
 
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
+from app.services.codex_provider_instrumentation import install_codex_provider_preflight
 from app.services.ensemble_instrumentation import install_ensemble_reasoning
 from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
@@ -18,6 +19,7 @@ from app.services.secrets import secret_backend_status
 install_operational_tools()
 install_ensemble_reasoning()
 install_project_playbook_instrumentation()
+install_codex_provider_preflight()
 app = typer.Typer(no_args_is_help=True)
 console = Console()
 
