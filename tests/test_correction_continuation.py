@@ -45,17 +45,18 @@ def _patch_persistence(monkeypatch, item: dict) -> dict:
         "update_investigation_analysis",
         lambda investigation_id, analysis: saved.update(investigation_id=investigation_id, analysis=analysis),
     )
-    return saved
-
-
-def test_prepare_continuation_reuses_validated_proposal_without_reanalysis(monkeypatch) -> None:
-    saved = _patch_persistence(monkeypatch, _investigation())
+    # Estes são testes unitários do fluxo de continuação. A resolução do inventário
+    # é testada em persistence; aqui não devemos depender do schema PostgreSQL do CI.
     monkeypatch.setattr(
         correction_continuation,
         "resolve_saved_target",
-        lambda *args, **kwargs: {"vpn_ip": "192.0.2.10", "ssh_port": 2222},
+        lambda target, environment: {"vpn_ip": target, "ssh_port": 2222},
     )
-    captured = {}
+    return saved
+
+
+def _patch_token(monkeypatch, token: str = "token.assinado") -> dict:
+    captured: dict = {}
 
     def fake_token(investigation_id, target, actions, **kwargs):
         captured.update(
@@ -64,9 +65,15 @@ def test_prepare_continuation_reuses_validated_proposal_without_reanalysis(monke
             actions=actions,
             ssh_port=kwargs.get("ssh_port"),
         )
-        return "token.assinado"
+        return token
 
     monkeypatch.setattr(correction_continuation, "create_approval_token", fake_token)
+    return captured
+
+
+def test_prepare_continuation_reuses_validated_proposal_without_reanalysis(monkeypatch) -> None:
+    saved = _patch_persistence(monkeypatch, _investigation())
+    captured = _patch_token(monkeypatch)
 
     result = correction_continuation.prepare_correction_continuation(
         "00000000-0000-0000-0000-000000000001",
@@ -82,9 +89,26 @@ def test_prepare_continuation_reuses_validated_proposal_without_reanalysis(monke
     assert saved["analysis"]["correction_request"]["state"] == "prepared"
 
 
-@pytest.mark.parametrize("environment", ["production", "standby", "unknown"])
-def test_prepare_continuation_returns_reviewable_plan_for_protected_environments(monkeypatch, environment: str) -> None:
+@pytest.mark.parametrize("environment", ["production", "standby"])
+def test_prepare_continuation_allows_reviewed_safe_action_in_protected_environment(monkeypatch, environment: str) -> None:
     _patch_persistence(monkeypatch, _investigation(environment))
+    captured = _patch_token(monkeypatch)
+
+    result = correction_continuation.prepare_correction_continuation(
+        "00000000-0000-0000-0000-000000000001",
+        settings=_settings(),
+    )
+
+    assert result["can_execute"] is True
+    assert result["approval_token"] == "token.assinado"
+    assert result["actions_count"] == 1
+    assert result["environment"] == environment
+    assert result["correction_readiness"]["environment"] == environment
+    assert captured["target"] == "192.0.2.10"
+
+
+def test_prepare_continuation_keeps_unknown_environment_proposal_only(monkeypatch) -> None:
+    _patch_persistence(monkeypatch, _investigation("unknown"))
 
     result = correction_continuation.prepare_correction_continuation(
         "00000000-0000-0000-0000-000000000001",
@@ -94,8 +118,8 @@ def test_prepare_continuation_returns_reviewable_plan_for_protected_environments
     assert result["can_execute"] is False
     assert result["approval_token"] is None
     assert result["actions_count"] == 1
-    assert environment in result["reason"]
-    assert result["correction_readiness"]["environment"] == environment
+    assert "unknown" in result["reason"]
+    assert result["correction_readiness"]["environment"] == "unknown"
 
 
 def test_prepare_continuation_returns_reason_when_no_action_exists(monkeypatch) -> None:
