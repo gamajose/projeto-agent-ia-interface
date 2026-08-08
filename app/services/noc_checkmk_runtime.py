@@ -14,6 +14,7 @@ from app.services.runner import build_executor, resolve_target
 
 
 _SAFE_HOST = re.compile(r"^[A-Za-z0-9_.:@+-]{1,255}$")
+_SAFE_SERVICE = re.compile(r"^[A-Za-z0-9À-ÿ _./:@%+()\[\]-]{1,255}$", re.UNICODE)
 _STATE_MAP = {0: "healthy", 1: "attention", 2: "critical", 3: "inconclusive"}
 
 
@@ -30,8 +31,8 @@ def _safe_host(value: Any) -> str:
 
 def _safe_service(value: Any) -> str:
     service = " ".join(str(value or "").strip().split())
-    if not service or len(service) > 255 or any(token in service for token in ("\n", "\r", ";")):
-        raise CheckmkRuntimeError("serviço Checkmk inválido para revalidação")
+    if not _SAFE_SERVICE.fullmatch(service):
+        raise CheckmkRuntimeError("serviço Checkmk contém caracteres não permitidos para revalidação")
     return service
 
 
@@ -48,8 +49,6 @@ def _monitor_reference(incident: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _inner_query(host: str, service: str, *, force: bool) -> str:
-    host_q = shlex.quote(host)
-    service_q = shlex.quote(service)
     force_part = ""
     if force:
         force_part = (
@@ -63,11 +62,7 @@ def _inner_query(host: str, service: str, *, force: bool) -> str:
         f"Filter: host_name = {host}\\n"
         f"Filter: description = {service}"
     )
-    return (
-        f"host={host_q}; service={service_q}; "
-        + force_part
-        + f"lq {shlex.quote(query)} 2>/dev/null | sed 's/^/NOC_STATE|/'"
-    )
+    return force_part + f"lq {shlex.quote(query)} 2>/dev/null | sed 's/^/NOC_STATE|/'"
 
 
 def _runtime_command(host: str, service: str, *, force: bool) -> str:
