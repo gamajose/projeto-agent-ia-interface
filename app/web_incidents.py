@@ -13,6 +13,7 @@ from app.services.noc_incidents import (
     noc_dashboard,
     resolve_incident,
 )
+from app.services.noc_supervisor import force_recheck_incident, supervisor_tick
 from app.services.persistence import (
     get_investigation,
     get_playbook_draft,
@@ -49,7 +50,18 @@ class IncidentResolvePayload(BaseModel):
 def noc_operational_dashboard(request: Request) -> dict:
     _require_access(request)
     try:
-        return noc_dashboard()
+        data = noc_dashboard()
+        tick = supervisor_tick()
+        return {**data, "supervisor": tick}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"supervisor NOC indisponível: {type(exc).__name__}: {exc}") from exc
+
+
+@router.post("/ui/api/noc/supervisor/tick")
+def noc_supervisor_tick(request: Request) -> dict:
+    _require_mutation(request)
+    try:
+        return supervisor_tick()
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"supervisor NOC indisponível: {type(exc).__name__}: {exc}") from exc
 
@@ -78,6 +90,18 @@ def noc_incident_detail(incident_id: str, request: Request) -> dict:
     if not incident:
         raise HTTPException(status_code=404, detail="incidente NOC não encontrado")
     return incident
+
+
+@router.post("/ui/api/noc/incidents/{incident_id}/recheck")
+def noc_incident_recheck(incident_id: str, request: Request) -> dict:
+    _require_mutation(request)
+    try:
+        incident = force_recheck_incident(incident_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"revalidação Checkmk indisponível: {type(exc).__name__}: {exc}") from exc
+    if not incident:
+        raise HTTPException(status_code=404, detail="incidente NOC não encontrado")
+    return {"rechecked": True, "incident": incident}
 
 
 @router.post("/ui/api/noc/incidents/{incident_id}/acknowledge")
