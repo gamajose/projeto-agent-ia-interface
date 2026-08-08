@@ -9,6 +9,7 @@ from app.services.noc_checkmk_runtime import CheckmkRuntimeError, _parse_output,
 from app.services.noc_communications import build_incident_communications, escalation_team
 from app.services.noc_specialist_tools import describe_noc_specialist_tools
 from app.services.noc_supervisor import _autonomy_eligible
+from app.services.noc_targeting import service_scope
 
 
 def _autonomy_settings() -> SimpleNamespace:
@@ -112,6 +113,15 @@ def test_checkmk_watcher_rejects_shell_metacharacters_in_service_name() -> None:
         _safe_service('Check_MK Agent $(touch /tmp/pwned)')
     with pytest.raises(CheckmkRuntimeError):
         _safe_service('Service "quoted"')
+
+
+def test_noc_targeting_routes_monitor_services_and_affected_resources() -> None:
+    assert service_scope("Check_MK Agent") == "affected"
+    assert service_scope("Filesystem /var") == "affected"
+    assert service_scope("Memory") == "affected"
+    assert service_scope("automation-helper") == "monitoring"
+    assert service_scope("rrdcached") == "monitoring"
+    assert service_scope("SNMP timeout") == "monitoring"
 
 
 def test_specialist_catalog_contains_snmp_and_bmc_tools() -> None:
