@@ -22,6 +22,7 @@ install_codex_provider_preflight()
 from app.web import register_ui
 from app.web_batch import router as batch_router
 from app.web_executions import router as executions_router
+from app.web_fleet import router as fleet_router
 from app.web_flow import router as flow_router
 from app.web_incidents import router as incidents_router
 from app.web_observability import router as observability_router
@@ -64,6 +65,9 @@ if not getattr(app.state, "agent_ui_flow_registered", False):
 if not getattr(app.state, "agent_ui_incidents_registered", False):
     app.include_router(incidents_router)
     app.state.agent_ui_incidents_registered = True
+if not getattr(app.state, "agent_ui_fleet_registered", False):
+    app.include_router(fleet_router)
+    app.state.agent_ui_fleet_registered = True
 if not getattr(app.state, "agent_ui_topology_registered", False):
     app.include_router(topology_router)
     app.state.agent_ui_topology_registered = True
