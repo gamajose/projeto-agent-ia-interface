@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 
 import uvicorn
+from fastapi import Request
+from fastapi.responses import Response
 
 from app.main import app
 from app.services.ai_instrumentation import install_ai_instrumentation
@@ -80,6 +82,33 @@ if not getattr(app.state, "agent_replay_registered", False):
 if not getattr(app.state, "agent_operator_experience_registered", False):
     app.include_router(operator_experience_router)
     app.state.agent_operator_experience_registered = True
+
+
+@app.middleware("http")
+async def inject_fleet_ui_assets(request: Request, call_next):
+    """Acopla o painel de descoberta sem alterar o fluxo da Nova análise."""
+    response = await call_next(request)
+    if request.url.path not in {"/ui", "/ui/"}:
+        return response
+    content_type = str(response.headers.get("content-type") or "")
+    if "text/html" not in content_type.casefold() or not hasattr(response, "body_iterator"):
+        return response
+
+    chunks: list[bytes] = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
+    body = b"".join(chunks).decode("utf-8", errors="replace")
+    marker = '<script src="/ui/assets/fleet-ui.js?v=1.34.0" defer></script>'
+    if marker not in body:
+        body = body.replace("</body>", f"  {marker}\n</body>")
+    headers = dict(response.headers)
+    headers.pop("content-length", None)
+    return Response(
+        content=body,
+        status_code=response.status_code,
+        headers=headers,
+        media_type="text/html",
+    )
 
 
 def main() -> None:
