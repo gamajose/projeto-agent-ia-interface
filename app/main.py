@@ -177,7 +177,10 @@ def checkmk_webhook(
             "noc_error": incident_error,
         }
 
-    mode = "correct" if payload.auto_correct and settings.checkmk_webhook_auto_correct else "propose"
+    # Com o Supervisor ativo, o webhook nunca executa correção diretamente.
+    # Primeiro coleta/RCA/reviewer; somente o L4 decide se a ação é elegível.
+    legacy_auto_correct = payload.auto_correct and settings.checkmk_webhook_auto_correct
+    mode = "propose" if settings.noc_incident_enabled else ("correct" if legacy_auto_correct else "propose")
     incident = dict((incident_event or {}).get("incident") or {})
     objective = incident_objective(incident) if incident else (
         f"Alerta Checkmk no serviço '{payload.service}', estado {payload.state}. "
