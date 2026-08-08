@@ -10,6 +10,7 @@ from app.services.jobs import enqueue_investigation
 from app.services.noc_checkmk_runtime import is_green, query_incident_service
 from app.services.noc_communications import build_incident_communications, publish_incident_communications
 from app.services import noc_incidents as incident_store
+from app.services.noc_targeting import resolve_noc_target
 
 
 def _now() -> datetime:
@@ -245,6 +246,7 @@ def postprocess_investigation_result(
         {
             "environment": effective_environment,
             "environment_classification": result.get("environment_classification") or {},
+            "investigation_target": result.get("target"),
         },
         settings,
     ) or incident
@@ -257,6 +259,7 @@ def postprocess_investigation_result(
             "analysis_status": (result.get("analysis") or {}).get("status"),
             "confidence": (result.get("analysis") or {}).get("confidence"),
             "environment": effective_environment,
+            "target": result.get("target"),
         },
         settings,
     )
@@ -369,6 +372,16 @@ def _reinvestigate(incident: dict[str, Any], runtime: dict[str, Any], settings: 
     if not settings.noc_reinvestigate_on_watch_failure or count >= int(settings.noc_max_reinvestigations):
         return incident
 
+    routing = resolve_noc_target(
+        checkmk_host=str(incident.get("host") or ""),
+        service=str(incident.get("service") or ""),
+        output=str(runtime.get("plugin_output") or incident.get("last_output") or ""),
+        requested_environment=_environment_type(incident.get("environment")),
+    )
+    target_reference = str(routing.get("reference") or incident.get("investigation_target") or incident.get("host") or "")
+    target_environment = _environment_type(routing.get("environment") or incident.get("environment"))
+    target_port = routing.get("ssh_port")
+
     objective = (
         f"O incidente NOC continua não verde após correção/validação. Host {incident.get('host')}, serviço {incident.get('service')}. "
         f"Estado atual no Livestatus: {runtime.get('state')} / {runtime.get('status')}. "
@@ -376,17 +389,19 @@ def _reinvestigate(incident: dict[str, Any], runtime: dict[str, Any], settings: 
         "Reabra a investigação, compare com a causa anterior, confirme se a correção atacou a causa real e procure outro bloqueio sem repetir ação já falha."
     )
     queued = enqueue_investigation(
-        str(incident.get("host") or ""),
+        target_reference,
         objective,
-        environment=_environment_type(incident.get("environment")),
+        environment=target_environment,
         mode="propose",
         approve=False,
+        ssh_port=int(target_port) if target_port else None,
         metadata={
             "source": "noc_reinvestigation",
             "noc_incident_id": incident.get("id"),
             "noc_fingerprint": incident.get("fingerprint"),
             "previous_investigation_id": incident.get("investigation_id"),
             "noc_autonomy_level": settings.noc_autonomy_level,
+            "noc_routing": routing,
         },
         settings=settings,
     )
@@ -400,7 +415,12 @@ def _reinvestigate(incident: dict[str, Any], runtime: dict[str, Any], settings: 
         },
         settings,
     ) or incident
-    _event(updated, "reinvestigation_queued", {"job_id": queued.get("job_id")}, settings)
+    _event(
+        updated,
+        "reinvestigation_queued",
+        {"job_id": queued.get("job_id"), "routing": routing},
+        settings,
+    )
     return updated
 
 
