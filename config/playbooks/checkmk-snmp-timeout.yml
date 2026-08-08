@@ -26,6 +26,10 @@ steps:
     requires_context: objective_ip
     arguments: {host: "{{objective_ip}}"}
     purpose: Validar a rota utilizada até o equipamento SNMP informado.
+  - tool: network.udp_probe
+    requires_context: objective_ip
+    arguments: {host: "{{objective_ip}}", port: 161}
+    purpose: Preservar o probe UDP/161 de baixo nível para distinguir ausência de caminho/listener de falha protocolar SNMP.
   - tool: snmp.transport
     requires_context: objective_ip
     arguments: {host: "{{objective_ip}}"}
