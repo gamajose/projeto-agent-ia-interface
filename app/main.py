@@ -21,6 +21,7 @@ from app.services.noc_incidents import (
     register_checkmk_event,
 )
 from app.services.noc_supervisor import postprocess_investigation_result
+from app.services.noc_targeting import resolve_noc_target
 from app.services.persistence import get_investigation, operational_metrics
 from app.services.replay import replay_investigation
 from app.services.runner import run_target
@@ -47,6 +48,10 @@ class CheckmkWebhookPayload(BaseModel):
     environment: EnvironmentType = EnvironmentType.UNKNOWN
     auto_correct: bool = False
     ssh_port: int | None = Field(default=None, ge=1, le=65535)
+    # Opcional para notificações em que o Checkmk já conhece o IP VPN/TAP.
+    # Quando ausente, o Supervisor resolve afetado x monitor pelo inventário.
+    vpn_ip: str | None = Field(default=None, max_length=255)
+    address: str | None = Field(default=None, max_length=255)
 
 
 class ReplayPayload(BaseModel):
@@ -68,6 +73,14 @@ def _require_token(supplied: str | None, expected: str | None, name: str) -> Non
 def _admin_token() -> str | None:
     settings = get_settings()
     return get_secret("AGENT_API_TOKEN", settings.agent_api_token, settings=settings)
+
+
+def _routing_environment(routing: dict[str, Any], fallback: EnvironmentType) -> EnvironmentType:
+    try:
+        routed = EnvironmentType(str(routing.get("environment") or EnvironmentType.UNKNOWN.value))
+    except ValueError:
+        routed = EnvironmentType.UNKNOWN
+    return routed if routed != EnvironmentType.UNKNOWN else fallback
 
 
 @app.get("/health")
@@ -100,6 +113,17 @@ def checkmk_webhook(
     _require_token(x_agent_token, webhook_token, "CHECKMK_WEBHOOK_TOKEN")
     ensure_database_schema()
 
+    routing = resolve_noc_target(
+        checkmk_host=payload.host,
+        service=payload.service,
+        output=payload.output,
+        explicit_target=payload.vpn_ip or payload.address,
+        requested_environment=payload.environment,
+    )
+    target_reference = str(routing.get("reference") or payload.host)
+    target_environment = _routing_environment(routing, payload.environment)
+    target_port = payload.ssh_port or routing.get("ssh_port")
+
     normalized_state = normalize_checkmk_state(payload.state)
     incident_event: dict[str, Any] | None = None
     incident_error: str | None = None
@@ -111,7 +135,7 @@ def checkmk_webhook(
                 state=payload.state,
                 output=payload.output,
                 site=payload.site,
-                environment=payload.environment.value,
+                environment=target_environment.value,
                 requested_auto_correct=payload.auto_correct,
                 settings=settings,
             )
@@ -137,6 +161,7 @@ def checkmk_webhook(
             "incident_action": incident_event.get("action"),
             "incident": incident or None,
             "state": normalized_state,
+            "routing": routing,
             "investigation_started": False,
             "communication": communication,
         }
@@ -147,6 +172,7 @@ def checkmk_webhook(
             "incident_action": "recovery_degraded" if incident_error else "recovery_without_open_incident",
             "incident": incident_event.get("incident") if incident_event else None,
             "state": normalized_state,
+            "routing": routing,
             "investigation_started": False,
             "noc_error": incident_error,
         }
@@ -163,21 +189,23 @@ def checkmk_webhook(
         "site": payload.site,
         "service": payload.service,
         "state": payload.state,
+        "checkmk_host": payload.host,
         "noc_incident_id": incident_id,
         "noc_fingerprint": incident.get("fingerprint"),
         "noc_flapping": bool(incident.get("flapping")),
         "noc_autonomy_level": settings.noc_autonomy_level,
+        "noc_routing": routing,
     }
 
     if settings.agent_execution_mode.strip().casefold() == "queue":
         try:
             queued = enqueue_investigation(
-                payload.host,
+                target_reference,
                 objective,
-                environment=payload.environment,
+                environment=target_environment,
                 mode=mode,
                 approve=False,
-                ssh_port=payload.ssh_port,
+                ssh_port=int(target_port) if target_port else None,
                 metadata=metadata,
                 settings=settings,
             )
@@ -190,6 +218,7 @@ def checkmk_webhook(
                 **queued,
                 "incident_action": (incident_event or {}).get("action") or "degraded",
                 "incident": incident or None,
+                "routing": routing,
                 "investigation_started": True,
                 "noc_error": incident_error,
             }
@@ -198,12 +227,12 @@ def checkmk_webhook(
 
     try:
         result = run_target(
-            payload.host,
+            target_reference,
             objective,
-            environment=payload.environment,
+            environment=target_environment,
             mode=mode,
             approve=mode == "correct",
-            ssh_port=payload.ssh_port,
+            ssh_port=int(target_port) if target_port else None,
             settings=settings,
         )
     except LookupError as exc:
@@ -223,6 +252,7 @@ def checkmk_webhook(
         "host": result.get("hostname"),
         "mode": mode,
         "environment": result.get("environment_classification"),
+        "routing": routing,
         "playbook": result.get("playbook"),
         "status": analysis.get("status"),
         "confidence": analysis.get("confidence"),
