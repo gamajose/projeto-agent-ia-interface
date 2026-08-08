@@ -14,7 +14,7 @@ from app.services.operational_tool_instrumentation import install_operational_to
 from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
 from app.services.jobs import get_job, run_worker_once
 from app.services.noc_supervisor import supervisor_tick
-from app.services.noc_worker_hooks import handle_worker_result
+from app.services.noc_worker_hooks import handle_worker_result, reconcile_noc_jobs
 from app.services.secrets import secret_backend_status
 
 
@@ -43,9 +43,14 @@ def run(
         f"NOC autônomo: {'ativo' if settings.noc_incident_enabled else 'desativado'} · L{settings.noc_autonomy_level}",
         title="Agent IA Worker",
     ))
+
+    # Retoma jobs que possam ter concluído antes de um restart do processo.
+    reconcile_noc_jobs(settings=settings)
+
     if once:
         result = run_worker_once(settings=settings, block_seconds=block_seconds)
         handle_worker_result(result, settings=settings)
+        reconcile_noc_jobs(settings=settings)
         supervisor_tick(settings=settings)
         console.print(json.dumps(result or {"status": "empty"}, ensure_ascii=False, indent=2, default=str))
         return
@@ -54,6 +59,7 @@ def run(
         try:
             result = run_worker_once(settings=settings, block_seconds=block_seconds)
             handle_worker_result(result, settings=settings)
+            reconcile_noc_jobs(settings=settings)
             supervisor_tick(settings=settings)
         except KeyboardInterrupt:
             return
