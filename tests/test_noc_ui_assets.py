@@ -6,7 +6,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_product_polish_injects_noc_navigation_and_dashboard() -> None:
+def test_product_polish_injects_noc_navigation_dashboard_and_autopilot_audit() -> None:
     source = (PROJECT_ROOT / "app" / "ui" / "product-polish.js").read_text(encoding="utf-8")
 
     required = (
@@ -15,7 +15,13 @@ def test_product_polish_injects_noc_navigation_and_dashboard() -> None:
         'section.id = "view-noc"',
         "/ui/api/noc/dashboard",
         "/ui/api/noc/incidents/",
+        "/ui/api/noc/supervisor/tick",
+        'mutateNocIncident("recheck")',
         "FLAPPING",
+        "Autopilot e pós-validação",
+        "Comunicação automática",
+        "playbook candidato",
+        "Checkmk agora",
         "loadNocDashboard",
     )
     for item in required:
@@ -27,4 +33,6 @@ def test_noc_styles_are_packaged_with_ui_assets() -> None:
     assert css.is_file()
     text = css.read_text(encoding="utf-8")
     assert ".noc-summary-grid" in text
+    assert ".noc-autonomy-strip" in text
     assert ".noc-flapping" in text
+    assert ".noc-event.workflow" in text
