@@ -20,10 +20,9 @@ def _autonomy_settings() -> SimpleNamespace:
     )
 
 
-def test_autonomy_uses_effective_environment_from_investigation() -> None:
-    incident = {"environment": "unknown"}
-    result = {
-        "environment_classification": {"environment": "monitoring"},
+def _safe_result(environment: str = "monitoring", *, environment_confidence: int = 100) -> dict:
+    return {
+        "environment_classification": {"environment": environment, "confidence": environment_confidence},
         "approval_token": "token",
         "review": {"approved": True},
         "analysis": {
@@ -34,43 +33,45 @@ def test_autonomy_uses_effective_environment_from_investigation() -> None:
         },
     }
 
-    allowed, reason = _autonomy_eligible(incident, result, _autonomy_settings())
+
+def test_autonomy_uses_effective_trusted_environment_from_investigation() -> None:
+    allowed, reason = _autonomy_eligible(
+        {"environment": "unknown"},
+        _safe_result("monitoring", environment_confidence=100),
+        _autonomy_settings(),
+    )
 
     assert allowed is True
     assert "baixo risco" in reason
 
 
-def test_autonomy_never_self_heals_production() -> None:
-    result = {
-        "environment_classification": {"environment": "production"},
-        "approval_token": "token",
-        "review": {"approved": True},
-        "analysis": {
-            "confidence": 99,
-            "proposed_actions": [
-                {"tool": "systemd.recover_unit", "status": "proposed"},
-            ],
-        },
-    }
+def test_autonomy_rejects_heuristic_monitoring_environment() -> None:
+    allowed, reason = _autonomy_eligible(
+        {"environment": "unknown"},
+        _safe_result("monitoring", environment_confidence=70),
+        _autonomy_settings(),
+    )
 
-    allowed, reason = _autonomy_eligible({"environment": "production"}, result, _autonomy_settings())
+    assert allowed is False
+    assert "classificação" in reason
+
+
+def test_autonomy_never_self_heals_production() -> None:
+    allowed, reason = _autonomy_eligible(
+        {"environment": "production"},
+        _safe_result("production", environment_confidence=100),
+        _autonomy_settings(),
+    )
 
     assert allowed is False
     assert "production" in reason
 
 
 def test_autonomy_rejects_tool_outside_allowlist() -> None:
-    result = {
-        "environment_classification": {"environment": "monitoring"},
-        "approval_token": "token",
-        "review": {"approved": True},
-        "analysis": {
-            "confidence": 99,
-            "proposed_actions": [
-                {"tool": "dangerous.restart_everything", "status": "proposed"},
-            ],
-        },
-    }
+    result = _safe_result()
+    result["analysis"]["proposed_actions"] = [
+        {"tool": "dangerous.restart_everything", "status": "proposed"},
+    ]
 
     allowed, reason = _autonomy_eligible({"environment": "monitoring"}, result, _autonomy_settings())
 
