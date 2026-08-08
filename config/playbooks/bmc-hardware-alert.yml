@@ -1,0 +1,36 @@
+id: bmc-hardware-alert
+title: BMC - Sensores, IPMI, iDRAC, iLO, ILOM e xClarity
+priority: 97
+profiles: [linux_generic, oracle_linux, checkmk]
+match:
+  any:
+    - "idrac"
+    - "ilo"
+    - "ilom"
+    - "xclarity"
+    - "ipmi"
+    - "bmc"
+    - "hardware.*critical"
+    - "power supply"
+    - "fonte.*aliment"
+    - "temperature"
+    - "temperatura"
+    - "fan.*critical"
+    - "sensor.*critical"
+    - "fault.chassis"
+    - "service processor"
+steps:
+  - tool: system.basics
+    purpose: Confirmar identidade do host e evitar correlacionar o alerta com o servidor errado.
+  - tool: bmc.detect.local
+    purpose: Identificar fabricante, modelo, controladora BMC e endereço de gerenciamento visível pelo sistema operacional.
+  - tool: bmc.ipmi.sensors
+    purpose: Coletar sensores IPMI e distinguir falha física de alerta histórico ou sensor indisponível.
+  - tool: bmc.ipmi.sel
+    arguments: {lines: 150}
+    purpose: Correlacionar o alerta atual com eventos recentes do System Event Log.
+  - tool: bmc.ipmi.fru
+    purpose: Identificar FRUs e componentes envolvidos quando houver evidência física.
+allowed_corrections: []
+validation:
+  - tool: bmc.ipmi.sensors
