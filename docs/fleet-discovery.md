@@ -16,6 +16,33 @@ A faixa é configurável por `FLEET_DISCOVERY_CIDRS`. Redes públicas são rejei
 
 A varredura não é feita de uma vez. Ela usa lotes com cursor persistido no PostgreSQL. Se o serviço reiniciar no meio, a próxima execução continua do último ponto salvo.
 
+## Identidade operacional do ativo
+
+O nome principal apresentado e reutilizado pelos Agents é o nome retornado pelo inventário do Monitor 1 durante o fluxo `vpn <IP>`, e não o hostname Linux do destino.
+
+Exemplos:
+
+```text
+HOTBEL MONITOR       172.27.232.153
+HOTBEL PROD          172.27.232.154
+HOTBEL STANDBY       172.27.232.155
+CACIQUE MONITOR      172.27.229.100
+```
+
+Quando o menu retorna nomes com parênteses, como `HOTBEL (MONITOR)`, a aplicação mantém o valor operacional normalizado como `HOTBEL MONITOR` para exibição e pesquisa. O hostname real coletado dentro da máquina continua armazenado separadamente como informação técnica.
+
+A prioridade de identidade é:
+
+```text
+nome do inventário VPN / Monitor 1
+        ↓
+hostname real do sistema
+        ↓
+IP VPN
+```
+
+Assim um servidor cujo hostname interno seja `2com-monitor`, `localhost`, `srv01` ou outro nome pouco representativo continua aparecendo para o NOC pelo nome operacional conhecido no Monitor 1.
+
 ## O que é salvo
 
 Duas tabelas novas são criadas automaticamente:
@@ -26,8 +53,9 @@ Duas tabelas novas são criadas automaticamente:
 Para cada alvo, a base mantém, quando disponível:
 
 - IP VPN e porta SSH;
-- nome do cliente vindo do menu VPN;
-- hostname e sistema operacional;
+- nome operacional do cliente/servidor vindo do menu VPN do Monitor 1;
+- hostname real do sistema, separadamente;
+- sistema operacional;
 - status do acesso (`ok`, `timeout`, `auth_failed`, `not_found` ou `error`);
 - papéis detectados;
 - ambiente classificado;
@@ -39,7 +67,7 @@ Para cada alvo, a base mantém, quando disponível:
 - último acesso bem-sucedido;
 - quantidade de falhas consecutivas.
 
-Hosts acessados com sucesso também são sincronizados com a tabela `hosts` já existente, de forma que os Agents atuais passam a reutilizar esse inventário automaticamente.
+Hosts acessados com sucesso também são sincronizados com a tabela `hosts` já existente. Nessa sincronização, o nome do Monitor 1 tem prioridade sobre o hostname real, de forma que os Agents atuais passam a reutilizar automaticamente a mesma identificação operacional usada pelo NOC.
 
 ## Servidor misto
 
