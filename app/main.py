@@ -13,13 +13,14 @@ from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.approved_execution import execute_approved_investigation
 from app.services.jobs import enqueue_investigation, get_job
+from app.services.noc_communications import build_incident_communications, publish_incident_communications
 from app.services.noc_incidents import (
-    apply_investigation_result,
     attach_job,
     incident_objective,
     normalize_checkmk_state,
     register_checkmk_event,
 )
+from app.services.noc_supervisor import postprocess_investigation_result
 from app.services.persistence import get_investigation, operational_metrics
 from app.services.replay import replay_investigation
 from app.services.runner import run_target
@@ -82,6 +83,9 @@ def health() -> dict[str, Any]:
         "review_required_for_corrections": settings.ai_reviewer_required_for_corrections,
         "noc_incident_manager": settings.noc_incident_enabled,
         "noc_auto_investigate": settings.noc_auto_investigate,
+        "noc_autonomy_level": settings.noc_autonomy_level,
+        "noc_self_heal": settings.noc_self_heal_enabled,
+        "noc_checkmk_watcher": True,
         "secret_backend": secret_backend_status(settings),
     }
 
@@ -112,21 +116,32 @@ def checkmk_webhook(
                 settings=settings,
             )
         except Exception as exc:
-            # O supervisor de incidente é uma camada adicional. Se Redis/estado
-            # operacional falhar, o troubleshooting antigo continua disponível.
+            # A camada NOC nunca pode derrubar o webhook de troubleshooting.
             incident_error = f"{type(exc).__name__}: {exc}"
 
     if incident_event and not incident_event.get("should_investigate", True):
+        incident = dict(incident_event.get("incident") or {})
+        communication = None
+        if incident_event.get("action") == "resolved" and incident:
+            try:
+                communication = build_incident_communications(incident, state="resolved", settings=settings)
+                communication["delivery"] = publish_incident_communications(
+                    incident,
+                    communication,
+                    phase="resolved",
+                    settings=settings,
+                )
+            except Exception as exc:
+                communication = {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}
         return {
             "incident_action": incident_event.get("action"),
-            "incident": incident_event.get("incident"),
+            "incident": incident or None,
             "state": normalized_state,
             "investigation_started": False,
+            "communication": communication,
         }
 
-    # Recuperações nunca abrem troubleshooting novo. Quando o supervisor está
-    # saudável ele já encerrou o incidente acima; em degradação, ainda evitamos
-    # criar uma investigação inútil para um estado OK/UP.
+    # Recovery sem incidente aberto também não cria troubleshooting novo.
     if normalized_state["kind"] == "ok":
         return {
             "incident_action": "recovery_degraded" if incident_error else "recovery_without_open_incident",
@@ -151,6 +166,7 @@ def checkmk_webhook(
         "noc_incident_id": incident_id,
         "noc_fingerprint": incident.get("fingerprint"),
         "noc_flapping": bool(incident.get("flapping")),
+        "noc_autonomy_level": settings.noc_autonomy_level,
     }
 
     if settings.agent_execution_mode.strip().casefold() == "queue":
@@ -197,7 +213,7 @@ def checkmk_webhook(
 
     if incident_id:
         try:
-            incident = apply_investigation_result(incident_id, result, settings=settings) or incident
+            incident = postprocess_investigation_result(incident_id, result, settings=settings) or incident
         except Exception as exc:
             incident_error = f"{type(exc).__name__}: {exc}"
 
