@@ -82,9 +82,16 @@ def _autonomy_eligible(incident: dict[str, Any], result: dict[str, Any], setting
     if int(settings.noc_autonomy_level) < 4 or not settings.noc_self_heal_enabled:
         return False, "autonomia L4/self-healing não habilitada"
 
+    classification = dict(result.get("environment_classification") or {})
     environment = _classified_environment(result, incident)
     if environment not in {EnvironmentType.MONITORING.value, EnvironmentType.TRAINING.value}:
         return False, f"ambiente {environment} fora do envelope autônomo"
+    try:
+        environment_confidence = int(classification.get("confidence") or 0)
+    except (TypeError, ValueError):
+        environment_confidence = 0
+    if environment_confidence < 90:
+        return False, "classificação do ambiente não é confiável o suficiente para alteração autônoma"
 
     analysis = dict(result.get("analysis") or {})
     if int(analysis.get("confidence") or 0) < int(settings.noc_self_heal_min_confidence):
