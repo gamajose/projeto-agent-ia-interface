@@ -5,6 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.noc_incidents import (
     acknowledge_incident,
@@ -49,10 +50,19 @@ class IncidentResolvePayload(BaseModel):
 @router.get("/ui/api/noc/dashboard")
 def noc_operational_dashboard(request: Request) -> dict:
     _require_access(request)
+    settings = get_settings()
     try:
-        data = noc_dashboard()
-        tick = supervisor_tick()
-        return {**data, "supervisor": tick}
+        data = noc_dashboard(settings=settings)
+        return {
+            **data,
+            "supervisor": {
+                "enabled": settings.noc_incident_enabled,
+                "autonomy_level": settings.noc_autonomy_level,
+                "self_heal_enabled": settings.noc_self_heal_enabled,
+                "watch_interval_seconds": settings.noc_watch_interval_seconds,
+                "max_reinvestigations": settings.noc_max_reinvestigations,
+            },
+        }
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"supervisor NOC indisponível: {type(exc).__name__}: {exc}") from exc
 
