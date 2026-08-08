@@ -106,18 +106,20 @@
           <article class="noc-metric"><span>Precisa de você</span><strong>—</strong><small>aprovação ou atenção</small></article>
           <article class="noc-metric"><span>Resolvidos hoje</span><strong>—</strong><small>recovery do Checkmk</small></article>
         </div>
+        <div class="noc-autonomy-strip" id="noc-autonomy-strip">Supervisor carregando política de autonomia...</div>
         <div class="noc-grid">
           <article class="panel">
             <div class="panel-header stacked-mobile">
               <div><p class="eyebrow">OPERAÇÃO EM TEMPO REAL</p><h3>Fila de incidentes</h3></div>
-              <div class="noc-toolbar"><span class="noc-live">atualização automática</span><button class="secondary-button" id="noc-refresh" type="button">Atualizar</button></div>
+              <div class="noc-toolbar"><span class="noc-live">atualização automática</span><button class="ghost-button" id="noc-tick" type="button">Rodar supervisor</button><button class="secondary-button" id="noc-refresh" type="button">Atualizar</button></div>
             </div>
             <div class="table-wrap"><table class="noc-table"><thead><tr><th>Host</th><th>Serviço</th><th>Estado</th><th>Fluxo</th><th>Quando</th></tr></thead><tbody id="noc-incidents-table"><tr><td colspan="5" class="empty-cell">Carregando incidentes...</td></tr></tbody></table></div>
           </article>
-          <article class="panel noc-detail" id="noc-detail"><div class="noc-detail-empty"><div><strong>Selecione um incidente</strong><p>Veja causa, investigação, flapping e ações que dependem de você.</p></div></div></article>
+          <article class="panel noc-detail" id="noc-detail"><div class="noc-detail-empty"><div><strong>Selecione um incidente</strong><p>Veja causa, self-healing, Checkmk watcher, comunicação e ações que dependem de você.</p></div></div></article>
         </div>`;
       $("#view-dashboard")?.insertAdjacentElement("afterend", section);
       $("#noc-refresh")?.addEventListener("click", () => void loadNocDashboard(true));
+      $("#noc-tick")?.addEventListener("click", () => void runNocTick());
     }
   }
 
@@ -135,12 +137,12 @@
   }
 
   function nocStateLabel(item) {
-    const state = item.current_state || "—";
+    const stateName = item.current_state || "—";
     const flapping = item.flapping ? '<span class="noc-flapping">FLAPPING</span>' : "";
-    return `<strong>${escapeHtml(state)}</strong>${flapping}`;
+    return `<strong>${escapeHtml(stateName)}</strong>${flapping}`;
   }
 
-  function renderNocSummary(counts = {}) {
+  function renderNocSummary(counts = {}, supervisor = {}) {
     const working = Number(counts.queued || 0) + Number(counts.investigating || 0) + Number(counts.watching || 0);
     const human = Number(counts.awaiting_approval || 0) + Number(counts.needs_attention || 0);
     const cards = [
@@ -151,6 +153,11 @@
     ];
     const root = $("#noc-summary-grid");
     if (root) root.innerHTML = cards.map(([label, value, detail]) => `<article class="noc-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small></article>`).join("");
+    const strip = $("#noc-autonomy-strip");
+    if (strip) {
+      const level = supervisor.autonomy_level ?? "4";
+      strip.innerHTML = `<strong>Autopilot L${escapeHtml(level)}</strong><span>Self-healing apenas para ferramentas permitidas + segunda IA + pós-validação. O worker acompanha o Checkmk até ficar verde.</span>`;
+    }
   }
 
   function renderNocRows(items = []) {
@@ -167,6 +174,53 @@
     $$('[data-noc-incident-id]', body).forEach((row) => row.addEventListener("click", () => void openNocIncident(row.dataset.nocIncidentId)));
   }
 
+  function communicationPanel(item) {
+    const communications = item.communications || [];
+    const latest = communications.length ? communications[communications.length - 1] : null;
+    if (!latest) return "";
+    const messages = latest.messages || {};
+    const delivery = latest.delivery?.delivery || {};
+    return `<div class="noc-analysis"><h4>Comunicação automática · ${escapeHtml(latest.team || "sem destino")}</h4>
+      <p><strong>Ticket:</strong> ${escapeHtml(messages.ticket || "—")}</p>
+      <p><strong>WhatsApp:</strong> ${escapeHtml(messages.whatsapp || "—")}</p>
+      <p><strong>Interno:</strong> ${escapeHtml(messages.internal || "—")}</p>
+      ${messages.risk_letter ? `<details><summary>Carta de risco preparada</summary><p>${escapeHtml(messages.risk_letter)}</p></details>` : ""}
+      <small>Entrega: helpdesk ${escapeHtml(delivery.helpdesk?.status || "disabled")} · WhatsApp ${escapeHtml(delivery.whatsapp?.status || "disabled")} · interno ${escapeHtml(delivery.internal?.status || "disabled")}</small>
+    </div>`;
+  }
+
+  function autonomyPanel(item) {
+    const autonomy = item.autonomy || {};
+    const execution = item.autopilot_execution || null;
+    const runtime = item.last_checkmk_runtime || null;
+    if (!Object.keys(autonomy).length && !execution && !runtime) return "";
+    const rounds = autonomy.rounds || [];
+    return `<div class="noc-analysis"><h4>Autopilot e pós-validação</h4>
+      <p><strong>Elegível:</strong> ${autonomy.eligible === true ? "sim" : autonomy.eligible === false ? "não" : "—"} · ${escapeHtml(autonomy.reason || "")}</p>
+      ${rounds.length ? `<p><strong>Rodadas autônomas:</strong> ${escapeHtml(rounds.map((row) => `${row.round}:${row.status || "—"}`).join(" · "))}</p>` : ""}
+      ${execution ? `<p><strong>Execução:</strong> ${escapeHtml(execution.status || "—")} · ${escapeHtml(execution.state || "")}</p>` : ""}
+      ${runtime ? `<p><strong>Checkmk agora:</strong> ${escapeHtml(runtime.status || "—")} / estado ${escapeHtml(runtime.state ?? "—")} · ${escapeHtml(runtime.plugin_output || runtime.reason || "")}</p>` : ""}
+      <p><strong>Rechecks:</strong> ${escapeHtml(item.recheck_count || 0)} · <strong>Reinvestigações:</strong> ${escapeHtml(item.reinvestigation_count || 0)}</p>
+      ${item.playbook_draft ? `<p><strong>Aprendizado:</strong> playbook candidato ${escapeHtml(item.playbook_draft.title || item.playbook_draft.playbook_id || "gerado")}</p>` : ""}
+      ${execution ? `<details><summary>Auditoria completa da execução</summary><pre>${escapeHtml(JSON.stringify(execution, null, 2))}</pre></details>` : ""}
+    </div>`;
+  }
+
+  function eventTitle(event) {
+    if (event.event_type) return event.event_type.replaceAll("_", " ");
+    if (event.state) return `${event.state}${event.deduplicated ? " · deduplicado" : ""}`;
+    return event.kind || "evento";
+  }
+
+  function eventDetail(event) {
+    if (event.output) return event.output;
+    if (event.runtime?.plugin_output) return event.runtime.plugin_output;
+    if (event.reason) return event.reason;
+    if (event.error) return event.error;
+    if (event.investigation_id) return `Investigação ${event.investigation_id}`;
+    return "";
+  }
+
   function renderNocDetail(item) {
     const root = $("#noc-detail");
     if (!root) return;
@@ -176,6 +230,7 @@
       <div class="noc-detail-head"><div><p class="eyebrow">INCIDENTE</p><h3>${escapeHtml(item.host || "—")}</h3><p>${escapeHtml(item.service || "—")}</p></div><div><span class="noc-status ${escapeHtml(item.status || "new")}">${escapeHtml(nocStatusLabel(item.status))}</span>${item.flapping ? '<span class="noc-flapping">FLAPPING</span>' : ""}</div></div>
       <div class="noc-detail-actions">
         ${item.acknowledged_at ? `<span class="mode-badge">Assumido por ${escapeHtml(item.acknowledged_by || "operador")}</span>` : '<button class="secondary-button" id="noc-ack" type="button">Assumir incidente</button>'}
+        ${item.status !== "resolved" ? '<button class="secondary-button" id="noc-recheck" type="button">Revalidar Checkmk</button>' : ""}
         ${item.investigation_id ? '<button class="secondary-button" id="noc-open-investigation" type="button">Abrir investigação</button>' : ""}
         ${item.status !== "resolved" ? '<button class="ghost-button" id="noc-resolve" type="button">Encerrar manualmente</button>' : ""}
       </div>
@@ -188,9 +243,12 @@
         <div class="noc-fact"><span>Primeiro alerta</span><strong>${escapeHtml(formatDate(item.first_seen_at))}</strong></div>
       </div>
       <div class="noc-analysis"><h4>Causa provável</h4><p>${escapeHtml(item.probable_cause || "A investigação ainda não produziu uma causa provável.")}</p><h4>Conclusão</h4><p>${escapeHtml(item.conclusion || item.attention_reason || "Aguardando processamento.")}</p></div>
-      <div class="noc-events"><h4>Linha do tempo</h4>${events.length ? events.map((event) => `<div class="noc-event ${escapeHtml(event.kind || "")}"><div class="noc-event-top"><strong>${escapeHtml(event.state || "—")}${event.deduplicated ? " · deduplicado" : ""}</strong><span>${escapeHtml(formatDate(event.timestamp))}</span></div><p>${escapeHtml(event.output || "")}</p></div>`).join("") : '<div class="empty-state">Sem eventos registrados.</div>'}</div>`;
+      ${autonomyPanel(item)}
+      ${communicationPanel(item)}
+      <div class="noc-events"><h4>Linha do tempo</h4>${events.length ? events.map((event) => `<div class="noc-event ${escapeHtml(event.kind || "")}"><div class="noc-event-top"><strong>${escapeHtml(eventTitle(event))}</strong><span>${escapeHtml(formatDate(event.timestamp))}</span></div><p>${escapeHtml(eventDetail(event))}</p></div>`).join("") : '<div class="empty-state">Sem eventos registrados.</div>'}</div>`;
 
     $("#noc-ack")?.addEventListener("click", () => void mutateNocIncident("acknowledge"));
+    $("#noc-recheck")?.addEventListener("click", () => void mutateNocIncident("recheck"));
     $("#noc-resolve")?.addEventListener("click", () => void mutateNocIncident("resolve"));
     $("#noc-open-investigation")?.addEventListener("click", () => openInvestigation(item.investigation_id));
   }
@@ -214,11 +272,26 @@
       const options = { method: "POST" };
       if (action === "resolve") options.body = { reason: "Encerrado manualmente pelo operador na Central NOC." };
       await api(`/ui/api/noc/incidents/${encodeURIComponent(selectedNocIncident)}/${action}`, options);
-      toast(action === "resolve" ? "Incidente encerrado." : "Incidente assumido.");
+      const labels = { resolve: "Incidente encerrado.", acknowledge: "Incidente assumido.", recheck: "Checkmk revalidado." };
+      toast(labels[action] || "Incidente atualizado.");
       await loadNocDashboard(true);
       await openNocIncident(selectedNocIncident);
     } catch (error) {
       toast(error.message, "error");
+    }
+  }
+
+  async function runNocTick() {
+    const button = $("#noc-tick");
+    if (button) button.disabled = true;
+    try {
+      const result = await api("/ui/api/noc/supervisor/tick", { method: "POST" });
+      toast(`Supervisor processou ${result.processed || 0} incidente(s).`);
+      await loadNocDashboard(true);
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 
@@ -228,7 +301,7 @@
     nocLoading = true;
     try {
       const data = await api("/ui/api/noc/dashboard");
-      renderNocSummary(data.counts || {});
+      renderNocSummary(data.counts || {}, data.supervisor || {});
       renderNocRows(data.recent || []);
       if (selectedNocIncident && $("#view-noc")?.classList.contains("active")) {
         void openNocIncident(selectedNocIncident);
