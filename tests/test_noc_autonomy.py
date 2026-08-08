@@ -7,7 +7,7 @@ import pytest
 from app.services.correction_policy import validate_correction
 from app.services.noc_checkmk_runtime import CheckmkRuntimeError, _parse_output, _safe_service, is_green
 from app.services.noc_communications import build_incident_communications, escalation_team
-from app.services.noc_specialist_tools import describe_noc_specialist_tools
+from app.services.noc_specialist_tools import _masked_command, describe_noc_specialist_tools
 from app.services.noc_supervisor import _autonomy_eligible
 from app.services.noc_targeting import service_scope
 
@@ -122,6 +122,18 @@ def test_noc_targeting_routes_monitor_services_and_affected_resources() -> None:
     assert service_scope("automation-helper") == "monitoring"
     assert service_scope("rrdcached") == "monitoring"
     assert service_scope("SNMP timeout") == "monitoring"
+
+
+def test_snmp_secret_masking_happens_before_ssh_telemetry() -> None:
+    auth_secret = "auth-example-value"
+    priv_secret = "privacy example value"
+    command = f"snmpget -v3 -A {auth_secret} -X '{priv_secret}' 192.0.2.10 1.3.6.1.2.1.1.1.0"
+
+    display = _masked_command(command, auth_secret, priv_secret)
+
+    assert auth_secret not in display
+    assert priv_secret not in display
+    assert display.count("[REDACTED]") == 2
 
 
 def test_specialist_catalog_contains_snmp_and_bmc_tools() -> None:
