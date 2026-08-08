@@ -54,6 +54,7 @@
         </div>
         <div class="fleet-actions">
           <button type="button" class="primary-button" id="fleet-start">Iniciar descoberta completa</button>
+          <button type="button" class="secondary-button" id="fleet-patrol-now" hidden>Rodar ronda agora</button>
           <button type="button" class="secondary-button" id="fleet-refresh">Atualizar</button>
         </div>
       </div>
@@ -73,15 +74,18 @@
 
     document.querySelector("#fleet-refresh")?.addEventListener("click", () => void loadFleet(true));
     document.querySelector("#fleet-start")?.addEventListener("click", () => void startFleet());
+    document.querySelector("#fleet-patrol-now")?.addEventListener("click", () => void patrolNow());
     return true;
   }
 
   function renderStatus(data) {
     const root = document.querySelector("#fleet-status");
     const start = document.querySelector("#fleet-start");
+    const patrolButton = document.querySelector("#fleet-patrol-now");
     if (!root || !start) return;
     const run = data.run || {};
     const assets = data.assets || {};
+    const patrol = data.patrol || {};
     const phase = data.phase || "not_started";
     const progress = Number(data.progress_percent || 0);
     const scanned = Number(run.scanned || 0);
@@ -101,12 +105,21 @@
       stateClass = data.stalled ? "stalled" : "running";
     } else if (phase === "inventory_ready") {
       title = "Inventário inicial concluído";
-      detail = `A descoberta terminou em ${formatDate(run.completed_at)}. Os Agents já podem reutilizar a base persistida.`;
+      detail = `A descoberta terminou em ${formatDate(run.completed_at)}. A partir daqui a ronda dos Checkmks encontrados é automática.`;
       stateClass = "ready";
     }
 
     start.disabled = phase === "running";
     start.textContent = phase === "running" ? "Descoberta em execução" : phase === "inventory_ready" ? "Nova descoberta completa" : "Iniciar descoberta completa";
+    if (patrolButton) patrolButton.hidden = phase !== "inventory_ready";
+
+    const patrolText = phase === "inventory_ready"
+      ? (patrol.running
+          ? `Ronda automática em execução · ciclo ${patrol.cycle || 0}`
+          : patrol.last_completed_at
+            ? `Última ronda: ${formatDate(patrol.last_completed_at)} · ${patrol.monitors_checked || 0} monitor(es) · ${patrol.problems_seen || 0} problema(s) observado(s) · ${patrol.new_incidents || 0} incidente(s) novo(s)`
+            : "Ronda automática aguardando o próximo ciclo do worker")
+      : "A ronda automática só começa depois que o inventário inicial estiver completo.";
 
     root.innerHTML = `
       <div class="fleet-state ${stateClass}">
@@ -114,6 +127,7 @@
         <strong class="fleet-percent">${esc(progress.toFixed(2))}%</strong>
       </div>
       <div class="fleet-progress"><span style="width:${Math.min(100, Math.max(0, progress))}%"></span></div>
+      <div class="fleet-patrol-line"><strong>Ronda:</strong><span>${esc(patrolText)}</span>${patrol.last_error ? `<small>${esc(patrol.last_error)}</small>` : ""}</div>
       <div class="fleet-metrics">
         <div><span>Processados</span><strong>${esc(scanned.toLocaleString("pt-BR"))}${total ? ` / ${esc(total.toLocaleString("pt-BR"))}` : ""}</strong></div>
         <div><span>Acessíveis</span><strong>${esc(accessible.toLocaleString("pt-BR"))}</strong></div>
@@ -181,6 +195,19 @@
     if (button) button.disabled = true;
     try {
       await request("/ui/api/noc/fleet/start", { method: "POST" });
+      await loadFleet(true);
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function patrolNow() {
+    const button = document.querySelector("#fleet-patrol-now");
+    if (button) button.disabled = true;
+    try {
+      await request("/ui/api/noc/fleet/patrol", { method: "POST" });
       await loadFleet(true);
     } catch (error) {
       alert(error.message);
