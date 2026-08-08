@@ -12,7 +12,9 @@ from app.services.codex_provider_instrumentation import install_codex_provider_p
 from app.services.ensemble_instrumentation import install_ensemble_reasoning
 from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
-from app.services.jobs import get_job, run_worker_once, worker_loop
+from app.services.jobs import get_job, run_worker_once
+from app.services.noc_supervisor import supervisor_tick
+from app.services.noc_worker_hooks import handle_worker_result
 from app.services.secrets import secret_backend_status
 
 
@@ -29,7 +31,7 @@ def run(
     once: bool = typer.Option(False, "--once", help="Processa no máximo um job e encerra."),
     block_seconds: int | None = typer.Option(None, "--bloqueio", help="Tempo de espera por job."),
 ) -> None:
-    """Executa jobs da fila Redis usando a conectividade deste worker."""
+    """Executa jobs e mantém o ciclo autônomo de incidentes NOC."""
     settings = get_settings()
     ensure_database_schema()
     console.print(Panel(
@@ -37,14 +39,26 @@ def run(
         f"Fila: {settings.agent_queue_name}\n"
         f"Redis: configurado\n"
         f"Segredos: {secret_backend_status(settings).get('backend')}\n"
-        f"StrictHostKeyChecking: {settings.ssh_strict_host_key_checking}",
+        f"StrictHostKeyChecking: {settings.ssh_strict_host_key_checking}\n"
+        f"NOC autônomo: {'ativo' if settings.noc_incident_enabled else 'desativado'} · L{settings.noc_autonomy_level}",
         title="Agent IA Worker",
     ))
     if once:
         result = run_worker_once(settings=settings, block_seconds=block_seconds)
+        handle_worker_result(result, settings=settings)
+        supervisor_tick(settings=settings)
         console.print(json.dumps(result or {"status": "empty"}, ensure_ascii=False, indent=2, default=str))
         return
-    worker_loop(settings=settings)
+
+    while True:
+        try:
+            result = run_worker_once(settings=settings, block_seconds=block_seconds)
+            handle_worker_result(result, settings=settings)
+            supervisor_tick(settings=settings)
+        except KeyboardInterrupt:
+            return
+        except Exception as exc:
+            console.print(f"[yellow]Supervisor/worker encontrou erro transitório: {type(exc).__name__}: {exc}[/yellow]")
 
 
 @app.command("job")
