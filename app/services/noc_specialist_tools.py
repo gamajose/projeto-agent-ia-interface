@@ -103,6 +103,7 @@ _SPECIALIST_DESCRIPTORS: tuple[dict[str, Any], ...] = (
 )
 
 _NAMES = {str(item["name"]) for item in _SPECIALIST_DESCRIPTORS}
+_REDACTED_TOKEN = "[REDACTED]"
 
 
 def describe_noc_specialist_tools() -> list[dict[str, Any]]:
@@ -131,18 +132,33 @@ def _bounded_lines(value: Any, default: int = 100) -> int:
     return max(10, min(lines, 300))
 
 
-def _snmp_v2_command(host: str, settings: Settings) -> str:
+def _masked_command(command: str, *secrets: str | None) -> str:
+    """Mascara segredos antes do comando chegar à telemetria/progresso SSH."""
+    display = command
+    for secret in secrets:
+        value = str(secret or "")
+        if not value:
+            continue
+        quoted = shlex.quote(value)
+        display = display.replace(quoted, _REDACTED_TOKEN)
+        if quoted == value:
+            display = display.replace(value, _REDACTED_TOKEN)
+    return display
+
+
+def _snmp_v2_command(host: str, settings: Settings) -> tuple[str, str]:
     community = get_secret("SNMP_V2_COMMUNITY", settings.snmp_v2_community, settings=settings, required=True)
-    return (
+    command = (
         "if command -v snmpget >/dev/null 2>&1; then "
         f"snmpget -v2c -c {shlex.quote(community)} -t 3 -r 1 {shlex.quote(host)} "
         "1.3.6.1.2.1.1.1.0 1.3.6.1.2.1.1.3.0 1.3.6.1.2.1.1.5.0; "
         "else "
         f"snmpwalk -v2c -c {shlex.quote(community)} -t 3 -r 1 {shlex.quote(host)} 1.3.6.1.2.1.1 2>&1 | head -n 20; fi"
     )
+    return command, _masked_command(command, community)
 
 
-def _snmp_v3_command(host: str, settings: Settings) -> str:
+def _snmp_v3_command(host: str, settings: Settings) -> tuple[str, str]:
     user = get_secret("SNMP_V3_USER", settings.snmp_v3_user, settings=settings, required=True)
     auth_password = get_secret(
         "SNMP_V3_AUTH_PASSWORD",
@@ -164,17 +180,36 @@ def _snmp_v3_command(host: str, settings: Settings) -> str:
         )
     else:
         security = f"-l authNoPriv -u {shlex.quote(user)} -a {auth_protocol} -A {shlex.quote(auth_password)}"
-    return (
+    command = (
         "if command -v snmpget >/dev/null 2>&1; then "
         f"snmpget -v3 {security} -t 3 -r 1 {shlex.quote(host)} "
         "1.3.6.1.2.1.1.1.0 1.3.6.1.2.1.1.3.0 1.3.6.1.2.1.1.5.0; "
         "else "
         f"snmpwalk -v3 {security} -t 3 -r 1 {shlex.quote(host)} 1.3.6.1.2.1.1 2>&1 | head -n 20; fi"
     )
+    return command, _masked_command(command, auth_password, priv_password)
 
 
-def _execute(executor: SSHExecutor, environment: EnvironmentType, command: str, *, sudo: bool = False, timeout: int = 45) -> dict[str, Any]:
-    result = executor.run_sudo(command, environment, timeout=timeout) if sudo else executor.run(command, environment, timeout=timeout)
+def _execute(
+    executor: SSHExecutor,
+    environment: EnvironmentType,
+    command: str,
+    *,
+    sudo: bool = False,
+    timeout: int = 45,
+    display_command: str | None = None,
+) -> dict[str, Any]:
+    if display_command and display_command != command and not sudo:
+        # Mantém exatamente a mesma validação/budget/telemetria do executor,
+        # mas publica apenas a versão mascarada do comando.
+        executor._validate(command, environment, False)
+        result = executor._execute_streaming(
+            command=display_command,
+            wrapped_command=command,
+            timeout=timeout,
+        )
+    else:
+        result = executor.run_sudo(command, environment, timeout=timeout) if sudo else executor.run(command, environment, timeout=timeout)
     stdout = redact_text(result.stdout)
     stderr = redact_text(result.stderr)
     return {
@@ -219,27 +254,37 @@ def execute_noc_specialist_tool(
             result = _execute(executor, environment, command, timeout=20)
         elif name == "snmp.v2.system":
             host = _safe_host(args.get("host"))
-            result = _execute(executor, environment, _snmp_v2_command(host, settings), timeout=30)
+            command, display = _snmp_v2_command(host, settings)
+            result = _execute(executor, environment, command, display_command=display, timeout=30)
         elif name == "snmp.v3.system":
             host = _safe_host(args.get("host"))
-            result = _execute(executor, environment, _snmp_v3_command(host, settings), timeout=30)
+            command, display = _snmp_v3_command(host, settings)
+            result = _execute(executor, environment, command, display_command=display, timeout=30)
         elif name == "snmp.auto.system":
             host = _safe_host(args.get("host"))
-            commands: list[tuple[str, str]] = []
+            commands: list[tuple[str, str, str]] = []
             try:
-                commands.append(("v3", _snmp_v3_command(host, settings)))
+                command, display = _snmp_v3_command(host, settings)
+                commands.append(("v3", command, display))
             except Exception:
                 pass
             try:
-                commands.append(("v2c", _snmp_v2_command(host, settings)))
+                command, display = _snmp_v2_command(host, settings)
+                commands.append(("v2c", command, display))
             except Exception:
                 pass
             if not commands:
                 raise ValueError("nenhuma credencial SNMP v2c/v3 está configurada no Agent")
             attempts: list[dict[str, Any]] = []
             selected: dict[str, Any] | None = None
-            for version, command in commands:
-                attempt = _execute(executor, environment, command, timeout=30)
+            for version, command, display in commands:
+                attempt = _execute(
+                    executor,
+                    environment,
+                    command,
+                    display_command=display,
+                    timeout=30,
+                )
                 attempt["version"] = version
                 attempts.append(attempt)
                 if attempt.get("exit_code") == 0 and attempt.get("stdout"):
@@ -252,7 +297,11 @@ def execute_noc_specialist_tool(
                     **dict(selected.get("normalized") or {}),
                     "selected_version": selected.get("version"),
                     "attempts": [
-                        {"version": item.get("version"), "exit_code": item.get("exit_code"), "responded": bool(item.get("stdout"))}
+                        {
+                            "version": item.get("version"),
+                            "exit_code": item.get("exit_code"),
+                            "responded": bool(item.get("stdout")),
+                        }
                         for item in attempts
                     ],
                 },
@@ -279,7 +328,15 @@ def execute_noc_specialist_tool(
         elif name == "bmc.ipmi.fru":
             result = _execute(executor, environment, "ipmitool fru 2>&1", sudo=True, timeout=60)
         else:
-            return {**base, "status": "blocked", "reason": "ferramenta especialista desconhecida", "exit_code": 255, "stdout": "", "stderr": "", "normalized": {}}
+            return {
+                **base,
+                "status": "blocked",
+                "reason": "ferramenta especialista desconhecida",
+                "exit_code": 255,
+                "stdout": "",
+                "stderr": "",
+                "normalized": {},
+            }
         return {
             **base,
             **result,
