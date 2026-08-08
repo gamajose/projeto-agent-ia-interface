@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.correction_policy import validate_correction
-from app.services.noc_checkmk_runtime import _parse_output, is_green
+from app.services.noc_checkmk_runtime import CheckmkRuntimeError, _parse_output, _safe_service, is_green
 from app.services.noc_communications import build_incident_communications, escalation_team
 from app.services.noc_specialist_tools import describe_noc_specialist_tools
 from app.services.noc_supervisor import _autonomy_eligible
@@ -100,6 +102,15 @@ def test_checkmk_runtime_parser_keeps_critical_not_green() -> None:
 
     assert runtime["status"] == "critical"
     assert is_green(runtime) is False
+
+
+def test_checkmk_watcher_rejects_shell_metacharacters_in_service_name() -> None:
+    assert _safe_service("Filesystem /var") == "Filesystem /var"
+    assert _safe_service("Interface 1 [eth0]") == "Interface 1 [eth0]"
+    with pytest.raises(CheckmkRuntimeError):
+        _safe_service('Check_MK Agent $(touch /tmp/pwned)')
+    with pytest.raises(CheckmkRuntimeError):
+        _safe_service('Service "quoted"')
 
 
 def test_specialist_catalog_contains_snmp_and_bmc_tools() -> None:
