@@ -2,10 +2,19 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
+from app.services.noc_incidents import (
+    acknowledge_incident,
+    get_noc_incident,
+    list_noc_incidents,
+    noc_dashboard,
+    resolve_incident,
+)
+from app.services.noc_supervisor import force_recheck_incident, supervisor_tick
 from app.services.persistence import (
     get_investigation,
     get_playbook_draft,
@@ -32,6 +41,105 @@ class FeedbackPayload(BaseModel):
 class DraftReviewPayload(BaseModel):
     action: Literal["approve", "reject"]
     notes: str | None = Field(default=None, max_length=4000)
+
+
+class IncidentResolvePayload(BaseModel):
+    reason: str | None = Field(default=None, max_length=4000)
+
+
+@router.get("/ui/api/noc/dashboard")
+def noc_operational_dashboard(request: Request) -> dict:
+    _require_access(request)
+    settings = get_settings()
+    try:
+        data = noc_dashboard(settings=settings)
+        return {
+            **data,
+            "supervisor": {
+                "enabled": settings.noc_incident_enabled,
+                "autonomy_level": settings.noc_autonomy_level,
+                "self_heal_enabled": settings.noc_self_heal_enabled,
+                "watch_interval_seconds": settings.noc_watch_interval_seconds,
+                "max_reinvestigations": settings.noc_max_reinvestigations,
+            },
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"supervisor NOC indisponível: {type(exc).__name__}: {exc}") from exc
+
+
+@router.post("/ui/api/noc/supervisor/tick")
+def noc_supervisor_tick(request: Request) -> dict:
+    _require_mutation(request)
+    try:
+        return supervisor_tick()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"supervisor NOC indisponível: {type(exc).__name__}: {exc}") from exc
+
+
+@router.get("/ui/api/noc/incidents")
+def noc_incidents(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    status: str | None = Query(default=None, max_length=40),
+    open_only: bool = Query(default=False),
+) -> dict:
+    _require_access(request)
+    try:
+        return list_noc_incidents(limit=limit, status=status, open_only=open_only, sync_jobs=True)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"supervisor NOC indisponível: {type(exc).__name__}: {exc}") from exc
+
+
+@router.get("/ui/api/noc/incidents/{incident_id}")
+def noc_incident_detail(incident_id: str, request: Request) -> dict:
+    _require_access(request)
+    try:
+        incident = get_noc_incident(incident_id, include_events=True, sync_job=True)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"supervisor NOC indisponível: {type(exc).__name__}: {exc}") from exc
+    if not incident:
+        raise HTTPException(status_code=404, detail="incidente NOC não encontrado")
+    return incident
+
+
+@router.post("/ui/api/noc/incidents/{incident_id}/recheck")
+def noc_incident_recheck(incident_id: str, request: Request) -> dict:
+    _require_mutation(request)
+    try:
+        incident = force_recheck_incident(incident_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"revalidação Checkmk indisponível: {type(exc).__name__}: {exc}") from exc
+    if not incident:
+        raise HTTPException(status_code=404, detail="incidente NOC não encontrado")
+    return {"rechecked": True, "incident": incident}
+
+
+@router.post("/ui/api/noc/incidents/{incident_id}/acknowledge")
+def noc_incident_acknowledge(incident_id: str, request: Request) -> dict:
+    _require_mutation(request)
+    try:
+        incident = acknowledge_incident(incident_id, operator=_operator_name())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"supervisor NOC indisponível: {type(exc).__name__}: {exc}") from exc
+    if not incident:
+        raise HTTPException(status_code=404, detail="incidente NOC não encontrado")
+    return {"acknowledged": True, "incident": incident}
+
+
+@router.post("/ui/api/noc/incidents/{incident_id}/resolve")
+def noc_incident_resolve(incident_id: str, payload: IncidentResolvePayload, request: Request) -> dict:
+    _require_mutation(request)
+    try:
+        incident = resolve_incident(
+            incident_id,
+            operator=_operator_name(),
+            reason=payload.reason,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"supervisor NOC indisponível: {type(exc).__name__}: {exc}") from exc
+    if not incident:
+        raise HTTPException(status_code=404, detail="incidente NOC não encontrado")
+    return {"resolved": True, "incident": incident}
 
 
 @router.get("/ui/api/investigations/{investigation_id}/feedback")
