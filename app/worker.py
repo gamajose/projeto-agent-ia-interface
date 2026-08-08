@@ -10,6 +10,11 @@ from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.codex_provider_instrumentation import install_codex_provider_preflight
 from app.services.ensemble_instrumentation import install_ensemble_reasoning
+from app.services.fleet_discovery import (
+    fleet_discovery_status,
+    fleet_discovery_tick,
+    start_fleet_discovery_background,
+)
 from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
 from app.services.jobs import get_job, run_worker_once
@@ -31,16 +36,18 @@ def run(
     once: bool = typer.Option(False, "--once", help="Processa no máximo um job e encerra."),
     block_seconds: int | None = typer.Option(None, "--bloqueio", help="Tempo de espera por job."),
 ) -> None:
-    """Executa jobs e mantém o ciclo autônomo de incidentes NOC."""
+    """Executa jobs, a ronda de frota e o ciclo autônomo de incidentes NOC."""
     settings = get_settings()
     ensure_database_schema()
+    fleet_started = False if once else start_fleet_discovery_background(settings=settings)
     console.print(Panel(
         f"Worker: {settings.agent_worker_name}\n"
         f"Fila: {settings.agent_queue_name}\n"
         f"Redis: configurado\n"
         f"Segredos: {secret_backend_status(settings).get('backend')}\n"
         f"StrictHostKeyChecking: {settings.ssh_strict_host_key_checking}\n"
-        f"NOC autônomo: {'ativo' if settings.noc_incident_enabled else 'desativado'} · L{settings.noc_autonomy_level}",
+        f"NOC autônomo: {'ativo' if settings.noc_incident_enabled else 'desativado'} · L{settings.noc_autonomy_level}\n"
+        f"Fleet Discovery: {'segundo plano' if fleet_started else 'sob demanda/--once'}",
         title="Agent IA Worker",
     ))
 
@@ -52,7 +59,8 @@ def run(
         handle_worker_result(result, settings=settings)
         reconcile_noc_jobs(settings=settings)
         supervisor_tick(settings=settings)
-        console.print(json.dumps(result or {"status": "empty"}, ensure_ascii=False, indent=2, default=str))
+        fleet = fleet_discovery_tick(settings=settings)
+        console.print(json.dumps({"job": result or {"status": "empty"}, "fleet": fleet}, ensure_ascii=False, indent=2, default=str))
         return
 
     while True:
@@ -65,6 +73,13 @@ def run(
             return
         except Exception as exc:
             console.print(f"[yellow]Supervisor/worker encontrou erro transitório: {type(exc).__name__}: {exc}[/yellow]")
+
+
+@app.command("fleet-status")
+def fleet_status() -> None:
+    """Mostra o progresso da descoberta e os alvos que não foram acessados."""
+    ensure_database_schema()
+    console.print(json.dumps(fleet_discovery_status(), ensure_ascii=False, indent=2, default=str))
 
 
 @app.command("job")
