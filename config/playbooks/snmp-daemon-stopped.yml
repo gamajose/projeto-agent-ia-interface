@@ -1,0 +1,29 @@
+id: snmp-daemon-stopped
+title: SNMP - snmpd ou bsnmpd parado
+priority: 94
+profiles: [linux_generic, oracle_linux, pfsense, checkmk]
+match:
+  any:
+    - "snmpd.*stopped"
+    - "snmpd.*inactive"
+    - "bsnmpd.*stopped"
+    - "bsnmpd.*inactive"
+    - "snmp.*daemon.*down"
+    - "snmp.*service.*critical"
+steps:
+  - tool: systemd.list_failed
+    purpose: Confirmar unidades com falha antes de qualquer recuperação.
+  - tool: service.search
+    arguments: {query: "snmp"}
+    purpose: Descobrir se o ambiente usa snmpd, bsnmpd ou outro nome compatível.
+  - tool: network.listeners
+    arguments: {port: 161}
+    purpose: Confirmar se UDP/161 já possui listener e evitar restart desnecessário.
+  - tool: logs.search
+    arguments: {query: "snmp", minutes: 120, lines: 150}
+    purpose: Coletar a causa observável do daemon parado antes de propor recuperação.
+allowed_corrections:
+  - systemd.recover_unit
+validation:
+  - tool: network.listeners
+    arguments: {port: 161}
