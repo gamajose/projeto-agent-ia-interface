@@ -32,12 +32,31 @@ PROTECTED_UNIT_TERMS = (
 )
 
 ALLOWED_SYSTEMD_UNITS = (
-    re.compile(r"^(?:check-mk-agent|check_mk|cmk-agent-ctl|xinetd|snmpd|bsnmpd)(?:\.service|\.socket)?$", re.IGNORECASE),
+    re.compile(
+        r"^(?:check-mk-agent|check_mk|cmk-agent-ctl|cmk-agent-ctl-daemon|check-mk-agent-async|xinetd|snmpd|bsnmpd)(?:\.service|\.socket)?$",
+        re.IGNORECASE,
+    ),
 )
 
+# Somente processos internos de monitoramento. Nenhum runtime de container,
+# banco de dados ou serviço de aplicação do cliente entra nesta lista.
 ALLOWED_OMD_SERVICES = {
-    "automation-helper", "agent-receiver", "apache", "crontab", "mkeventd", "nagios",
-    "npcd", "redis", "rrdcached", "ui-job-scheduler", "xinetd",
+    "agent-receiver",
+    "apache",
+    "automation-helper",
+    "cmc",
+    "crontab",
+    "dcd",
+    "liveproxyd",
+    "mkeventd",
+    "mknotifyd",
+    "nagios",
+    "npcd",
+    "redis",
+    "rrdcached",
+    "stunnel",
+    "ui-job-scheduler",
+    "xinetd",
 }
 
 SYSTEMCTL_ACTION = re.compile(r"^systemctl\s+(start|restart|reload|enable|enable\s+--now)\s+([A-Za-z0-9_.@:-]+)$", re.IGNORECASE)

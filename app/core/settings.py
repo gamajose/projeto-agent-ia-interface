@@ -74,6 +74,35 @@ class Settings(BaseSettings):
     agent_job_ttl_seconds: int = 86400
     agent_queue_block_seconds: int = 5
 
+    # NOC autônomo: L4 executa somente correções de baixo risco já aprovadas
+    # pela segunda IA e pela allowlist. Produção/standby continuam bloqueados
+    # pela política central de ambientes.
+    noc_incident_enabled: bool = True
+    noc_incident_prefix: str = "agent-ia:noc"
+    noc_incident_ttl_seconds: int = Field(default=604800, ge=3600, le=2592000)
+    noc_incident_dedup_seconds: int = Field(default=300, ge=0, le=86400)
+    noc_flapping_window_seconds: int = Field(default=1800, ge=60, le=86400)
+    noc_flapping_transition_threshold: int = Field(default=4, ge=2, le=50)
+    noc_auto_investigate: bool = True
+    noc_auto_close_on_ok: bool = True
+    noc_autonomy_level: int = Field(default=4, ge=0, le=5)
+    noc_self_heal_enabled: bool = True
+    noc_self_heal_min_confidence: int = Field(default=85, ge=50, le=100)
+    noc_self_heal_tools: str = "systemd.recover_unit,checkmk.recover_omd_service"
+    noc_autonomy_max_approval_rounds: int = Field(default=3, ge=1, le=6)
+    noc_watch_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    noc_watch_timeout_seconds: int = Field(default=900, ge=60, le=86400)
+    noc_watch_max_rechecks: int = Field(default=5, ge=1, le=30)
+    noc_reinvestigate_on_watch_failure: bool = True
+    noc_max_reinvestigations: int = Field(default=2, ge=0, le=10)
+    noc_checkmk_recheck_timeout_seconds: int = Field(default=90, ge=20, le=300)
+    noc_communication_ai_enabled: bool = True
+    noc_whatsapp_webhook_url: str | None = None
+    noc_whatsapp_webhook_token: str | None = None
+    noc_whatsapp_auto_send: bool = False
+    noc_internal_webhook_url: str | None = None
+    noc_internal_webhook_token: str | None = None
+
     agent_batch_enabled: bool = True
     agent_batch_max_targets: int = Field(default=50, ge=1, le=500)
     agent_batch_concurrency: int = Field(default=2, ge=1, le=10)
@@ -83,6 +112,15 @@ class Settings(BaseSettings):
     checkmk_api_secret: str | None = None
     checkmk_webhook_token: str | None = None
     checkmk_webhook_auto_correct: bool = False
+
+    # Credenciais dos especialistas SNMP. Permanecem no .env/Vault e são
+    # redigidas antes de evidências chegarem à IA ou à persistência.
+    snmp_v2_community: str | None = None
+    snmp_v3_user: str | None = None
+    snmp_v3_auth_password: str | None = None
+    snmp_v3_auth_protocol: str = "SHA"
+    snmp_v3_priv_password: str | None = None
+    snmp_v3_priv_protocol: str = "AES"
 
     agent_api_token: str | None = None
     agent_default_mode: str = "propose"
