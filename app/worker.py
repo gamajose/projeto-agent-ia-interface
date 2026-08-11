@@ -10,7 +10,8 @@ from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.codex_provider_instrumentation import install_codex_provider_preflight
 from app.services.ensemble_instrumentation import install_ensemble_reasoning
-from app.services.fleet_control import fleet_control_status, resume_active_fleet_discovery
+from app.services.fleet_control import fleet_control_status
+from app.services.fleet_scope_control import resume_active_fleet_discovery
 from app.services.fleet_patrol import fleet_patrol_status, start_fleet_patrol_background
 from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
@@ -38,8 +39,8 @@ def run(
     ensure_database_schema()
 
     # Subir o serviço NÃO inicia uma varredura nova. Se o operador já havia
-    # iniciado uma descoberta e o processo reiniciou no meio, o cursor salvo no
-    # PostgreSQL é retomado automaticamente.
+    # iniciado uma descoberta e o processo reiniciou no meio, o cursor e os
+    # CIDRs salvos naquele run são retomados automaticamente.
     fleet_resumed = False if once else resume_active_fleet_discovery(settings=settings)
 
     # A ronda é permanente, mas fica em espera até a primeira descoberta estar
@@ -59,7 +60,6 @@ def run(
         title="Agent IA Worker",
     ))
 
-    # Retoma jobs que possam ter concluído antes de um restart do processo.
     reconcile_noc_jobs(settings=settings)
 
     if once:
