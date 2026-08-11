@@ -57,6 +57,32 @@ def _inject_adaptive_assets(content: str) -> str:
     return content
 
 
+def _inject_operator_refresh_assets(content: str) -> str:
+    styles = (
+        "navigation-refresh.css",
+        "fleet-scope.css",
+        "execution-visibility.css",
+    )
+    scripts = (
+        "navigation-refresh.js",
+        "fleet-scope.js",
+        "execution-visibility.js",
+    )
+    for asset in styles:
+        if asset not in content:
+            content = content.replace(
+                "</head>",
+                f'  <link rel="stylesheet" href="/ui/assets/{asset}?v={_ASSET_VERSION}">\n</head>',
+            )
+    for asset in scripts:
+        if asset not in content:
+            content = content.replace(
+                "</body>",
+                f'  <script src="/ui/assets/{asset}?v={_ASSET_VERSION}"></script>\n</body>',
+            )
+    return content
+
+
 @router.get("/ui", include_in_schema=False, response_class=HTMLResponse)
 @router.get("/ui/", include_in_schema=False, response_class=HTMLResponse)
 def versioned_interface(request: Request) -> HTMLResponse:
@@ -66,6 +92,7 @@ def versioned_interface(request: Request) -> HTMLResponse:
     content = _inject_topology_assets(content)
     content = _inject_operator_assets(content)
     content = _inject_adaptive_assets(content)
+    content = _inject_operator_refresh_assets(content)
     return HTMLResponse(
         content,
         headers={
