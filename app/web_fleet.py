@@ -33,7 +33,7 @@ def noc_fleet_status(request: Request) -> dict:
 
 
 @router.post("/ui/api/noc/fleet/start")
-def noc_fleet_start(payload: FleetStartPayload | None, request: Request) -> dict:
+def noc_fleet_start(request: Request, payload: FleetStartPayload | None = None) -> dict:
     """Inicia a descoberta na faixa escolhida, sempre dentro do limite autorizado."""
     _require_mutation(request)
     try:
