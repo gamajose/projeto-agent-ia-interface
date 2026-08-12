@@ -17,7 +17,7 @@ from app.services.codex_provider_instrumentation import install_codex_provider_p
 from app.services.ensemble_instrumentation import install_ensemble_reasoning
 from app.services.fleet_control import fleet_control_status
 from app.services.fleet_scope_control import resume_active_fleet_discovery
-from app.services.fleet_patrol import fleet_patrol_status, start_fleet_patrol_background
+from app.services.fleet_patrol import fleet_patrol_status
 from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
 from app.services.jobs import get_job, run_worker_once
@@ -51,10 +51,6 @@ def run(
     # Fonte primária do NOC: CMK05/master -> sites remotos -> estados Checkmk.
     master_started = False if once else start_checkmk_master_patrol_background(settings=settings)
 
-    # Compatibilidade/contingência: a antiga ronda por hosts só sobe quando
-    # FLEET_PATROL_ENABLED=true for explicitamente configurado.
-    fallback_patrol_started = False if once else start_fleet_patrol_background(settings=settings)
-
     console.print(Panel(
         f"Worker: {settings.agent_worker_name}\n"
         f"Fila: {settings.agent_queue_name}\n"
@@ -64,7 +60,7 @@ def run(
         f"NOC autônomo: {'ativo' if settings.noc_incident_enabled else 'desativado'} · L{settings.noc_autonomy_level}\n"
         f"Checkmk Master: {'ativo' if master_started else 'desativado'}\n"
         f"Fleet Discovery: {'retomada em segundo plano' if fleet_resumed else 'contingência/manual'}\n"
-        f"Fleet Patrol legado: {'ativo' if fallback_patrol_started else 'desativado'}",
+        f"Fleet Patrol legado: desativado (somente acionamento manual)",
         title="Agent IA Worker",
     ))
 
