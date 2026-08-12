@@ -68,6 +68,8 @@ done
 APP_DIR="$INSTALL_ROOT/app"
 TARGET_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 TARGET_GROUP="$(id -gn "$TARGET_USER")"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+[[ -n "$TARGET_HOME" ]] || TARGET_HOME="$HOME"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$PWD}")" 2>/dev/null && pwd || printf '%s' "$PWD")"
 SOURCE_ENV=""
 
@@ -101,23 +103,46 @@ as_target() {
 
 python_supported() {
   local candidate="$1"
-  command -v "$candidate" >/dev/null 2>&1 || return 1
-  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+  [[ -n "$candidate" ]] || return 1
+  if [[ "$candidate" != */* ]]; then
+    command -v "$candidate" >/dev/null 2>&1 || return 1
+  else
+    [[ -x "$candidate" ]] || return 1
+  fi
+  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)' >/dev/null 2>&1
+}
+
+python_realpath() {
+  "$1" -c 'import os,sys; print(os.path.realpath(sys.executable))' 2>/dev/null
 }
 
 select_supported_python() {
-  local candidate
+  local candidate uv_bin="$TARGET_HOME/.local/bin/uv" uv_candidate=""
+
   if [[ -n "$PYTHON_BIN" ]]; then
-    python_supported "$PYTHON_BIN" || return 1
-    printf '%s' "$PYTHON_BIN"
-    return
+    if python_supported "$PYTHON_BIN"; then
+      python_realpath "$PYTHON_BIN"
+      return
+    fi
+    warn "PYTHON_BIN aponta para $($PYTHON_BIN --version 2>&1 || printf 'um Python incompatível'); o Agent IA exige Python 3.11.x. Ignorando esta versão."
+    PYTHON_BIN=""
   fi
-  for candidate in python3.12 python3.11 python3; do
+
+  for candidate in python3.11 /usr/bin/python3.11 /usr/local/bin/python3.11; do
     if python_supported "$candidate"; then
-      printf '%s' "$candidate"
+      python_realpath "$candidate"
       return
     fi
   done
+
+  if [[ -x "$uv_bin" ]]; then
+    uv_candidate="$(as_target env HOME="$TARGET_HOME" "$uv_bin" python find 3.11 2>/dev/null || true)"
+    if [[ -n "$uv_candidate" ]] && python_supported "$uv_candidate"; then
+      python_realpath "$uv_candidate"
+      return
+    fi
+  fi
+
   return 1
 }
 
@@ -143,41 +168,50 @@ install_bootstrap_packages() {
   fi
 }
 
+install_uv_python311() {
+  local uv_bin="$TARGET_HOME/.local/bin/uv"
+
+  info "Python 3.11.x não está disponível nos pacotes da distribuição; instalando runtime 3.11 gerenciado"
+  as_target env HOME="$TARGET_HOME" UV_UNMANAGED_INSTALL="$TARGET_HOME/.local/bin" \
+    sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  [[ -x "$uv_bin" ]] || fail "uv foi instalado, mas não ficou disponível em $uv_bin"
+  as_target env HOME="$TARGET_HOME" "$uv_bin" python install 3.11
+}
+
 ensure_supported_python() {
   local selected=""
-  if selected="$(select_supported_python)"; then
+  selected="$(select_supported_python 2>/dev/null || true)"
+  if [[ -n "$selected" ]]; then
     PYTHON_BIN="$selected"
     export PYTHON_BIN
-    info "Python compatível detectado: $($PYTHON_BIN --version 2>&1)"
+    info "Python 3.11 detectado: $($PYTHON_BIN --version 2>&1)"
     return
   fi
 
-  [[ -z "${PYTHON_BIN:-}" ]] || fail "$PYTHON_BIN não atende ao requisito mínimo Python 3.11"
-  info "Python 3.11 ou superior não encontrado; instalando uma versão paralela compatível"
+  info "Python 3.11.x não encontrado; preparando uma versão paralela sem alterar o Python padrão do sistema"
 
   if command -v dnf >/dev/null 2>&1; then
-    "${SUDO[@]}" dnf install -y python3.11 python3.11-pip \
-      || "${SUDO[@]}" dnf install -y python3.12 python3.12-pip
+    "${SUDO[@]}" dnf install -y python3.11 python3.11-pip python3.11-devel || true
   elif command -v yum >/dev/null 2>&1; then
-    "${SUDO[@]}" yum install -y python3.11 python3.11-pip \
-      || "${SUDO[@]}" yum install -y python3.12 python3.12-pip
+    "${SUDO[@]}" yum install -y python3.11 python3.11-pip python3.11-devel || true
   elif command -v apt-get >/dev/null 2>&1; then
     "${SUDO[@]}" apt-get update
-    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv python3-full
-    if ! selected="$(select_supported_python)"; then
-      "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y python3.11 python3.11-venv python3.11-dev
-    fi
+    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      python3.11 python3.11-venv python3.11-dev python3-pip || true
   elif command -v zypper >/dev/null 2>&1; then
-    "${SUDO[@]}" zypper --non-interactive install python311 python311-pip
-  else
-    fail "gerenciador de pacotes não reconhecido; instale Python 3.11 ou superior"
+    "${SUDO[@]}" zypper --non-interactive install python311 python311-pip python311-devel || true
   fi
 
-  selected="$(select_supported_python)" \
-    || fail "não foi possível disponibilizar Python 3.11 ou superior nesta distribuição"
+  selected="$(select_supported_python 2>/dev/null || true)"
+  if [[ -z "$selected" ]]; then
+    install_uv_python311
+    selected="$(select_supported_python 2>/dev/null || true)"
+  fi
+
+  [[ -n "$selected" ]] || fail "não foi possível disponibilizar Python 3.11.x nesta distribuição"
   PYTHON_BIN="$selected"
   export PYTHON_BIN
-  info "Python selecionado: $($PYTHON_BIN --version 2>&1)"
+  info "Python selecionado para o Agent IA: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
 }
 
 restore_mode_only_changes() {
