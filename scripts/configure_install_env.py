@@ -6,9 +6,11 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Callable
 from urllib.parse import quote, unquote as url_unquote, urlsplit
 
 
@@ -130,24 +132,78 @@ def validated_port(value: str | None, default: int) -> str:
     return str(port)
 
 
-def docker_command(
-    *arguments: str,
-    timeout: int = 12,
-    environment: dict[str, str] | None = None,
+def _docker_access_denied(result: subprocess.CompletedProcess[str] | None) -> bool:
+    if result is None:
+        return True
+    if result.returncode == 0:
+        return False
+    text = f"{result.stdout}\n{result.stderr}".casefold()
+    markers = (
+        "permission denied",
+        "got permission denied",
+        "cannot connect to the docker daemon",
+        "docker daemon socket",
+        "permission while trying to connect",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _run_command(
+    command: list[str],
+    *,
+    timeout: int,
+    environment: dict[str, str],
+    stdin_text: str | None,
 ) -> subprocess.CompletedProcess[str] | None:
-    process_environment = os.environ.copy()
-    process_environment.update(environment or {})
     try:
         return subprocess.run(
-            ["docker", *arguments],
+            command,
+            input=stdin_text,
             capture_output=True,
             text=True,
             check=False,
             timeout=timeout,
-            env=process_environment,
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
+
+
+def docker_command(
+    *arguments: str,
+    timeout: int = 12,
+    environment: dict[str, str] | None = None,
+    stdin_text: str | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    """Executa Docker sem expor secrets no argv e contorna grupo recém-adicionado.
+
+    O instalador pode incluir o usuário no grupo docker durante a mesma execução.
+    O processo atual ainda não recebe esse grupo suplementar até uma nova sessão.
+    Nessa situação, tentamos ``sudo -n docker`` somente quando o erro indica falta
+    de acesso ao daemon. A senha sudo nunca é lida ou armazenada por este script.
+    """
+
+    process_environment = os.environ.copy()
+    process_environment.update(environment or {})
+    plain = _run_command(
+        ["docker", *arguments],
+        timeout=timeout,
+        environment=process_environment,
+        stdin_text=stdin_text,
+    )
+    if not _docker_access_denied(plain):
+        return plain
+
+    if shutil.which("sudo"):
+        privileged = _run_command(
+            ["sudo", "-n", "docker", *arguments],
+            timeout=timeout,
+            environment=process_environment,
+            stdin_text=stdin_text,
+        )
+        if privileged is not None:
+            return privileged
+    return plain
 
 
 def container_exists(container: str) -> bool:
@@ -160,22 +216,63 @@ def container_running(container: str) -> bool:
     return bool(result and result.returncode == 0 and result.stdout.strip() == "true")
 
 
+def container_environment_value(container: str, key: str) -> str:
+    result = docker_command("inspect", "--format", "{{json .Config.Env}}", container)
+    if not result or result.returncode != 0:
+        return ""
+    try:
+        values = json.loads(result.stdout.strip() or "[]")
+    except json.JSONDecodeError:
+        return ""
+    prefix = f"{key}="
+    for item in values if isinstance(values, list) else []:
+        text = str(item)
+        if text.startswith(prefix):
+            return text[len(prefix) :]
+    return ""
+
+
+def container_command(container: str) -> list[str]:
+    result = docker_command("inspect", "--format", "{{json .Config.Cmd}}", container)
+    if not result or result.returncode != 0:
+        return []
+    try:
+        value = json.loads(result.stdout.strip() or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def recover_postgres_password() -> str:
+    """Recupera a senha já atribuída ao container sem imprimi-la."""
+
+    return container_environment_value("agent-ia-postgres", "POSTGRES_PASSWORD").strip()
+
+
+def recover_redis_password() -> str:
+    """Recupera --requirepass do container existente sem expor o valor."""
+
+    from_env = container_environment_value("agent-ia-redis", "REDIS_PASSWORD").strip()
+    if from_env:
+        return from_env
+    command = container_command("agent-ia-redis")
+    for index, item in enumerate(command[:-1]):
+        if item == "--requirepass":
+            return command[index + 1].strip()
+    return ""
+
+
 def validate_postgres_password(password: str) -> bool:
+    # A senha segue por stdin até o shell dentro do container. Ela não aparece
+    # em argv, logs ou no ambiente do processo sudo/docker do host.
     result = docker_command(
         "exec",
-        "-e",
-        "PGPASSWORD",
+        "-i",
         "agent-ia-postgres",
-        "psql",
-        "-h",
-        "127.0.0.1",
-        "-U",
-        "agent_ia",
-        "-d",
-        "agent_ia",
-        "-tAc",
-        "SELECT 1",
-        environment={"PGPASSWORD": password},
+        "sh",
+        "-c",
+        "IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -h 127.0.0.1 -U agent_ia -d agent_ia -tAc 'SELECT 1'",
+        stdin_text=f"{password}\n",
     )
     return bool(result and result.returncode == 0 and result.stdout.strip() == "1")
 
@@ -183,12 +280,12 @@ def validate_postgres_password(password: str) -> bool:
 def validate_redis_password(password: str) -> bool:
     result = docker_command(
         "exec",
-        "-e",
-        "REDISCLI_AUTH",
+        "-i",
         "agent-ia-redis",
-        "redis-cli",
-        "ping",
-        environment={"REDISCLI_AUTH": password},
+        "sh",
+        "-c",
+        "IFS= read -r REDISCLI_AUTH; export REDISCLI_AUTH; exec redis-cli ping",
+        stdin_text=f"{password}\n",
     )
     return bool(result and result.returncode == 0 and result.stdout.strip() == "PONG")
 
@@ -212,7 +309,8 @@ def resolve_existing_password(
     environment_name: str,
     current_password: str,
     prompt: str,
-    validator,
+    validator: Callable[[str], bool],
+    recoverer: Callable[[], str] | None = None,
 ) -> tuple[str, bool]:
     explicit = os.environ.get(environment_name, "").strip()
     if explicit:
@@ -225,6 +323,14 @@ def resolve_existing_password(
 
     if current_password and container_running(container) and validator(current_password):
         return current_password, False
+
+    # Em reinstalações, o .env pode ter sido alterado enquanto o volume do
+    # serviço mantém a credencial original. O Docker conserva a configuração
+    # usada para criar o container; reutilizamos essa informação sem logá-la.
+    recovered = str(recoverer() if recoverer else "").strip()
+    if recovered:
+        if not container_running(container) or validator(recovered):
+            return recovered, False
 
     for attempt in range(1, 4):
         candidate = prompt_secret(prompt, environment_name)
@@ -261,6 +367,7 @@ def main() -> None:
         current_password=current_postgres_password,
         prompt="Senha atual do PostgreSQL (usuário agent_ia): ",
         validator=validate_postgres_password,
+        recoverer=recover_postgres_password,
     )
     confirmed_redis_password, redis_prompted = resolve_existing_password(
         container="agent-ia-redis",
@@ -268,6 +375,7 @@ def main() -> None:
         current_password=current_redis_password,
         prompt="Senha atual do Redis: ",
         validator=validate_redis_password,
+        recoverer=recover_redis_password,
     )
 
     postgres_password = confirmed_postgres_password or current_postgres_password
@@ -304,6 +412,7 @@ def main() -> None:
         "AGENT_API_TOKEN": api_token,
         "AGENT_INSTALL_ROOT": str(install_root),
         "AGENT_VENV_DIR": str(venv_dir),
+        "AGENT_PYTHON_BIN": str(venv_dir / "bin" / "python"),
         "AGENT_PLAYBOOK_DIR": str(app_dir / "config" / "playbooks"),
         "AGENT_UI_OPERATOR_NAME": args.operator,
         "AGENT_UI_HOST": "0.0.0.0",
