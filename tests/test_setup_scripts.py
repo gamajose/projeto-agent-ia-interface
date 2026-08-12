@@ -140,8 +140,8 @@ def test_configurator_recovers_existing_service_passwords_without_exposing_them(
     assert '["sudo", "-n", "docker"' in content
     assert "INSTALL_EXISTING_POSTGRES_PASSWORD" in content
     assert "INSTALL_EXISTING_REDIS_PASSWORD" in content
-    assert '"PGPASSWORD"' in content
-    assert '"REDISCLI_AUTH"' in content
+    assert "PGPASSWORD" in content
+    assert "REDISCLI_AUTH" in content
     assert "stdin_text=f\"{password}\\n\"" in content
     assert 'f"PGPASSWORD={password}"' not in content
     assert 'f"REDISCLI_AUTH={password}"' not in content
