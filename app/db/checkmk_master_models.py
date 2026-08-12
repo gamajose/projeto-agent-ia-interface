@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -64,6 +64,43 @@ class CheckmkHostORM(Base):
     metadata_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CheckmkProblemORM(Base):
+    """Problema ativo ou recuperado observado via Livestatus.
+
+    A chave inclui o ``site_id`` para impedir colisao entre clientes que usam o
+    mesmo nome de host ou o mesmo endereco interno.
+    """
+
+    __tablename__ = "checkmk_master_problems"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    problem_key: Mapped[str] = mapped_column(String(768), nullable=False, unique=True, index=True)
+    site_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    client_alias: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False, default="service")
+    host_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    internal_address: Mapped[str | None] = mapped_column(String(64), index=True)
+    service: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    state: Mapped[int] = mapped_column(Integer, nullable=False, default=2, index=True)
+    state_name: Mapped[str] = mapped_column(String(20), nullable=False, default="CRIT", index=True)
+    output: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    skill_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    skill_title: Mapped[str | None] = mapped_column(String(255))
+    route_strategy: Mapped[str | None] = mapped_column(String(64))
+    automation_status: Mapped[str] = mapped_column(String(40), nullable=False, default="detected", index=True)
+    incident_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    job_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    metadata_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
