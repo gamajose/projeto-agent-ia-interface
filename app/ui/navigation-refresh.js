@@ -30,6 +30,36 @@
     document.querySelector('#view-replay')?.remove();
   }
 
+  function keepNewInvestigationVisible(button) {
+    if (!button || button.dataset.globalVisibilityGuard === '1') return;
+    button.dataset.globalVisibilityGuard = '1';
+    const reveal = () => {
+      if (button.hidden) button.hidden = false;
+      button.removeAttribute('hidden');
+    };
+    reveal();
+    new MutationObserver(reveal).observe(button, { attributes: true, attributeFilter: ['hidden'] });
+  }
+
+  function promoteGlobalHeaderActions() {
+    const shellHeader = document.querySelector('.sidebar');
+    const actions = document.querySelector('.topbar-actions');
+    if (!shellHeader || !actions) return;
+
+    document.querySelector('.sidebar-safety')?.remove();
+    document.querySelector('.topbar')?.classList.add('page-titlebar-hidden');
+
+    actions.classList.add('global-header-actions');
+    if (actions.parentElement !== shellHeader) shellHeader.appendChild(actions);
+
+    const start = document.querySelector('#topbar-start-investigation');
+    if (start) {
+      start.textContent = 'Nova investigação';
+      start.setAttribute('aria-label', 'Nova investigação');
+      keepNewInvestigationVisible(start);
+    }
+  }
+
   function restoreSimpleAnalysisForm() {
     const wizard = document.querySelector('#investigation-wizard');
     const form = document.querySelector('#analysis-form');
@@ -122,13 +152,17 @@
   function setup() {
     document.body.classList.add('top-navigation-layout');
     decorateNav();
+    promoteGlobalHeaderActions();
     restoreSimpleAnalysisForm();
     setupPlaybooksModal();
     setupHealthModal();
 
     const nav = document.querySelector('.nav');
     if (nav) {
-      new MutationObserver(() => decorateNav()).observe(nav, { childList: true, subtree: true });
+      new MutationObserver(() => {
+        decorateNav();
+        promoteGlobalHeaderActions();
+      }).observe(nav, { childList: true, subtree: true });
     }
   }
 
