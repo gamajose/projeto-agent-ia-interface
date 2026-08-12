@@ -24,8 +24,10 @@ from app.services.jobs import get_job, run_worker_once
 from app.services.noc_supervisor import supervisor_tick
 from app.services.noc_worker_hooks import handle_worker_result, reconcile_noc_jobs
 from app.services.secrets import secret_backend_status
+from app.services.ssh_resilience import install_ssh_resilience
 
 
+install_ssh_resilience()
 install_operational_tools()
 install_ensemble_reasoning()
 install_project_playbook_instrumentation()

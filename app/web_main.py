@@ -13,7 +13,9 @@ from app.services.ensemble_instrumentation import install_ensemble_reasoning
 from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.multi_host_instrumentation import install_multi_host_instrumentation
 from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
+from app.services.ssh_resilience import install_ssh_resilience
 
+install_ssh_resilience()
 install_ai_instrumentation()
 install_operational_tools()
 install_multi_host_instrumentation()
@@ -98,6 +100,9 @@ async def inject_fleet_ui_assets(request: Request, call_next):
     async for chunk in response.body_iterator:
         chunks.append(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
     body = b"".join(chunks).decode("utf-8", errors="replace")
+    if "fleet-ui.css" not in body:
+        style = f'<link rel="stylesheet" href="/ui/assets/fleet-ui.css?v={_ASSET_VERSION}" data-fleet-ui="1">'
+        body = body.replace("</head>", f"  {style}\n</head>")
     if "fleet-ui.js" not in body:
         marker = f'<script src="/ui/assets/fleet-ui.js?v={_ASSET_VERSION}" defer></script>'
         body = body.replace("</body>", f"  {marker}\n</body>")
