@@ -7,6 +7,7 @@ from app.services.checkmk_master_patrol import (
     checkmk_master_patrol_cycle,
     checkmk_master_patrol_status,
 )
+from app.services.checkmk_operational import checkmk_operational_overview, checkmk_site_detail
 from app.services.fleet_control import fleet_control_status
 from app.services.fleet_patrol import fleet_patrol_cycle, fleet_patrol_status
 from app.services.fleet_scope_control import (
@@ -40,9 +41,40 @@ def noc_fleet_status(request: Request) -> dict:
         ) from exc
 
 
+@router.get("/ui/api/noc/checkmk-master/overview")
+def noc_checkmk_master_overview(request: Request) -> dict:
+    """Retorna sites, falhas Livestatus e problemas ativos organizados."""
+    _require_access(request)
+    try:
+        return checkmk_operational_overview(problem_limit=1000, site_limit=1000)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"visão operacional do CMK05 indisponível: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+@router.get("/ui/api/noc/checkmk-master/sites/{site_id}")
+def noc_checkmk_master_site_detail(request: Request, site_id: str) -> dict:
+    """Mostra hosts e problemas pertencentes exclusivamente a um site/cliente."""
+    _require_access(request)
+    try:
+        detail = checkmk_site_detail(site_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="site não encontrado no inventário do CMK05")
+        return detail
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"detalhe do site indisponível: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
 @router.post("/ui/api/noc/checkmk-master/sync")
 def noc_checkmk_master_sync(request: Request) -> dict:
-    """Força sincronização do inventário central e uma leitura de anomalias."""
+    """Executa ciclo completo: sites, hosts, problemas, incidentes e jobs."""
     _require_mutation(request)
     try:
         return checkmk_master_patrol_cycle(force_sync=True)
@@ -55,7 +87,7 @@ def noc_checkmk_master_sync(request: Request) -> dict:
 
 @router.post("/ui/api/noc/checkmk-master/poll")
 def noc_checkmk_master_poll(request: Request) -> dict:
-    """Executa uma leitura imediata de WARN/CRIT/UNKNOWN no CMK05/master."""
+    """Executa imediatamente um ciclo operacional completo no CMK05/master."""
     _require_mutation(request)
     try:
         return checkmk_master_patrol_cycle(force_sync=False)
