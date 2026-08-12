@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 
 import uvicorn
-from fastapi import Request
-from fastapi.responses import Response
 
 from app.main import app
 from app.services.ai_instrumentation import install_ai_instrumentation
@@ -38,11 +36,13 @@ from app.web_replay import router as replay_router
 from app.web_settings import enable_dynamic_provider_payload, router as settings_router
 from app.web_tools import router as tools_router
 from app.web_topology import router as topology_router
-from app.web_ui_cache import _ASSET_VERSION, router as ui_cache_router
+from app.web_ui_cache import router as ui_cache_router
 
 
 enable_dynamic_provider_payload()
 if not getattr(app.state, "agent_ui_cache_registered", False):
+    # A rota versionada precisa ser registrada antes da rota estática legada
+    # de app.web. Assim /ui sempre recebe os assets do checkout atual.
     app.include_router(ui_cache_router)
     app.state.agent_ui_cache_registered = True
 register_ui(app)
@@ -88,51 +88,6 @@ if not getattr(app.state, "agent_replay_registered", False):
 if not getattr(app.state, "agent_operator_experience_registered", False):
     app.include_router(operator_experience_router)
     app.state.agent_operator_experience_registered = True
-
-
-@app.middleware("http")
-async def inject_fleet_ui_assets(request: Request, call_next):
-    """Acopla NOC/CMK05 e workspace N2 sem alterar a Nova análise."""
-    response = await call_next(request)
-    if request.url.path not in {"/ui", "/ui/"}:
-        return response
-    content_type = str(response.headers.get("content-type") or "")
-    if "text/html" not in content_type.casefold() or not hasattr(response, "body_iterator"):
-        return response
-
-    chunks: list[bytes] = []
-    async for chunk in response.body_iterator:
-        chunks.append(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
-    body = b"".join(chunks).decode("utf-8", errors="replace")
-
-    # Mantidos explícitos para preservar o contrato/cache da UI principal.
-    if "fleet-ui.css" not in body:
-        fleet_style = f'<link rel="stylesheet" href="/ui/assets/fleet-ui.css?v={_ASSET_VERSION}" data-fleet-ui="1">'
-        body = body.replace("</head>", f"  {fleet_style}\n</head>")
-    if "fleet-ui.js" not in body:
-        fleet_script = f'<script src="/ui/assets/fleet-ui.js?v={_ASSET_VERSION}" data-fleet-ui="1" defer></script>'
-        body = body.replace("</body>", f"  {fleet_script}\n</body>")
-
-    for filename, marker in (
-        ("noc-automation.css", "noc-automation"),
-        ("n2-workspace.css", "n2-workspace"),
-    ):
-        if filename not in body:
-            tag = f'<link rel="stylesheet" href="/ui/assets/{filename}?v={_ASSET_VERSION}" data-{marker}="1">'
-            body = body.replace("</head>", f"  {tag}\n</head>")
-
-    if "n2-workspace.js" not in body:
-        n2_script = f'<script src="/ui/assets/n2-workspace.js?v={_ASSET_VERSION}" data-n2-workspace="1" defer></script>'
-        body = body.replace("</body>", f"  {n2_script}\n</body>")
-
-    headers = dict(response.headers)
-    headers.pop("content-length", None)
-    return Response(
-        content=body,
-        status_code=response.status_code,
-        headers=headers,
-        media_type="text/html",
-    )
 
 
 def main() -> None:
