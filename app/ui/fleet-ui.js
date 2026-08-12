@@ -2,6 +2,8 @@
   let refreshTimer = null;
   let loading = false;
   let operational = { summary: {}, sites: [], failed_sites: [], problems: [], state: {} };
+  let historyData = { total: 0, items: [] };
+  let policyData = { items: [] };
   let activeTab = "problems";
 
   function esc(value) {
@@ -24,6 +26,26 @@
     return String(value || "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
   }
 
+  function historyStatusLabel(value) {
+    const labels = {
+      adjusted: "Ajustado",
+      adjusted_validating: "Ajustado · validando",
+      resolved: "Normalizado",
+      manual_required: "Precisa fazer manualmente",
+      access_failed: "Sem acesso",
+      failed: "Falhou",
+      investigated: "Investigado",
+      queued: "Na fila",
+      detected: "Detectado",
+    };
+    return labels[value] || value || "—";
+  }
+
+  function categoryLabel(value) {
+    const policy = (policyData.items || []).find((item) => item.category === value);
+    return policy?.label || value || "Outros";
+  }
+
   async function request(path, options = {}) {
     const method = String(options.method || "GET").toUpperCase();
     const headers = { ...(options.headers || {}) };
@@ -43,7 +65,7 @@
     if (document.querySelector('link[data-fleet-ui]')) return;
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = "/ui/assets/fleet-ui.css?v=1.37.0";
+    link.href = "/ui/assets/fleet-ui.css?v=1.38.0";
     link.dataset.fleetUi = "1";
     document.head.appendChild(link);
   }
@@ -58,7 +80,11 @@
     panel.id = "noc-fleet-panel";
     panel.innerHTML = `
       <div class="cmk-master-head">
-        <div><p class="eyebrow">FONTE PRINCIPAL</p><h3>Checkmk Central</h3></div>
+        <div>
+          <p class="eyebrow">FONTE PRINCIPAL</p>
+          <h3>Checkmk Central</h3>
+          <span class="cmk-auto-note"><i></i> ronda automática pelo worker a cada <strong id="cmk-auto-interval">2 min</strong></span>
+        </div>
         <div class="cmk-master-actions">
           <button type="button" class="primary-button" id="cmk-sync">Sincronizar Checkmk</button>
           <button type="button" class="secondary-button" id="cmk-poll">Ronda agora</button>
@@ -73,11 +99,33 @@
           <button type="button" data-cmk-tab="problems" class="active">Problemas <span id="cmk-tab-problems">0</span></button>
           <button type="button" data-cmk-tab="sites">Sites <span id="cmk-tab-sites">0</span></button>
           <button type="button" data-cmk-tab="failures">Sem resposta <span id="cmk-tab-failures">0</span></button>
+          <button type="button" data-cmk-tab="history">Histórico <span id="cmk-tab-history">0</span></button>
         </div>
-        <div class="cmk-filter"><input id="cmk-search" type="search" placeholder="Filtrar cliente, site, host, IP ou serviço"></div>
+        <div class="cmk-filter" id="cmk-common-filter"><input id="cmk-search" type="search" placeholder="Filtrar cliente, site, host, IP ou serviço"></div>
+        <div class="cmk-history-filters" id="cmk-history-filters" hidden>
+          <input id="cmk-history-search" type="search" placeholder="Cliente, host, serviço ou motivo">
+          <select id="cmk-history-status">
+            <option value="">Todos os resultados</option>
+            <option value="adjusted">Ajustado</option>
+            <option value="adjusted_validating">Ajustado · validando</option>
+            <option value="resolved">Normalizado</option>
+            <option value="manual_required">Precisa fazer manualmente</option>
+            <option value="access_failed">Sem acesso</option>
+            <option value="failed">Falhou</option>
+            <option value="investigated">Investigado</option>
+            <option value="queued">Na fila</option>
+          </select>
+          <select id="cmk-history-category"><option value="">Todas as categorias</option></select>
+        </div>
         <div id="cmk-operational-body"><div class="empty-state">Aguardando snapshot operacional...</div></div>
         <div id="cmk-site-detail" class="cmk-site-detail" hidden></div>
       </div>
+
+      <details class="cmk-policy-panel" id="cmk-policy-panel">
+        <summary>Correções automáticas <small>defina o que o NOC pode ajustar</small></summary>
+        <div class="cmk-policy-warning"><strong>Servidor:</strong> reboot, shutdown, poweroff e halt ficam bloqueados permanentemente.</div>
+        <div class="cmk-policy-grid" id="cmk-policy-grid"><div class="empty-state">Carregando políticas...</div></div>
+      </details>
 
       <details class="fleet-contingency">
         <summary>Descoberta de rede <small>contingência</small></summary>
@@ -105,9 +153,17 @@
     document.querySelector("#cmk-poll")?.addEventListener("click", () => void runMasterAction("/ui/api/noc/checkmk-master/poll", "#cmk-poll", "Executando ronda..."));
     document.querySelector("#fleet-start")?.addEventListener("click", () => void startFleet());
     document.querySelector("#cmk-search")?.addEventListener("input", renderOperational);
+    document.querySelector("#cmk-history-search")?.addEventListener("input", renderOperational);
+    document.querySelector("#cmk-history-status")?.addEventListener("change", renderOperational);
+    document.querySelector("#cmk-history-category")?.addEventListener("change", renderOperational);
     document.querySelectorAll("[data-cmk-tab]").forEach((button) => button.addEventListener("click", () => {
       activeTab = button.dataset.cmkTab || "problems";
       document.querySelectorAll("[data-cmk-tab]").forEach((item) => item.classList.toggle("active", item === button));
+      const historyMode = activeTab === "history";
+      const common = document.querySelector("#cmk-common-filter");
+      const historyFilters = document.querySelector("#cmk-history-filters");
+      if (common) common.hidden = historyMode;
+      if (historyFilters) historyFilters.hidden = !historyMode;
       renderOperational();
     }));
     return true;
@@ -127,6 +183,9 @@
     const last = patrol.last_completed_at || state.last_completed_at;
     const error = patrol.last_error || state.last_error;
     const failed = Number(summary.sites_failed || 0);
+    const interval = Number(patrol.poll_interval_seconds || 120);
+    const autoInterval = document.querySelector("#cmk-auto-interval");
+    if (autoInterval) autoInterval.textContent = interval % 60 === 0 ? `${interval / 60} min` : `${interval}s`;
 
     root.innerHTML = `
       <div class="cmk-master-metrics">
@@ -144,9 +203,11 @@
     const problemTab = document.querySelector("#cmk-tab-problems");
     const siteTab = document.querySelector("#cmk-tab-sites");
     const failureTab = document.querySelector("#cmk-tab-failures");
+    const historyTab = document.querySelector("#cmk-tab-history");
     if (problemTab) problemTab.textContent = String(problems);
     if (siteTab) siteTab.textContent = String(active);
     if (failureTab) failureTab.textContent = String(failed);
+    if (historyTab) historyTab.textContent = String(historyData.total || historyData.items?.length || 0);
   }
 
   function matchesSearch(values) {
@@ -201,11 +262,52 @@
       </tr>`).join("")}</tbody></table></div>`;
   }
 
+  function renderHistory() {
+    const query = String(document.querySelector("#cmk-history-search")?.value || "").trim().toLocaleLowerCase("pt-BR");
+    const status = String(document.querySelector("#cmk-history-status")?.value || "");
+    const category = String(document.querySelector("#cmk-history-category")?.value || "");
+    const items = (historyData.items || []).filter((item) => {
+      if (status && item.status !== status) return false;
+      if (category && item.category !== category) return false;
+      if (!query) return true;
+      return [item.client_alias, item.site_id, item.host, item.host_address, item.service, item.status, item.category, item.reason]
+        .some((value) => String(value ?? "").toLocaleLowerCase("pt-BR").includes(query));
+    });
+    if (!items.length) return '<div class="empty-state">Nenhum registro no histórico com estes filtros.</div>';
+    return `<div class="cmk-table-wrap"><table class="cmk-table cmk-history-table"><thead><tr><th>Quando</th><th>Cliente / host</th><th>Serviço</th><th>Categoria</th><th>Resultado</th><th>Motivo</th></tr></thead><tbody>${items.map((item) => `
+      <tr>
+        <td>${esc(formatDate(item.created_at))}</td>
+        <td><strong>${esc(item.client_alias || item.site_id || "—")}</strong><small>${esc(item.host || "—")} · ${esc(item.host_address || "sem IP")}</small></td>
+        <td>${esc(item.service || "—")}</td>
+        <td>${esc(categoryLabel(item.category))}</td>
+        <td><span class="cmk-history-status ${esc(stateClass(item.status))}">${esc(historyStatusLabel(item.status))}</span></td>
+        <td class="cmk-history-reason">${esc(item.reason || "—")}</td>
+      </tr>`).join("")}</tbody></table></div>`;
+  }
+
   function renderOperational() {
     const root = document.querySelector("#cmk-operational-body");
     if (!root) return;
-    root.innerHTML = activeTab === "sites" ? renderSites() : activeTab === "failures" ? renderFailures() : renderProblems();
+    root.innerHTML = activeTab === "sites"
+      ? renderSites()
+      : activeTab === "failures"
+        ? renderFailures()
+        : activeTab === "history"
+          ? renderHistory()
+          : renderProblems();
     root.querySelectorAll("[data-cmk-site]").forEach((row) => row.addEventListener("click", () => void openSite(row.dataset.cmkSite)));
+  }
+
+  function renderSiteProblems(root, problems, selectedHost = "") {
+    const holder = root.querySelector("#cmk-site-problems-list");
+    const title = root.querySelector("#cmk-site-problems-title");
+    if (!holder || !title) return;
+    const selected = String(selectedHost || "");
+    const items = selected ? problems.filter((problem) => String(problem.host || "") === selected) : problems;
+    title.textContent = selected ? `Problemas de ${selected}` : "Problemas do cliente";
+    holder.innerHTML = items.length ? items.map((problem) => `<article><div><span class="cmk-state ${esc(stateClass(problem.state_name))}">${esc(problem.state_name)}</span><strong>${esc(problem.host)}</strong><small>${esc(problem.host_address || "—")}</small></div><div><strong>${esc(problem.service)}</strong><p>${esc(problem.output || "sem output")}</p><small>${esc(problem.skill_title || "Skill genérica")} · ${esc(problem.automation_status || "detected")}</small></div></article>`).join("") : '<div class="empty-state">Este host não possui problema ativo.</div>';
+    root.querySelectorAll("[data-cmk-host-filter]").forEach((row) => row.classList.toggle("selected", row.dataset.cmkHostFilter === selected));
+    root.querySelector("#cmk-show-all-problems")?.classList.toggle("active", !selected);
   }
 
   async function openSite(siteId) {
@@ -224,14 +326,47 @@
         ${site.last_error ? `<div class="cmk-site-error"><strong>Livestatus:</strong> ${esc(site.last_error)}</div>` : ""}
         <div class="cmk-site-metrics"><span><strong>${esc(hosts.length)}</strong> hosts</span><span><strong>${esc(problems.length)}</strong> problemas</span><span>${site.shared_endpoint ? "endpoint compartilhado" : "endpoint dedicado"}</span></div>
         <div class="cmk-detail-grid">
-          <div><h4>Hosts</h4><div class="cmk-table-wrap detail"><table class="cmk-table"><thead><tr><th>Host</th><th>IP interno</th><th>Tipo</th><th>Estado</th><th>Problemas</th></tr></thead><tbody>${hosts.length ? hosts.map((host) => `<tr><td><strong>${esc(host.host_name)}</strong></td><td>${esc(host.internal_address || "—")}</td><td>${esc(host.host_kind || "—")}</td><td>${esc(host.state)}</td><td>${esc(host.problem_count || 0)}</td></tr>`).join("") : '<tr><td colspan="5" class="empty-cell">Nenhum host coletado.</td></tr>'}</tbody></table></div></div>
-          <div><h4>Problemas do cliente</h4><div class="cmk-site-problems">${problems.length ? problems.map((problem) => `<article><div><span class="cmk-state ${esc(stateClass(problem.state_name))}">${esc(problem.state_name)}</span><strong>${esc(problem.host)}</strong><small>${esc(problem.host_address || "—")}</small></div><div><strong>${esc(problem.service)}</strong><p>${esc(problem.output || "sem output")}</p><small>${esc(problem.skill_title || "Skill genérica")} · ${esc(problem.automation_status || "detected")}</small></div></article>`).join("") : '<div class="empty-state">Nenhum problema ativo.</div>'}</div></div>
+          <div><h4>Hosts <small>clique para filtrar os problemas</small></h4><div class="cmk-table-wrap detail"><table class="cmk-table"><thead><tr><th>Host</th><th>IP interno</th><th>Tipo</th><th>Estado</th><th>Problemas</th></tr></thead><tbody>${hosts.length ? hosts.map((host) => `<tr class="cmk-host-filter-row" data-cmk-host-filter="${esc(host.host_name)}"><td><strong>${esc(host.host_name)}</strong></td><td>${esc(host.internal_address || "—")}</td><td>${esc(host.host_kind || "—")}</td><td>${esc(host.state)}</td><td>${esc(host.problem_count || 0)}</td></tr>`).join("") : '<tr><td colspan="5" class="empty-cell">Nenhum host coletado.</td></tr>'}</tbody></table></div></div>
+          <div><div class="cmk-site-problem-head"><h4 id="cmk-site-problems-title">Problemas do cliente</h4><button type="button" class="ghost-button active" id="cmk-show-all-problems">Todos (${esc(problems.length)})</button></div><div class="cmk-site-problems" id="cmk-site-problems-list"></div></div>
         </div>`;
+      renderSiteProblems(root, problems, "");
+      root.querySelectorAll("[data-cmk-host-filter]").forEach((row) => row.addEventListener("click", () => renderSiteProblems(root, problems, row.dataset.cmkHostFilter || "")));
+      root.querySelector("#cmk-show-all-problems")?.addEventListener("click", () => renderSiteProblems(root, problems, ""));
       root.querySelector("#cmk-close-site")?.addEventListener("click", () => { root.hidden = true; root.innerHTML = ""; });
     } catch (error) {
       root.innerHTML = `<div class="cmk-site-detail-head"><strong>Falha ao abrir site</strong><button type="button" class="secondary-button" id="cmk-close-site">Fechar</button></div><div class="empty-state">${esc(error.message)}</div>`;
       root.querySelector("#cmk-close-site")?.addEventListener("click", () => { root.hidden = true; });
     }
+  }
+
+  function renderPolicies() {
+    const root = document.querySelector("#cmk-policy-grid");
+    const categorySelect = document.querySelector("#cmk-history-category");
+    if (categorySelect) {
+      const selected = categorySelect.value;
+      categorySelect.innerHTML = '<option value="">Todas as categorias</option>' + (policyData.items || []).filter((item) => item.category !== "server_reboot").map((item) => `<option value="${esc(item.category)}">${esc(item.label)}</option>`).join("");
+      categorySelect.value = selected;
+    }
+    if (!root) return;
+    const items = policyData.items || [];
+    root.innerHTML = items.length ? items.map((item) => `
+      <label class="cmk-policy-item ${item.immutable ? "locked" : ""}">
+        <span class="cmk-policy-switch"><input type="checkbox" data-cmk-policy="${esc(item.category)}" ${item.enabled ? "checked" : ""} ${item.immutable ? "disabled" : ""}><i></i></span>
+        <span><strong>${esc(item.label)}</strong><small>${esc(item.description || "")}</small>${item.immutable ? '<em>Bloqueio permanente</em>' : ""}</span>
+      </label>`).join("") : '<div class="empty-state">Nenhuma política disponível.</div>';
+    root.querySelectorAll("[data-cmk-policy]").forEach((input) => input.addEventListener("change", async () => {
+      input.disabled = true;
+      try {
+        await request(`/ui/api/noc/policies/${encodeURIComponent(input.dataset.cmkPolicy)}`, { method: "POST", body: { enabled: input.checked } });
+        policyData = await request("/ui/api/noc/policies");
+        renderPolicies();
+      } catch (error) {
+        input.checked = !input.checked;
+        window.alert(error.message);
+      } finally {
+        input.disabled = false;
+      }
+    }));
   }
 
   function renderDiscovery(data) {
@@ -280,11 +415,16 @@
     if (loading || !ensurePanel()) return;
     loading = true;
     try {
-      const [fleetData, operationalData] = await Promise.all([
+      const [fleetData, operationalData, history, policies] = await Promise.all([
         request("/ui/api/noc/fleet"),
         request("/ui/api/noc/checkmk-master/overview"),
+        request("/ui/api/noc/history?limit=500"),
+        request("/ui/api/noc/policies"),
       ]);
       operational = operationalData || operational;
+      historyData = history || historyData;
+      policyData = policies || policyData;
+      renderPolicies();
       renderMaster(fleetData);
       renderOperational();
       renderDiscovery(fleetData);
