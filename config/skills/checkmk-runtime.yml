@@ -14,7 +14,6 @@ match:
   host:
     - '^checkmk-'
 target_strategy: entry_context
-playbook_id: checkmk-automation-helper-stopped
 objective: Validar o site Checkmk, seus processos e a fonte de coleta sem reiniciar componentes fora da política.
 knowledge:
   - Identificar site OMD e container antes de atuar.
