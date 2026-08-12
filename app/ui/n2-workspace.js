@@ -1,257 +1,214 @@
 (() => {
-  let sites = [];
-  let context = null;
-  let draft = null;
-  let loaded = false;
-
-  function esc(value) {
-    return String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
-  }
+  const state = { loaded: false, sites: [], context: null, siteId: "", playbooks: [], providers: [], plan: null, review: null, executionIds: [], running: false };
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const esc = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+  const delay = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
   async function request(path, options = {}) {
     const method = String(options.method || "GET").toUpperCase();
     const headers = { ...(options.headers || {}) };
     if (method !== "GET") headers["X-Agent-UI"] = "1";
     let body = options.body;
-    if (body && typeof body === "object") {
-      headers["Content-Type"] = "application/json";
-      body = JSON.stringify(body);
-    }
+    if (body && typeof body === "object" && !(body instanceof FormData)) { headers["Content-Type"] = "application/json"; body = JSON.stringify(body); }
     const response = await fetch(path, { ...options, method, headers, body });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || `Falha HTTP ${response.status}`);
     return data;
   }
 
-  function modal() {
-    return document.querySelector("#n2-workspace-modal");
+  async function requestBlob(path, body) {
+    const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Agent-UI": "1" }, body: JSON.stringify(body) });
+    if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.detail || `Falha HTTP ${response.status}`); }
+    return { blob: await response.blob(), disposition: response.headers.get("Content-Disposition") || "" };
   }
 
-  function openModal() {
-    const root = modal();
-    if (!root) return;
-    root.classList.add("open");
-    root.setAttribute("aria-hidden", "false");
-    document.body.classList.add("n2-modal-open");
-    void loadSites();
-  }
-
-  function closeModal() {
-    const root = modal();
-    if (!root) return;
-    root.classList.remove("open");
-    root.setAttribute("aria-hidden", "true");
-    document.body.classList.remove("n2-modal-open");
-  }
-
-  function ensureEntryButton() {
-    const projectHead = document.querySelector("#view-projects .project-builder-head");
-    if (!projectHead || document.querySelector("#open-n2-workspace")) return Boolean(projectHead);
-    let actions = projectHead.querySelector(".n2-project-actions");
-    if (!actions) {
-      actions = document.createElement("div");
-      actions.className = "n2-project-actions";
-      projectHead.appendChild(actions);
+  function ensureNavAndView() {
+    const nav = $(".nav"); const main = $("main.main");
+    if (!nav || !main) return false;
+    let button = $('.nav-item[data-view="n2"]');
+    if (!button) {
+      button = document.createElement("button"); button.type = "button"; button.className = "nav-item"; button.dataset.view = "n2";
+      button.innerHTML = '<span class="nav-icon">▤</span><span>N2</span>'; button.title = "Documentação e validação N2 com IA";
+      const projects = $('.nav-item[data-view="projects"]'); if (projects) projects.insertAdjacentElement("afterend", button); else nav.appendChild(button);
     }
-    const button = document.createElement("button");
-    button.type = "button";
-    button.id = "open-n2-workspace";
-    button.className = "secondary-button n2-entry-button";
-    button.innerHTML = '<span aria-hidden="true">▤</span><span>Área N2</span>';
-    button.title = "Abrir ferramenta de documentação e validação para o analista N2";
-    actions.appendChild(button);
-    button.addEventListener("click", openModal);
+    let view = $("#view-n2");
+    if (!view) {
+      view = document.createElement("section"); view.className = "view n2-page"; view.id = "view-n2"; view.innerHTML = pageMarkup();
+      const opencode = $("#view-opencode"); if (opencode) opencode.insertAdjacentElement("beforebegin", view); else main.appendChild(view);
+      bindPageEvents(view);
+    }
+    if (!button.dataset.n2Bound) { button.dataset.n2Bound = "1"; button.addEventListener("click", () => activateN2()); }
     return true;
   }
 
-  function ensureModal() {
-    if (modal()) return true;
-    if (!document.body) return false;
-    const root = document.createElement("aside");
-    root.className = "n2-workspace-modal";
-    root.id = "n2-workspace-modal";
-    root.setAttribute("aria-hidden", "true");
-    root.setAttribute("role", "dialog");
-    root.setAttribute("aria-modal", "true");
-    root.setAttribute("aria-labelledby", "n2-workspace-title");
-    root.innerHTML = `
-      <div class="n2-modal-backdrop" data-close-n2></div>
-      <div class="n2-modal-panel">
-        <header class="n2-modal-header">
-          <div><p class="eyebrow">FERRAMENTA PARA O ANALISTA N2</p><h2 id="n2-workspace-title">Documentação e validação com IA</h2><p>Área adicional. A operação normal do Agent IA continua exatamente como está.</p></div>
-          <button type="button" class="icon-button" data-close-n2 aria-label="Fechar Área N2">×</button>
-        </header>
-        <div class="n2-modal-body">
-          <div class="n2-shell">
-            <article class="panel n2-sidebar-panel">
-              <div class="n2-title"><p class="eyebrow">BASE DO CMK05</p><h3>Selecionar ambiente</h3><p>A IA aproveita o que já está comprovado e marca o restante como pendência de coleta.</p></div>
-              <label class="n2-field"><span>Cliente / site</span><select id="n2-site"><option value="">Carregando...</option></select></label>
-              <div class="n2-responsibles">
-                <label class="n2-field"><span>Responsável Infra</span><input id="n2-resp-infra" placeholder="Nome"></label>
-                <label class="n2-field"><span>Responsável DBA</span><input id="n2-resp-dba" placeholder="Nome"></label>
-                <label class="n2-field"><span>Responsável NOC</span><input id="n2-resp-noc" placeholder="Nome"></label>
-                <label class="n2-field"><span>Revisão</span><input id="n2-resp-review" placeholder="Nome"></label>
-              </div>
-              <button type="button" class="primary-button" id="n2-build-draft">Montar rascunho N2</button>
-              <div class="n2-safe-note"><strong>Sem credenciais</strong><span>Senhas, communities e secrets não entram no rascunho nem no prompt.</span></div>
-            </article>
-            <div class="n2-main">
-              <article class="panel" id="n2-context-panel"><div class="empty-state">Selecione um cliente para abrir o ambiente.</div></article>
-              <article class="panel" id="n2-draft-panel" hidden></article>
-            </div>
-          </div>
-        </div>
-      </div>`;
-    document.body.appendChild(root);
-
-    root.querySelectorAll("[data-close-n2]").forEach((item) => item.addEventListener("click", closeModal));
-    root.querySelector("#n2-site")?.addEventListener("change", (event) => void loadContext(event.currentTarget.value));
-    root.querySelector("#n2-build-draft")?.addEventListener("click", () => void buildDraft());
-    return true;
+  function pageMarkup() {
+    return `
+      <div class="n2-page-head"><div><p class="eyebrow">DOCUMENTAÇÃO OPERACIONAL</p><h2>Documentação N2 com IA</h2><p>Escolha o cliente e os hosts, use um playbook se desejar e deixe a automação coletar as evidências. Depois revise tudo antes de exportar.</p></div><div class="n2-safety-chip"><strong>Somente leitura</strong><span>Nunca reinicia servidor · não coleta credenciais</span></div></div>
+      <div class="n2-workflow-grid">
+        <article class="panel n2-setup-card">
+          <div class="n2-step-title"><span>1</span><div><p class="eyebrow">ESCOPO</p><h3>Cliente e responsáveis</h3></div></div>
+          <label class="n2-field n2-client-field"><span>Cliente / site</span><div class="n2-combobox" id="n2-client-combobox"><input id="n2-client-search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="n2-client-options" autocomplete="off" placeholder="Digite o nome ou o site do cliente"><button type="button" class="n2-combo-toggle" id="n2-client-toggle" aria-label="Abrir lista de clientes">⌄</button><div class="n2-client-options" id="n2-client-options" role="listbox" hidden></div></div><small id="n2-client-hint">Digite para filtrar. A lista não usa o seletor nativo do navegador.</small></label>
+          <div class="n2-responsibles"><label class="n2-field"><span>Responsável Infra</span><input id="n2-resp-infra" placeholder="Nome"></label><label class="n2-field"><span>Responsável DBA</span><input id="n2-resp-dba" placeholder="Nome"></label><label class="n2-field"><span>Responsável NOC</span><input id="n2-resp-noc" placeholder="Nome"></label><label class="n2-field"><span>Revisão</span><input id="n2-resp-review" placeholder="Nome"></label><label class="n2-field"><span>Revisão NOC</span><input id="n2-resp-review-noc" placeholder="Nome"></label></div>
+          <label class="n2-field"><span>Playbook para auxiliar a IA <em>opcional</em></span><select id="n2-playbook"><option value="">Automático — a IA decide o roteiro de validação</option></select><small>Se selecionar um playbook, ele orienta a coleta. Sem playbook, a IA monta a validação conforme o objetivo documental.</small></label>
+        </article>
+        <article class="panel n2-host-card"><div class="n2-step-title"><span>2</span><div><p class="eyebrow">HOSTS</p><h3>Quais servidores entram na documentação?</h3></div></div><div class="n2-host-toolbar"><div id="n2-host-summary">Selecione um cliente para carregar os hosts.</div><div><button type="button" class="ghost-button" id="n2-select-all-hosts">Selecionar todos</button><button type="button" class="ghost-button" id="n2-clear-hosts">Limpar</button></div></div><div class="n2-host-list" id="n2-host-list"><div class="empty-state">Nenhum cliente selecionado.</div></div></article>
+      </div>
+      <article class="panel n2-run-card"><div class="n2-step-title"><span>3</span><div><p class="eyebrow">AUTOMAÇÃO</p><h3>Executar validação documental</h3></div></div><div class="n2-run-copy"><p>A IA acessará somente os hosts escolhidos, coletará evidências para infraestrutura, Oracle/TOTVS, TNSNAMES, Winthor, backup, retenção, redundância/standby e monitoramento quando essas informações forem observáveis com segurança.</p><p>Campos sem evidência ficam em branco para revisão.</p></div><div class="n2-run-actions"><button type="button" class="primary-button" id="n2-run-validation">Executar validação N2 com IA</button><span id="n2-run-status"></span></div><div class="n2-progress" id="n2-progress" hidden></div></article>
+      <article class="panel n2-review-card" id="n2-review-card" hidden><div class="n2-review-head"><div class="n2-step-title"><span>4</span><div><p class="eyebrow">REVISÃO</p><h3>Revisar e editar a documentação</h3></div></div><div class="n2-review-state" id="n2-review-state">Pronto para revisão</div></div><div class="n2-review-note">Tudo abaixo é editável. A exportação usa exatamente o conteúdo revisado nesta tela. Campos de senha, community, token e secret não existem aqui.</div><div id="n2-review-content"></div><div class="n2-export-bar"><div><strong>Documento revisado</strong><span>Exporte no padrão do template N2, mantendo os campos sensíveis em branco.</span></div><div><button type="button" class="secondary-button" id="n2-export-word">Exportar Word</button><button type="button" class="primary-button" id="n2-export-pdf">Exportar PDF</button></div></div></article>`;
   }
 
-  async function loadSites() {
-    const select = modal()?.querySelector("#n2-site");
-    if (!select || (loaded && sites.length)) return;
-    select.innerHTML = '<option value="">Carregando clientes...</option>';
+  function activateN2() {
+    $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === "n2"));
+    $$(".view").forEach((item) => item.classList.toggle("active", item.id === "view-n2"));
+    if ($("#page-eyebrow")) $("#page-eyebrow").textContent = "OPERAÇÃO N2";
+    if ($("#page-title")) $("#page-title").textContent = "Documentação N2";
+    void loadBaseData();
+  }
+
+  function bindPageEvents(view) {
+    const search = $("#n2-client-search", view);
+    search?.addEventListener("focus", () => openClientOptions());
+    search?.addEventListener("input", () => { state.siteId = ""; state.context = null; renderClientOptions(search.value); });
+    search?.addEventListener("keydown", (event) => { if (event.key === "Escape") closeClientOptions(); if (event.key === "ArrowDown") { event.preventDefault(); $("#n2-client-options [role=option]", view)?.focus(); } });
+    $("#n2-client-toggle", view)?.addEventListener("click", () => { const options = $("#n2-client-options", view); if (options?.hidden) openClientOptions(); else closeClientOptions(); });
+    $("#n2-select-all-hosts", view)?.addEventListener("click", () => setAllHosts(true));
+    $("#n2-clear-hosts", view)?.addEventListener("click", () => setAllHosts(false));
+    $("#n2-run-validation", view)?.addEventListener("click", () => void runValidation());
+    $("#n2-export-word", view)?.addEventListener("click", () => void exportReview("docx"));
+    $("#n2-export-pdf", view)?.addEventListener("click", () => void exportReview("pdf"));
+    document.addEventListener("click", (event) => { const combo = $("#n2-client-combobox"); if (combo && !combo.contains(event.target)) closeClientOptions(); });
+  }
+
+  async function loadBaseData() {
+    if (state.loaded) return;
+    state.loaded = true;
     try {
-      const data = await request("/ui/api/n2/sites?limit=1000");
-      sites = data.items || [];
-      loaded = true;
-      select.innerHTML = '<option value="">Selecione o cliente</option>' + sites.map((site) => `<option value="${esc(site.site_id)}">${esc(site.alias)} · ${esc(site.site_id)}</option>`).join("");
-    } catch (error) {
-      select.innerHTML = `<option value="">${esc(error.message)}</option>`;
-    }
+      const [siteData, playbookData, providerData] = await Promise.all([request("/ui/api/n2/sites?limit=1000"), request("/ui/api/playbooks").catch(() => ({ items: [] })), request("/ui/api/ai/providers").catch(() => ({ items: [] }))]);
+      state.sites = siteData.items || []; state.playbooks = playbookData.items || playbookData.playbooks || []; state.providers = normalizeProviders(providerData);
+      renderPlaybooks(); renderClientOptions(""); closeClientOptions();
+    } catch (error) { state.loaded = false; setRunStatus(error.message, true); }
   }
 
-  function problemCountFor(hostName) {
-    return (context?.problems || []).filter((item) => item.host === hostName).length;
+  function normalizeProviders(data) {
+    const rows = data.items || data.providers || data.options || [];
+    if (Array.isArray(rows)) return rows;
+    if (rows && typeof rows === "object") return Object.entries(rows).map(([id, value]) => ({ id, ...(typeof value === "object" ? value : { label: value }) }));
+    return [];
   }
 
-  function openInvestigation(host, problem = null) {
-    const site = context?.site || {};
-    const entry = site.endpoint || "";
-    const target = host?.ip && host.ip !== "0.0.0.0" ? host.ip : entry;
-    const problemText = problem
-      ? `${problem.service} ${problem.state}: ${problem.output}`
-      : `Validar o host ${host?.host || "selecionado"} (${host?.ip || "sem IP"}) dentro do cliente ${site.alias || site.site_id}.`;
-    const objective = `Cliente/site: ${site.alias || site.site_id} (${site.site_id}). Host interno: ${host?.host || "-"} / ${host?.ip || "-"}. ${problemText} Investigue com segurança, preserve o isolamento deste cliente e nunca reinicie o servidor.`;
-
-    closeModal();
-    const openButton = document.querySelector("#topbar-start-investigation") || document.querySelector("[data-open-analysis]");
-    openButton?.click();
-    window.setTimeout(() => {
-      const targetField = document.querySelector("#target");
-      const objectiveField = document.querySelector("#objective");
-      if (targetField) targetField.value = entry || target;
-      if (objectiveField) objectiveField.value = objective;
-      targetField?.dispatchEvent(new Event("input", { bubbles: true }));
-      objectiveField?.dispatchEvent(new Event("input", { bubbles: true }));
-    }, 120);
+  function renderPlaybooks() {
+    const select = $("#n2-playbook"); if (!select) return;
+    const items = state.playbooks.filter((item) => item && (item.id || item.playbook_id || item.name));
+    select.innerHTML = '<option value="">Automático — a IA decide o roteiro de validação</option>' + items.map((item) => { const id = item.id || item.playbook_id || item.name; const label = item.title || item.label || item.name || id; return `<option value="${esc(id)}">${esc(label)}</option>`; }).join("");
   }
 
-  function renderContext() {
-    const root = modal()?.querySelector("#n2-context-panel");
-    if (!root || !context) return;
-    const site = context.site || {};
-    const hosts = context.hosts || [];
-    const problems = context.problems || [];
-    root.innerHTML = `
-      <div class="n2-context-head"><div><p class="eyebrow">AMBIENTE</p><h3>${esc(site.alias || site.site_id)}</h3><span>${esc(site.site_id)} · ${esc(site.endpoint || "—")}:${esc(site.port || "—")}</span></div><div class="n2-context-metrics"><span><strong>${esc(hosts.length)}</strong> hosts</span><span><strong>${esc(problems.length)}</strong> problemas</span></div></div>
-      <div class="n2-context-grid">
-        <section><h4>Hosts</h4><div class="n2-table-wrap"><table class="n2-table"><thead><tr><th>Host</th><th>IP</th><th>Papel</th><th>Problemas</th><th></th></tr></thead><tbody>${hosts.length ? hosts.map((host) => `<tr><td><strong>${esc(host.host)}</strong></td><td>${esc(host.ip || "—")}</td><td>${esc(host.kind || host.environment || "—")}</td><td>${esc(problemCountFor(host.host))}</td><td><button class="ghost-button" type="button" data-n2-investigate-host="${esc(host.host)}">IA</button></td></tr>`).join("") : '<tr><td colspan="5" class="empty-cell">Nenhum host conhecido.</td></tr>'}</tbody></table></div></section>
-        <section><h4>Alertas atuais</h4><div class="n2-problems">${problems.length ? problems.map((problem, index) => `<article><div><span class="n2-state ${esc(String(problem.state).toLowerCase())}">${esc(problem.state)}</span><strong>${esc(problem.host)}</strong><small>${esc(problem.ip || "—")}</small></div><div><strong>${esc(problem.service)}</strong><p>${esc(problem.output || "")}</p><button type="button" class="ghost-button" data-n2-investigate-problem="${index}">Investigar com IA</button></div></article>`).join("") : '<div class="empty-state">Nenhum problema ativo.</div>'}</div></section>
-      </div>`;
-    root.querySelectorAll("[data-n2-investigate-host]").forEach((button) => button.addEventListener("click", () => {
-      const host = hosts.find((item) => item.host === button.dataset.n2InvestigateHost);
-      openInvestigation(host);
-    }));
-    root.querySelectorAll("[data-n2-investigate-problem]").forEach((button) => button.addEventListener("click", () => {
-      const problem = problems[Number(button.dataset.n2InvestigateProblem || 0)];
-      const host = hosts.find((item) => item.host === problem?.host) || { host: problem?.host, ip: problem?.ip };
-      openInvestigation(host, problem);
-    }));
+  function renderClientOptions(query = "") {
+    const root = $("#n2-client-options"); const search = $("#n2-client-search"); if (!root || !search) return;
+    const normalized = String(query || "").trim().toLocaleLowerCase("pt-BR");
+    const items = state.sites.filter((site) => !normalized || `${site.alias || ""} ${site.site_id || ""}`.toLocaleLowerCase("pt-BR").includes(normalized)).slice(0, 120);
+    root.innerHTML = items.length ? items.map((site) => `<button type="button" role="option" class="n2-client-option" data-site-id="${esc(site.site_id)}" aria-selected="${site.site_id === state.siteId ? "true" : "false"}"><strong>${esc(site.alias || site.site_id)}</strong><span>${esc(site.site_id)} · ${esc(site.hosts ?? 0)} host(s) · ${esc(site.problems ?? 0)} problema(s)</span></button>`).join("") : '<div class="n2-no-options">Nenhum cliente encontrado.</div>';
+    $$("[data-site-id]", root).forEach((button) => button.addEventListener("click", () => void selectSite(button.dataset.siteId)));
+    root.hidden = false; search.setAttribute("aria-expanded", "true");
   }
 
-  async function loadContext(siteId) {
-    const root = modal()?.querySelector("#n2-context-panel");
-    const draftRoot = modal()?.querySelector("#n2-draft-panel");
-    if (!siteId) {
-      context = null;
-      if (root) root.innerHTML = '<div class="empty-state">Selecione um cliente para abrir o ambiente.</div>';
-      if (draftRoot) draftRoot.hidden = true;
-      return;
-    }
-    if (root) root.innerHTML = '<div class="empty-state">Carregando ambiente...</div>';
+  function openClientOptions() { renderClientOptions($("#n2-client-search")?.value || ""); }
+  function closeClientOptions() { const root = $("#n2-client-options"); const search = $("#n2-client-search"); if (root) root.hidden = true; search?.setAttribute("aria-expanded", "false"); }
+
+  async function selectSite(siteId) {
+    const site = state.sites.find((item) => item.site_id === siteId); if (!site) return;
+    state.siteId = siteId; const search = $("#n2-client-search"); if (search) search.value = `${site.alias || site.site_id} · ${site.site_id}`; closeClientOptions();
+    const hostList = $("#n2-host-list"); if (hostList) hostList.innerHTML = '<div class="empty-state">Carregando hosts do cliente...</div>';
+    try { state.context = await request(`/ui/api/n2/sites/${encodeURIComponent(siteId)}`); state.plan = null; state.review = restoreReview(siteId); renderHosts(); if (state.review) renderReview(); else hideReview(); }
+    catch (error) { state.context = null; if (hostList) hostList.innerHTML = `<div class="empty-state error-state">${esc(error.message)}</div>`; }
+  }
+
+  function renderHosts() {
+    const root = $("#n2-host-list"); const summary = $("#n2-host-summary"); const hosts = state.context?.hosts || []; if (!root || !summary) return;
+    summary.textContent = `${hosts.length} host(s) encontrados no site ${state.context?.site?.site_id || ""}. Selecione somente os que devem entrar na documentação.`;
+    if (!hosts.length) { root.innerHTML = '<div class="empty-state">Nenhum host disponível neste cliente.</div>'; return; }
+    root.innerHTML = hosts.map((host) => { const problems = (state.context?.problems || []).filter((item) => item.host === host.host).length; return `<label class="n2-host-row"><input type="checkbox" data-n2-host-select value="${esc(host.host)}"><span class="n2-host-check" aria-hidden="true"></span><span class="n2-host-name"><strong>${esc(host.host)}</strong><small>${esc(host.ip || "sem IP")}</small></span><span class="n2-host-role">${esc(host.kind || host.environment || "server")}</span><span class="n2-host-problems">${esc(problems)} problema(s)</span></label>`; }).join("");
+  }
+
+  function setAllHosts(value) { $$("[data-n2-host-select]").forEach((input) => { input.checked = value; }); }
+  function selectedHostNames() { return $$("[data-n2-host-select]:checked").map((input) => input.value); }
+  function responsibles() { return { infra: $("#n2-resp-infra")?.value || "", dba: $("#n2-resp-dba")?.value || "", noc: $("#n2-resp-noc")?.value || "", review: $("#n2-resp-review")?.value || "", review_noc: $("#n2-resp-review-noc")?.value || "" }; }
+
+  function concreteProvider() {
+    const preferred = state.providers.find((item) => { const id = item.id || item.provider || item.name; return id && String(id).toLowerCase() !== "auto" && item.selected === true && item.configured !== false && item.available !== false; });
+    const fallback = state.providers.find((item) => { const id = item.id || item.provider || item.name; return id && String(id).toLowerCase() !== "auto" && item.configured !== false && item.available !== false && item.enabled !== false; });
+    return String((preferred || fallback || {}).id || (preferred || fallback || {}).provider || (preferred || fallback || {}).name || "gemini");
+  }
+
+  async function runValidation() {
+    if (state.running) return;
+    if (!state.siteId || !state.context) { setRunStatus("Selecione o cliente antes de executar.", true); return; }
+    const hosts = selectedHostNames(); if (!hosts.length) { setRunStatus("Selecione pelo menos um host para a documentação.", true); return; }
+    state.running = true; state.executionIds = []; state.review = null; hideReview(); toggleRunButton(true); setRunStatus("Montando o plano de validação...", false);
     try {
-      context = await request(`/ui/api/n2/sites/${encodeURIComponent(siteId)}`);
-      draft = null;
-      if (draftRoot) draftRoot.hidden = true;
-      renderContext();
-    } catch (error) {
-      if (root) root.innerHTML = `<div class="empty-state">${esc(error.message)}</div>`;
+      state.plan = await request("/ui/api/n2/plan", { method: "POST", body: { site_id: state.siteId, host_names: hosts } });
+      const batches = state.plan.batches || []; renderProgress(batches, 0, "Preparando automação...");
+      const playbookId = $("#n2-playbook")?.value || ""; const provider = playbookId ? concreteProvider() : "auto";
+      for (let index = 0; index < batches.length; index += 1) {
+        const batch = batches[index]; renderProgress(batches, index, `Iniciando lote ${index + 1} de ${batches.length}...`);
+        const payload = { target: batch.target, objective: batch.objective, environment: "monitoring", mode: "propose", ssh_port: Number(batch.ssh_port || 22), provider, playbook_mode: playbookId ? "manual" : "auto", playbook_id: playbookId || null, multi_host: (batch.related_targets || []).length > 0, customer_name: state.context?.site?.alias || state.siteId, auto_expand_scope: false, related_targets: batch.related_targets || [] };
+        const record = await request("/ui/api/executions", { method: "POST", body: payload }); const executionId = record.execution_id || record.id;
+        if (!executionId) throw new Error("A API não retornou o identificador da execução N2."); state.executionIds.push(executionId); await waitExecution(executionId, index, batches);
+      }
+      setRunStatus("Coleta concluída. Montando a tela de revisão...", false);
+      state.review = await request("/ui/api/n2/review", { method: "POST", body: { site_id: state.siteId, host_names: hosts, responsibles: responsibles(), execution_ids: state.executionIds } });
+      persistReview(); renderReview(); setRunStatus("Validação concluída. Revise os dados antes de exportar.", false); renderProgress(batches, batches.length, "Coleta e consolidação concluídas.", true);
+    } catch (error) { setRunStatus(error.message, true); renderProgress(state.plan?.batches || [], 0, error.message, false, true); }
+    finally { state.running = false; toggleRunButton(false); }
+  }
+
+  async function waitExecution(executionId, batchIndex, batches) {
+    const deadline = Date.now() + 30 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const record = await request(`/ui/api/executions/${encodeURIComponent(executionId)}`); const status = String(record.status || "").toLowerCase();
+      const progress = Number(record.progress?.percent ?? record.percent ?? 0); const detail = record.progress?.detail || record.detail || `Lote ${batchIndex + 1}: ${status || "em execução"}`;
+      renderProgress(batches, batchIndex, detail, false, false, progress);
+      if (status === "completed") return record; if (["failed", "cancelled"].includes(status)) throw new Error(record.error || `A execução ${executionId} terminou como ${status}.`); await delay(1200);
     }
+    throw new Error(`Tempo limite excedido aguardando a execução ${executionId}.`);
   }
 
-  function renderDraft() {
-    const root = modal()?.querySelector("#n2-draft-panel");
-    if (!root || !draft) return;
-    root.hidden = false;
-    const sections = draft.sections || [];
-    root.innerHTML = `
-      <div class="n2-draft-head"><div><p class="eyebrow">RASCUNHO N2</p><h3>${esc(draft.client)}</h3><span>Base: ${esc(draft.generated_from)}</span></div><span class="n2-security-badge">sem segredos</span></div>
-      <div class="n2-template-grid">${sections.map((section) => `<article class="n2-template-card ${esc(section.status)}"><header><span>${esc(section.status === "ready" ? "Pronto" : section.status === "partial" ? "Parcial" : "Pendente")}</span><h4>${esc(section.title)}</h4></header>${section.known?.length ? `<div class="n2-known"><strong>Já conhecido</strong>${section.known.map((item) => `<p>✓ ${esc(item)}</p>`).join("")}</div>` : ""}${section.missing?.length ? `<div class="n2-missing"><strong>Falta validar</strong>${section.missing.map((item) => `<p>• ${esc(item)}</p>`).join("")}</div>` : ""}</article>`).join("")}</div>
-      <div class="n2-guidance"><strong>Como usar a IA</strong>${(draft.ai_guidance || []).map((item) => `<span>✓ ${esc(item)}</span>`).join("")}</div>`;
-    root.scrollIntoView({ behavior: "smooth", block: "start" });
+  function renderProgress(batches, currentIndex, detail, completed = false, failed = false, innerPercent = 0) {
+    const root = $("#n2-progress"); if (!root) return; root.hidden = false; const total = Math.max(1, batches.length);
+    const overall = completed ? 100 : Math.min(99, Math.round(((currentIndex + (Math.max(0, Math.min(100, innerPercent)) / 100)) / total) * 100));
+    root.innerHTML = `<div class="n2-progress-head"><div><strong>${failed ? "Falha na validação" : completed ? "Validação concluída" : "IA coletando evidências"}</strong><span>${esc(detail || "")}</span></div><b>${overall}%</b></div><div class="n2-progress-track"><i style="width:${overall}%"></i></div><div class="n2-batch-pills">${batches.map((batch, index) => `<span class="${completed || index < currentIndex ? "done" : index === currentIndex ? failed ? "failed" : "running" : "pending"}">Lote ${index + 1}: ${esc((batch.host_names || []).join(", ") || "entrada")}</span>`).join("")}</div>`;
   }
 
-  async function buildDraft() {
-    const root = modal();
-    const siteId = root?.querySelector("#n2-site")?.value || "";
-    if (!siteId) return;
-    const button = root?.querySelector("#n2-build-draft");
-    const original = button?.textContent || "Montar rascunho N2";
-    if (button) { button.disabled = true; button.textContent = "Montando..."; }
-    try {
-      draft = await request("/ui/api/n2/draft", {
-        method: "POST",
-        body: {
-          site_id: siteId,
-          responsibles: {
-            infra: root?.querySelector("#n2-resp-infra")?.value || "",
-            dba: root?.querySelector("#n2-resp-dba")?.value || "",
-            noc: root?.querySelector("#n2-resp-noc")?.value || "",
-            review: root?.querySelector("#n2-resp-review")?.value || "",
-          },
-        },
-      });
-      renderDraft();
-    } catch (error) {
-      window.alert(error.message);
-    } finally {
-      if (button) { button.disabled = false; button.textContent = original; }
-    }
+  function toggleRunButton(disabled) { const button = $("#n2-run-validation"); if (!button) return; button.disabled = disabled; button.textContent = disabled ? "IA validando ambiente..." : "Executar validação N2 com IA"; }
+  function setRunStatus(message, error) { const root = $("#n2-run-status"); if (!root) return; root.textContent = message || ""; root.classList.toggle("error", Boolean(error)); }
+  function hideReview() { const card = $("#n2-review-card"); if (card) card.hidden = true; }
+
+  function renderReview() {
+    const card = $("#n2-review-card"); const root = $("#n2-review-content"); if (!card || !root || !state.review) return; card.hidden = false; restoreResponsibleInputs();
+    const collection = state.review.collection || {};
+    const hostCards = (state.review.selected_hosts || []).map((host, hostIndex) => { const fields = host.fields || {}; const fieldDefs = [["server", "Servidor"], ["address_ipv4", "Address IPv4"], ["address_vpn", "Address VPN"], ["hostname", "Nome do host"], ["processor", "Processador"], ["memory", "Memória"], ["storage", "Armazenamento"], ["os", "Sistema operacional"]]; return `<article class="n2-review-host"><header><div><span>${esc(host.role || host.kind || "host")}</span><h4>${esc(host.host)}</h4><small>${esc(host.ip || "sem IP")}</small></div><b>editável</b></header><div class="n2-edit-grid">${fieldDefs.map(([key, label]) => `<label><span>${esc(label)}</span><input data-review-host-field data-host-index="${hostIndex}" data-field-key="${esc(key)}" value="${esc(fields[key] || "")}"></label>`).join("")}</div><label class="n2-edit-wide"><span>Evidências / observações deste host</span><textarea rows="5" data-review-host-notes data-host-index="${hostIndex}">${esc(host.collection_notes || "")}</textarea></label></article>`; }).join("");
+    const sections = (state.review.sections || []).map((section, sectionIndex) => `<details class="n2-review-section" ${sectionIndex < 2 ? "open" : ""}><summary><span>${esc(section.title)}</span><small>${(section.fields || []).filter((field) => field.value).length}/${(section.fields || []).length} preenchidos</small></summary><div class="n2-edit-grid">${(section.fields || []).map((field, fieldIndex) => `<label class="${field.control === "textarea" ? "n2-edit-wide" : ""}"><span>${esc(field.label)}</span>${field.control === "textarea" ? `<textarea rows="5" data-review-field data-section-index="${sectionIndex}" data-field-index="${fieldIndex}">${esc(field.value || "")}</textarea>` : `<input data-review-field data-section-index="${sectionIndex}" data-field-index="${fieldIndex}" value="${esc(field.value || "")}">`}</label>`).join("")}</div></details>`).join("");
+    root.innerHTML = `<div class="n2-review-summary"><div><strong>${esc(state.review.client)}</strong><span>${esc(state.review.site_id)} · ${(state.review.selected_hosts || []).length} host(s) selecionado(s)</span></div><div><strong>${esc(collection.evidence_count || 0)}</strong><span>evidências estruturadas</span></div><div><strong>${esc((collection.completed_execution_ids || []).length)}</strong><span>execuções concluídas</span></div></div>${(collection.errors || []).length ? `<div class="n2-collection-errors"><strong>Pontos que precisam de revisão manual</strong>${collection.errors.map((item) => `<span>${esc(item)}</span>`).join("")}</div>` : ""}<section class="n2-review-block"><div class="n2-review-block-head"><p class="eyebrow">INFRAESTRUTURA</p><h3>Hosts selecionados</h3></div><div class="n2-review-hosts">${hostCards}</div></section><section class="n2-review-block"><div class="n2-review-block-head"><p class="eyebrow">DOCUMENTAÇÃO</p><h3>Campos do template</h3></div><div class="n2-review-sections">${sections}</div></section>`;
+    $$('[data-review-host-field]', root).forEach((input) => input.addEventListener("input", () => { const host = state.review.selected_hosts[Number(input.dataset.hostIndex)]; if (host) host.fields[input.dataset.fieldKey] = input.value; reviewChanged(); }));
+    $$('[data-review-host-notes]', root).forEach((input) => input.addEventListener("input", () => { const host = state.review.selected_hosts[Number(input.dataset.hostIndex)]; if (host) host.collection_notes = input.value; reviewChanged(); }));
+    $$('[data-review-field]', root).forEach((input) => input.addEventListener("input", () => { const section = state.review.sections[Number(input.dataset.sectionIndex)]; const field = section?.fields?.[Number(input.dataset.fieldIndex)]; if (field) field.value = input.value; reviewChanged(); }));
+    card.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  function boot() {
-    let attempts = 0;
-    const timer = window.setInterval(() => {
-      attempts += 1;
-      const ready = ensureModal() && ensureEntryButton();
-      if (ready) window.clearInterval(timer);
-      else if (attempts > 120) window.clearInterval(timer);
-    }, 300);
+  function reviewChanged() { const label = $("#n2-review-state"); if (label) label.textContent = "Alterações salvas neste navegador"; if (state.review) { state.review.responsibles = responsibles(); persistReview(); } }
+  function persistReview() { if (!state.review || !state.siteId) return; try { localStorage.setItem(`agent-ia:n2-review:${state.siteId}`, JSON.stringify(state.review)); } catch { /* armazenamento indisponível */ } }
+  function restoreReview(siteId) { try { const raw = localStorage.getItem(`agent-ia:n2-review:${siteId}`); if (!raw) return null; const value = JSON.parse(raw); return value?.schema === "n2-documentation-review-v1" ? value : null; } catch { return null; } }
+  function restoreResponsibleInputs() { const resp = state.review?.responsibles || {}; [["#n2-resp-infra", "infra"], ["#n2-resp-dba", "dba"], ["#n2-resp-noc", "noc"], ["#n2-resp-review", "review"], ["#n2-resp-review-noc", "review_noc"]].forEach(([selector, key]) => { const input = $(selector); if (input && !input.value && resp[key]) input.value = resp[key]; }); }
+
+  async function exportReview(format) {
+    if (!state.review) { setRunStatus("Execute a validação e revise os dados antes de exportar.", true); return; }
+    state.review.responsibles = responsibles(); persistReview(); const button = format === "docx" ? $("#n2-export-word") : $("#n2-export-pdf"); const original = button?.textContent || "Exportar";
+    if (button) { button.disabled = true; button.textContent = "Gerando..."; }
+    try { const result = await requestBlob(`/ui/api/n2/export/${format}`, { review: state.review }); const match = /filename="?([^";]+)"?/i.exec(result.disposition); const filename = match?.[1] || `Documentacao-N2.${format}`; const url = URL.createObjectURL(result.blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1500); const label = $("#n2-review-state"); if (label) label.textContent = `${format === "docx" ? "Word" : "PDF"} exportado`; }
+    catch (error) { setRunStatus(error.message, true); }
+    finally { if (button) { button.disabled = false; button.textContent = original; } }
   }
 
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && modal()?.classList.contains("open")) closeModal();
-  });
-
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
-  else boot();
+  function boot() { let attempts = 0; const timer = window.setInterval(() => { attempts += 1; if (ensureNavAndView()) window.clearInterval(timer); else if (attempts > 100) window.clearInterval(timer); }, 250); }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot); else boot();
 })();

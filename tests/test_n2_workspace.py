@@ -34,33 +34,79 @@ def test_n2_template_does_not_request_password_or_secret_fields() -> None:
     forbidden = ("password", "secret", "community", "token")
     for field in fields:
         assert not any(word in field for word in forbidden), field
-        # Texto como "usuários técnicos sem senha" é uma proteção explícita,
-        # não um campo de coleta de credencial.
         if "senha" in field:
             assert "sem senha" in field or "não registrar senha" in field, field
 
 
-def test_n2_ui_connects_template_to_existing_investigation_flow() -> None:
+def test_n2_has_own_main_navigation_and_is_not_inside_projects() -> None:
     source = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.js").read_text(encoding="utf-8")
-    assert "Documentação e validação com IA" in source
-    assert "Montar rascunho N2" in source
-    assert "Investigar com IA" in source
-    assert "/ui/api/n2/sites" in source
-    assert "/ui/api/n2/draft" in source
-    assert "nunca reinicie o servidor" in source
+    assert 'button.dataset.view = "n2"' in source
+    assert 'view.id = "view-n2"' in source
+    assert ">N2</span>" in source
+    assert "#view-projects .project-builder-head" not in source
+    assert "n2-workspace-modal" not in source
 
 
-def test_n2_is_optional_tool_inside_projects_and_does_not_replace_navigation() -> None:
+def test_n2_client_selector_is_searchable_custom_combobox() -> None:
     source = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.js").read_text(encoding="utf-8")
-    assert "#view-projects .project-builder-head" in source
-    assert "Área N2" in source
-    assert "n2-workspace-modal" in source
-    assert 'data-view="n2"' not in source
-    assert "view-n2" not in source
-    assert "showView(\"n2\")" not in source
+    css = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.css").read_text(encoding="utf-8")
+    assert 'id="n2-client-search" role="combobox"' in source
+    assert 'id="n2-client-options" role="listbox"' in source
+    assert "renderClientOptions" in source
+    assert 'select id="n2-site"' not in source
+    assert "background:#f8fafc" in css
+    assert ".n2-client-option:hover" in css
 
 
-def test_n2_backend_marks_unknown_fields_as_pending_instead_of_inventing() -> None:
+def test_n2_ui_requires_explicit_host_selection_and_supports_optional_playbook() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.js").read_text(encoding="utf-8")
+    assert "data-n2-host-select" in source
+    assert "n2-select-all-hosts" in source
+    assert "n2-clear-hosts" in source
+    assert 'id="n2-playbook"' in source
+    assert "Automático — a IA decide o roteiro de validação" in source
+    assert '/ui/api/playbooks' in source
+
+
+def test_n2_ui_runs_selected_hosts_then_builds_editable_review() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.js").read_text(encoding="utf-8")
+    for endpoint in (
+        "/ui/api/n2/plan",
+        "/ui/api/executions",
+        "/ui/api/n2/review",
+        "/ui/api/n2/export/${format}",
+    ):
+        assert endpoint in source
+    assert "auto_expand_scope: false" in source
+    assert "data-review-host-field" in source
+    assert "data-review-field" in source
+    assert "Exportar Word" in source
+    assert "Exportar PDF" in source
+
+
+def test_n2_collection_backend_is_strictly_read_only_and_never_collects_secrets() -> None:
+    source = (PROJECT_ROOT / "app" / "services" / "n2_documentation.py").read_text(encoding="utf-8")
+    assert "VALIDAÇÃO DOCUMENTAL N2 — SOMENTE LEITURA" in source
+    assert "NUNCA executar reboot" in source
+    assert "NUNCA reiniciar, parar, habilitar/desabilitar ou alterar serviços" in source
+    assert "NUNCA acessar banco de dados do cliente por cliente SQL/RMAN" in source
+    assert "NUNCA coletar, imprimir, registrar ou inferir senha" in source
+    assert '"server_reboot": "absolute_denial"' in source
+    assert '"secrets": "never_collect"' in source
+
+
+def test_n2_export_endpoints_and_sensitive_fields_are_protected() -> None:
+    web = (PROJECT_ROOT / "app" / "web_n2.py").read_text(encoding="utf-8")
+    exporter = (PROJECT_ROOT / "app" / "services" / "n2_document_export.py").read_text(encoding="utf-8")
+    assert '@router.post("/ui/api/n2/export/{document_format}")' in web
+    assert "sanitize_n2_review" in web
+    assert "SENSITIVE_KEYS" in exporter
+    assert '("WINT - SYS", "")' in exporter
+    assert '["URL", "Usuário", "Senha"]' in exporter
+    assert '_field(values,"monitoring_user"),""' in exporter
+
+
+def test_legacy_n2_draft_still_marks_unknown_fields_as_pending() -> None:
     source = (PROJECT_ROOT / "app" / "services" / "n2_workspace.py").read_text(encoding="utf-8")
     assert '"missing"' in source
     assert "Não inferir versão de banco" in source
