@@ -28,17 +28,20 @@ def test_installation_scripts_have_valid_bash_syntax() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_setup_script_uses_linux_filesystem_and_supported_python_for_virtualenv() -> None:
+def test_setup_script_uses_linux_filesystem_and_python311_for_virtualenv() -> None:
     content = (PROJECT_ROOT / "scripts" / "setup_wsl.sh").read_text(encoding="utf-8")
 
     assert "$HOME/.venvs/$PROJECT_NAME" in content
-    assert "sys.version_info >= (3, 11)" in content
-    assert "python3.12 python3.11 python3" in content
+    assert "sys.version_info[:2] == (3, 11)" in content
+    assert "python3.11 /usr/bin/python3.11 /usr/local/bin/python3.11" in content
     assert "python3.11 python3.11-pip" in content
-    assert "ambiente virtual existente usa Python incompatível" in content
+    assert "recriando obrigatoriamente com Python 3.11.x" in content
     assert '"$PYTHON_BIN" -m venv "$VENV_DIR"' in content
+    assert "python install 3.11" in content
+    assert 'export PATH="$VENV_DIR/bin:$PATH"' in content
+    assert "ensure_shell_path" in content
     assert "--break-system-packages" not in content
-    assert '"$PIP" install -e "$PROJECT_DIR"' in content
+    assert '"$PYTHON" -m pip install -e "$PROJECT_DIR"' in content
 
 
 def test_start_script_loads_dotenv_safely_before_server() -> None:
@@ -143,7 +146,9 @@ def test_stack_control_reuses_containers_and_external_omniroute() -> None:
     assert "OmniRoute externo preservado" in content
     assert "OMNIROUTE_MODE_FILE" in content
     assert "omniroute_http_ready" in content
-    assert "docker compose" not in content  # comando é montado por array para usar o plugin v2
+    assert "sync_postgres_password" in content
+    assert "Credencial do PostgreSQL local sincronizada sem apagar o volume" in content
+    assert "docker compose" not in content
     assert '"${COMPOSE[@]}" up -d "$service"' in content
     assert "docker rm" not in content
     assert " compose down" not in content
