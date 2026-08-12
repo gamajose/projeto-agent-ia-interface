@@ -18,11 +18,13 @@ from app.services.ensemble_instrumentation import install_ensemble_reasoning
 from app.services.fleet_control import fleet_control_status
 from app.services.fleet_scope_control import resume_active_fleet_discovery
 from app.services.fleet_patrol import fleet_patrol_status
+from app.services.noc_history_hooks import handle_worker_result_with_history
+from app.services.noc_policy_instrumentation import install_noc_policy_guard
 from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
 from app.services.jobs import get_job, run_worker_once
 from app.services.noc_supervisor import supervisor_tick
-from app.services.noc_worker_hooks import handle_worker_result, reconcile_noc_jobs
+from app.services.noc_worker_hooks import reconcile_noc_jobs
 from app.services.secrets import secret_backend_status
 from app.services.ssh_resilience import install_ssh_resilience
 
@@ -33,6 +35,7 @@ install_ensemble_reasoning()
 install_project_playbook_instrumentation()
 install_codex_provider_preflight()
 install_checkmk_site_job_routing()
+install_noc_policy_guard()
 app = typer.Typer(no_args_is_help=True)
 console = Console()
 
@@ -51,6 +54,7 @@ def run(
     fleet_resumed = False if once else resume_active_fleet_discovery(settings=settings)
 
     # Fonte primária do NOC: CMK05/master -> sites remotos -> estados Checkmk.
+    # O loop usa 120 segundos por padrão e funciona sem a interface aberta.
     master_started = False if once else start_checkmk_master_patrol_background(settings=settings)
 
     console.print(Panel(
@@ -60,7 +64,7 @@ def run(
         f"Segredos: {secret_backend_status(settings).get('backend')}\n"
         f"StrictHostKeyChecking: {settings.ssh_strict_host_key_checking}\n"
         f"NOC autônomo: {'ativo' if settings.noc_incident_enabled else 'desativado'} · L{settings.noc_autonomy_level}\n"
-        f"Checkmk Master: {'ativo' if master_started else 'desativado'}\n"
+        f"Checkmk Master: {'ativo' if master_started else 'desativado'} · ronda automática a cada 2 min por padrão\n"
         f"Fleet Discovery: {'retomada em segundo plano' if fleet_resumed else 'contingência/manual'}\n"
         f"Fleet Patrol legado: desativado (somente acionamento manual)",
         title="Agent IA Worker",
@@ -70,7 +74,7 @@ def run(
 
     if once:
         result = run_worker_once(settings=settings, block_seconds=block_seconds)
-        handle_worker_result(result, settings=settings)
+        handle_worker_result_with_history(result, settings=settings)
         reconcile_noc_jobs(settings=settings)
         supervisor_tick(settings=settings)
         console.print(json.dumps({
@@ -84,7 +88,7 @@ def run(
     while True:
         try:
             result = run_worker_once(settings=settings, block_seconds=block_seconds)
-            handle_worker_result(result, settings=settings)
+            handle_worker_result_with_history(result, settings=settings)
             reconcile_noc_jobs(settings=settings)
             supervisor_tick(settings=settings)
         except KeyboardInterrupt:

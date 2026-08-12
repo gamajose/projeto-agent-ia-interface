@@ -7,6 +7,7 @@ from typing import Any
 
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
+from app.services.checkmk_customer_sync import sync_checkmk_customers_from_inventory
 from app.services.checkmk_master import checkmk_master_status
 from app.services.checkmk_operational import (
     checkmk_operational_overview,
@@ -15,6 +16,7 @@ from app.services.checkmk_operational import (
 )
 from app.services.checkmk_site_targeting import resolve_checkmk_site_target
 from app.services.jobs import enqueue_investigation
+from app.services.noc_action_policy import classify_problem_category, record_history_transition
 from app.services.noc_incidents import attach_job, incident_objective, register_checkmk_event
 from app.services.noc_skills import build_skill_objective
 from app.services.redaction import redact_text
@@ -73,11 +75,18 @@ def _register_recovery(item: dict[str, Any], *, settings: Settings) -> None:
             requested_auto_correct=False,
             settings=settings,
         )
+        record_history_transition(
+            item,
+            status="resolved",
+            reason="Checkmk confirmou recuperação/normalização do alerta.",
+        )
     except Exception:
         return
 
 
 def _register_problem(item: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
+    item = dict(item)
+    item["policy_category"] = classify_problem_category(item)
     route = resolve_checkmk_site_target(item)
     environment = str(route.get("environment") or EnvironmentType.UNKNOWN.value)
     event = register_checkmk_event(
@@ -122,6 +131,8 @@ def _register_problem(item: dict[str, Any], *, settings: Settings) -> dict[str, 
             "source": "checkmk_master",
             "site_scope": True,
             "noc_incident_id": incident.get("id"),
+            "checkmk_problem_key": item.get("problem_key"),
+            "policy_category": item.get("policy_category"),
             "site_id": route.get("site_id"),
             "client_alias": route.get("client_alias"),
             "entry_address": route.get("entry_address"),
@@ -156,18 +167,34 @@ def _persist_automation_result(item: dict[str, Any], result: dict[str, Any]) -> 
     job = dict(result.get("job") or {})
     if result.get("queued"):
         status = "queued"
+        reason = "Investigação automática iniciada. A correção dependerá da política da categoria."
     elif route.get("valid") and not route.get("auto_investigate"):
-        status = "guarded"
+        status = "manual_required"
+        reason = str(route.get("reason") or "Rota protegida; exige validação do analista.")
     elif not route.get("valid"):
-        status = "needs_attention"
+        status = "access_blocked"
+        reason = str(route.get("reason") or "Não foi possível montar uma rota segura para investigação.")
     else:
         status = str(incident.get("status") or "detected")
+        reason = "Problema detectado pelo Checkmk e registrado no NOC."
     update_problem_automation(
         str(item.get("problem_key") or ""),
-        automation_status=status,
+        automation_status="needs_attention" if status in {"manual_required", "access_blocked"} else status,
         incident_id=str(incident.get("id") or "") or None,
         job_id=str(job.get("job_id") or incident.get("job_id") or "") or None,
         route=route,
+    )
+    record_history_transition(
+        item,
+        status=status,
+        reason=reason,
+        incident_id=str(incident.get("id") or "") or None,
+        job_id=str(job.get("job_id") or incident.get("job_id") or "") or None,
+        metadata={
+            "route_valid": route.get("valid"),
+            "route_strategy": route.get("strategy"),
+            "shared_endpoint": route.get("shared_endpoint"),
+        },
     )
 
 
@@ -208,6 +235,13 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
         if snapshot.get("status") != "completed":
             return snapshot
 
+        # Mantém a aba Clientes abastecida com o mesmo inventário que o CMK05
+        # acabou de confirmar. Falha aqui não invalida a ronda de monitoramento.
+        try:
+            sync_checkmk_customers_from_inventory()
+        except Exception:
+            pass
+
         problems = list(snapshot.get("problems") or [])
         recoveries = list(snapshot.get("recoveries") or [])
         new_incidents = 0
@@ -231,6 +265,7 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
                     str(item.get("problem_key") or ""),
                     automation_status="needs_attention",
                 )
+                record_history_transition(item, status="failed", reason=message)
 
         for item in recoveries:
             _register_recovery(item, settings=settings)
@@ -286,9 +321,11 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
 
 def checkmk_master_patrol_status(*, settings: Settings | None = None) -> dict[str, Any]:
     settings = settings or get_settings()
+    config = _config(settings)
     return {
         **dict(_PATROL_STATE),
-        "enabled": bool(_config(settings)["enabled"]),
+        "enabled": bool(config["enabled"]),
+        "poll_interval_seconds": int(config["poll_interval"]),
         "master": checkmk_master_status(settings=settings),
         "operational": checkmk_operational_overview(problem_limit=200, site_limit=500),
     }

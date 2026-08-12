@@ -31,7 +31,13 @@ class PolicyDecision:
     policy_code: str
 
 
-REBOOT_RE = re.compile(r"(^|[;&|]\s*)(reboot|shutdown|poweroff|halt|init\s+6|systemctl\s+reboot)\b", re.I)
+# Bloqueio absoluto de lifecycle do SERVIDOR. Reiniciar serviços autorizados é
+# outra categoria; reboot/poweroff/halt do host nunca pode ser executado.
+REBOOT_RE = re.compile(
+    r"(^|[;&|]\s*)(reboot|poweroff|halt|shutdown\b|init\s+[06]\b|telinit\s+[06]\b|"
+    r"systemctl\s+(reboot|poweroff|halt|kexec)\b)\b",
+    re.I,
+)
 DB_CLIENT_RE = re.compile(r"(^|[;&|]\s*)(sqlplus|rman|psql|mysql|mariadb|sqlcmd|mongosh?|redis-cli)\b", re.I)
 
 PAIRED_SERVICE_STOP_START_RE = re.compile(
@@ -102,7 +108,7 @@ def evaluate_action(action: ActionType, environment: EnvironmentType) -> PolicyD
     if action == ActionType.DATABASE_ACCESS:
         return PolicyDecision(False, False, "Acesso a banco de dados do cliente é proibido.", "CUSTOMER_DATABASE_ACCESS_DENIED")
     if action == ActionType.HOST_REBOOT:
-        return PolicyDecision(False, True, "Reboot nunca é executado pelo agente. Pode apenas ser proposto e exige execução humana externa.", "HOST_REBOOT_DENIED")
+        return PolicyDecision(False, False, "Bloqueio absoluto: o Agent IA nunca reinicia, desliga ou liga o servidor.", "HOST_REBOOT_DENIED")
     if action == ActionType.CONTAINER_ADJUSTMENT:
         return PolicyDecision(False, False, "Stop, start, restart, kill ou remoção de container são proibidos.", "CONTAINER_LIFECYCLE_DENIED")
     if action == ActionType.DESTRUCTIVE:

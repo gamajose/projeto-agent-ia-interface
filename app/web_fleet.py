@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.services.checkmk_master_patrol import (
@@ -15,6 +15,11 @@ from app.services.fleet_scope_control import (
     scoped_fleet_discovery_tick,
     start_fleet_discovery,
 )
+from app.services.noc_action_policy import (
+    list_noc_action_history,
+    list_noc_automation_policies,
+    update_noc_automation_policy,
+)
 from app.web import _require_access, _require_mutation
 
 
@@ -23,6 +28,10 @@ router = APIRouter(tags=["interface-fleet"])
 
 class FleetStartPayload(BaseModel):
     scope: str | None = Field(default=None, max_length=80)
+
+
+class NocPolicyPayload(BaseModel):
+    enabled: bool
 
 
 @router.get("/ui/api/noc/fleet")
@@ -69,6 +78,50 @@ def noc_checkmk_master_site_detail(request: Request, site_id: str) -> dict:
         raise HTTPException(
             status_code=503,
             detail=f"detalhe do site indisponível: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+@router.get("/ui/api/noc/history")
+def noc_history(
+    request: Request,
+    status: str | None = Query(default=None, max_length=80),
+    category: str | None = Query(default=None, max_length=80),
+    query: str | None = Query(default=None, max_length=255),
+    limit: int = Query(default=500, ge=1, le=2000),
+) -> dict:
+    _require_access(request)
+    try:
+        return list_noc_action_history(status=status, category=category, query=query, limit=limit)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"histórico do NOC indisponível: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+@router.get("/ui/api/noc/policies")
+def noc_policies(request: Request) -> dict:
+    _require_access(request)
+    try:
+        return list_noc_automation_policies()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"políticas do NOC indisponíveis: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+@router.post("/ui/api/noc/policies/{category}")
+def noc_policy_update(category: str, payload: NocPolicyPayload, request: Request) -> dict:
+    _require_mutation(request)
+    try:
+        return update_noc_automation_policy(category, payload.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"não foi possível atualizar a política: {type(exc).__name__}: {exc}",
         ) from exc
 
 
