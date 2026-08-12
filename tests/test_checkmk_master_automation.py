@@ -5,7 +5,13 @@ from types import SimpleNamespace
 from app.core.policies import EnvironmentType
 from app.core.settings import get_settings
 from app.services import checkmk_site_targeting
-from app.services.checkmk_master import _host_environment, _host_kind, _sites_script
+from app.services.checkmk_master import (
+    _host_environment,
+    _host_kind,
+    _master_executor,
+    _sites_script,
+    master_config,
+)
 from app.services.noc_skills import reload_noc_skills, select_noc_skill
 
 
@@ -161,6 +167,25 @@ def test_master_parser_script_never_exports_site_secret() -> None:
     assert '"site_id"' in source
     assert '"livestatus_host"' in source
     assert '"status_host"' in source
+
+
+def test_cmk05_reuses_shared_access_credentials() -> None:
+    settings = get_settings().model_copy(
+        update={
+            "secret_backend": "env",
+            "ssh_bastion_user": "shared-access-user",
+            "ssh_bastion_password": "shared-access-password",
+            "ssh_cmk05": "10.17.181.44",
+        }
+    )
+
+    cfg = master_config(settings)
+    executor = _master_executor(settings)
+
+    assert cfg["ssh_user"] == "shared-access-user"
+    assert executor.username == "shared-access-user"
+    assert executor.password == "shared-access-password"
+    assert "CHECKMK_MASTER_SSH_USER" not in master_config.__code__.co_consts
 
 
 def test_checkmk_host_classification_handles_real_examples() -> None:
