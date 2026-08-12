@@ -44,8 +44,8 @@ REBOOT_RE = re.compile(
     r"(?:"
     r"reboot\b|poweroff\b|halt\b|shutdown\b|"
     r"init\s+[06]\b|telinit\s+[06]\b|"
-    r"systemctl(?:\s+--[A-Za-z0-9_-]+(?:=\S+)?)\s+(?:reboot|poweroff|halt|kexec|soft-reboot)\b|"
-    r"systemctl\s+(?:start|isolate)\s+(?:reboot|poweroff|halt)\.target\b"
+    r"systemctl(?:\s+--[A-Za-z0-9_-]+(?:=\S+)?)*\s+(?:reboot|poweroff|halt|kexec|soft-reboot)\b|"
+    r"systemctl(?:\s+--[A-Za-z0-9_-]+(?:=\S+)?)*\s+(?:start|isolate)\s+(?:reboot|poweroff|halt)\.target\b"
     r")",
     re.I,
 )
