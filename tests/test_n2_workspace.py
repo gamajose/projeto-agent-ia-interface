@@ -31,8 +31,13 @@ def test_n2_template_covers_operational_documentation_sections() -> None:
 
 def test_n2_template_does_not_request_password_or_secret_fields() -> None:
     fields = [str(field).casefold() for item in N2_TEMPLATE_SECTIONS for field in item.get("fields") or []]
-    forbidden = ("senha", "password", "secret", "community", "token")
-    assert all(not any(word in field for word in forbidden) for field in fields)
+    forbidden = ("password", "secret", "community", "token")
+    for field in fields:
+        assert not any(word in field for word in forbidden), field
+        # Texto como "usuários técnicos sem senha" é uma proteção explícita,
+        # não um campo de coleta de credencial.
+        if "senha" in field:
+            assert "sem senha" in field or "não registrar senha" in field, field
 
 
 def test_n2_ui_connects_template_to_existing_investigation_flow() -> None:
