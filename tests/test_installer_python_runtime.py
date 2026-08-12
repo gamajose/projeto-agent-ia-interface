@@ -11,7 +11,7 @@ def test_setup_wsl_requires_exact_python_311_and_recreates_wrong_venv() -> None:
     assert "sys.version_info[:2] == (3, 11)" in source
     assert "python3.14" not in source
     assert "recriando obrigatoriamente com Python 3.11.x" in source
-    assert "uv python install 3.11" in source
+    assert "python install 3.11" in source
     assert 'export PATH="$VENV_DIR/bin:$PATH"' in source
     assert "ensure_shell_path" in source
 
