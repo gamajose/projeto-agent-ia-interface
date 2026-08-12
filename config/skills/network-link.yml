@@ -1,0 +1,26 @@
+id: network-link
+title: Link, gateway e conectividade de firewall
+priority: 95
+match:
+  service:
+    - '^Gateway_'
+    - 'Interface'
+    - 'Packet'
+  output:
+    - 'Packet loss'
+    - '100.*por cento.*perca'
+    - 'indisponibilidade'
+    - 'timed out'
+  host:
+    - 'firewall'
+    - 'pfsense'
+    - 'forti'
+target_strategy: entry_context
+objective: Confirmar indisponibilidade, perda, rota e alcance a partir do ambiente correto antes de escalar para rede ou provedor.
+knowledge:
+  - Correlacionar gateway, perda, latência e alcance sem alterar rotas.
+  - Executar testes somente dentro do contexto do cliente que originou o alerta.
+  - Distinguir falha de link, coleta Checkmk e indisponibilidade do equipamento.
+constraints:
+  - Não alterar firewall, VPN, rota ou gateway automaticamente.
+  - Não reutilizar a sessão de um cliente para testar IP interno de outro cliente.
