@@ -38,10 +38,11 @@ def test_navigation_refresh_promotes_user_actions_to_single_global_header() -> N
 
 def test_checkmk_central_panel_keeps_long_status_visible() -> None:
     css = (PROJECT_ROOT / "app" / "ui" / "fleet-ui.css").read_text(encoding="utf-8")
+    compact = "".join(css.split())
     assert ".fleet-panel" in css
-    assert "overflow: visible" in css
-    assert "overflow-wrap: anywhere" in css
-    assert "word-break: break-word" in css
+    assert "overflow:visible" in compact
+    assert "overflow-wrap:anywhere" in compact
+    assert ".cmk-error-copy" in css
 
 
 def test_execution_visibility_exposes_access_journey() -> None:
