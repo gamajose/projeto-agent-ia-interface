@@ -29,7 +29,11 @@ def test_problem_category_routes_filesystem_database_and_monitoring() -> None:
 def test_host_lifecycle_commands_are_absolute_denials() -> None:
     commands = (
         "reboot",
+        "sudo reboot",
+        "/sbin/reboot",
+        "sudo /usr/sbin/reboot",
         "shutdown -r now",
+        "sudo shutdown -h now",
         "poweroff",
         "halt",
         "init 6",
@@ -37,9 +41,15 @@ def test_host_lifecycle_commands_are_absolute_denials() -> None:
         "telinit 6",
         "systemctl reboot",
         "systemctl poweroff",
+        "sudo systemctl reboot",
+        "sudo /usr/bin/systemctl --no-wall reboot",
+        "systemctl --message=maintenance reboot",
+        "systemctl isolate reboot.target",
+        "sudo systemctl start poweroff.target",
+        "exec shutdown -r now",
     )
     for command in commands:
-        assert classify_command(command) == ActionType.HOST_REBOOT
+        assert classify_command(command) == ActionType.HOST_REBOOT, command
         decision = evaluate_action(ActionType.HOST_REBOOT, EnvironmentType.MONITORING)
         assert decision.allowed is False
         assert decision.requires_approval is False
