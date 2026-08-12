@@ -1,0 +1,20 @@
+id: oracle-backup
+title: Oracle e rotinas de backup
+priority: 80
+match:
+  service:
+    - 'Backup.*Datapump'
+    - 'Datapump'
+    - 'Oracle'
+  output:
+    - 'MAX_AGE'
+    - 'status.*desatualizado'
+    - 'backup'
+target_strategy: internal_ssh
+objective: Validar a evidência da rotina de backup e a idade do artefato sem executar operação no banco.
+knowledge:
+  - Confirmar timestamp, arquivo status e evidência da rotina antes de concluir falha de banco.
+  - Separar falha de automação/backup de indisponibilidade do Oracle.
+constraints:
+  - Não iniciar, parar ou alterar banco de dados.
+  - Não executar backup manual automaticamente.
