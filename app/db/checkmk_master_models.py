@@ -104,3 +104,45 @@ class CheckmkProblemORM(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class NocAutomationPolicyORM(Base):
+    """Preferencias persistidas sobre quais categorias podem receber self-healing.
+
+    Investigacao continua permitida em modo somente leitura. Esta tabela controla
+    somente a elegibilidade de correcoes autonomas do NOC.
+    """
+
+    __tablename__ = "noc_automation_policies"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    category: Mapped[str] = mapped_column(String(80), nullable=False, unique=True, index=True)
+    label: Mapped[str] = mapped_column(String(180), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    immutable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    description: Mapped[str] = mapped_column(String(600), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NocActionHistoryORM(Base):
+    """Historico operacional duravel das transicoes da automacao NOC."""
+
+    __tablename__ = "noc_action_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    problem_key: Mapped[str | None] = mapped_column(String(768), index=True)
+    site_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    client_alias: Mapped[str | None] = mapped_column(String(255), index=True)
+    host_name: Mapped[str | None] = mapped_column(String(255), index=True)
+    internal_address: Mapped[str | None] = mapped_column(String(64), index=True)
+    service: Mapped[str | None] = mapped_column(String(512), index=True)
+    category: Mapped[str] = mapped_column(String(80), nullable=False, default="other", index=True)
+    status: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    incident_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    job_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    metadata_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
