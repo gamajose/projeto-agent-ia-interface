@@ -97,13 +97,23 @@ Por padrão:
 
 A sincronização pode ser forçada pela interface em **Sincronizar Checkmk** e a leitura de estados em **Ronda agora**.
 
-## Variáveis
+## Acesso ao CMK05
+
+O CMK05 **não possui usuário ou senha próprios no `.env`**. Monitor 1, Nuvem e CMK05 reutilizam a mesma credencial operacional já existente:
+
+```env
+SSH_SRV_VPN_USER=<usuario compartilhado>
+SSH_SRV_VPN_SENHA=<senha compartilhada>
+SSH_CMK05=<ip do cmk05>
+```
+
+A aplicação lê `SSH_CMK05` como endereço do CMK05 e reutiliza `SSH_SRV_VPN_USER` / `SSH_SRV_VPN_SENHA` para autenticação. Não é necessário criar `CHECKMK_MASTER_SSH_USER` nem `CHECKMK_MASTER_SSH_PASSWORD`.
+
+As opções abaixo são apenas de comportamento do coletor e podem manter os padrões quando não houver necessidade de ajuste:
 
 ```env
 CHECKMK_MASTER_ENABLED=true
-CHECKMK_MASTER_TARGET=10.17.181.44
 CHECKMK_MASTER_SSH_PORT=22
-CHECKMK_MASTER_SSH_USER=<conta autorizada no CMK05>
 CHECKMK_MASTER_CONTAINER=checkmk-master-25
 CHECKMK_MASTER_SITE=master
 CHECKMK_MASTER_COMMAND_TIMEOUT_SECONDS=120
@@ -117,7 +127,7 @@ CHECKMK_MASTER_POLL_INTERVAL_SECONDS=120
 CHECKMK_MASTER_INVENTORY_SYNC_HOURS=6
 ```
 
-`CHECKMK_MASTER_SSH_PASSWORD` é opcional. Quando não configurada, a aplicação reutiliza o segredo SSH padrão já existente. Senhas nunca devem ser versionadas.
+Senhas nunca devem ser versionadas, persistidas em evidências ou exibidas na interface.
 
 ## Descoberta de rede
 
