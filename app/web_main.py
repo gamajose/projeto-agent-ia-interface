@@ -35,7 +35,7 @@ from app.web_replay import router as replay_router
 from app.web_settings import enable_dynamic_provider_payload, router as settings_router
 from app.web_tools import router as tools_router
 from app.web_topology import router as topology_router
-from app.web_ui_cache import router as ui_cache_router
+from app.web_ui_cache import _ASSET_VERSION, router as ui_cache_router
 
 
 enable_dynamic_provider_payload()
@@ -86,7 +86,7 @@ if not getattr(app.state, "agent_operator_experience_registered", False):
 
 @app.middleware("http")
 async def inject_fleet_ui_assets(request: Request, call_next):
-    """Acopla o painel de descoberta sem alterar o fluxo da Nova análise."""
+    """Acopla o painel NOC sem alterar o fluxo da Nova análise."""
     response = await call_next(request)
     if request.url.path not in {"/ui", "/ui/"}:
         return response
@@ -98,8 +98,8 @@ async def inject_fleet_ui_assets(request: Request, call_next):
     async for chunk in response.body_iterator:
         chunks.append(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
     body = b"".join(chunks).decode("utf-8", errors="replace")
-    marker = '<script src="/ui/assets/fleet-ui.js?v=1.34.0" defer></script>'
-    if marker not in body:
+    if "fleet-ui.js" not in body:
+        marker = f'<script src="/ui/assets/fleet-ui.js?v={_ASSET_VERSION}" defer></script>'
         body = body.replace("</body>", f"  {marker}\n</body>")
     headers = dict(response.headers)
     headers.pop("content-length", None)
