@@ -30,18 +30,21 @@ def test_patrol_state_names_match_checkmk_states() -> None:
     assert _state_name(3) == "UNKNOWN"
 
 
-def test_worker_does_not_start_new_discovery_on_service_start() -> None:
+def test_worker_uses_checkmk_master_and_does_not_start_legacy_patrol() -> None:
     source = (PROJECT_ROOT / "app" / "worker.py").read_text(encoding="utf-8")
+    assert "start_checkmk_master_patrol_background" in source
     assert "resume_active_fleet_discovery" in source
-    assert "start_fleet_patrol_background" in source
+    assert "start_fleet_patrol_background" not in source
     assert "start_fleet_discovery_background" not in source
 
 
-def test_fleet_ui_exposes_manual_discovery_and_progress() -> None:
+def test_noc_ui_prioritizes_checkmk_and_keeps_network_discovery_as_contingency() -> None:
     web_source = (PROJECT_ROOT / "app" / "web_fleet.py").read_text(encoding="utf-8")
     ui_source = (PROJECT_ROOT / "app" / "ui" / "fleet-ui.js").read_text(encoding="utf-8")
-    assert '/ui/api/noc/fleet/start' in web_source
-    assert '/ui/api/noc/fleet/patrol' in web_source
-    assert "Iniciar descoberta completa" in ui_source
-    assert "Mapeados recentemente" in ui_source
-    assert "Possível travamento detectado" in ui_source
+    assert "/ui/api/noc/checkmk-master/sync" in web_source
+    assert "/ui/api/noc/checkmk-master/poll" in web_source
+    assert "/ui/api/noc/fleet/start" in web_source
+    assert "Checkmk Central" in ui_source
+    assert "Sincronizar Checkmk" in ui_source
+    assert "Descoberta de rede" in ui_source
+    assert "contingência" in ui_source
