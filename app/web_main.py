@@ -29,6 +29,7 @@ from app.web_executions import router as executions_router
 from app.web_fleet import router as fleet_router
 from app.web_flow import router as flow_router
 from app.web_incidents import router as incidents_router
+from app.web_n2 import router as n2_router
 from app.web_observability import router as observability_router
 from app.web_operator_experience import router as operator_experience_router
 from app.web_playbooks import router as playbooks_router
@@ -72,6 +73,9 @@ if not getattr(app.state, "agent_ui_incidents_registered", False):
 if not getattr(app.state, "agent_ui_fleet_registered", False):
     app.include_router(fleet_router)
     app.state.agent_ui_fleet_registered = True
+if not getattr(app.state, "agent_ui_n2_registered", False):
+    app.include_router(n2_router)
+    app.state.agent_ui_n2_registered = True
 if not getattr(app.state, "agent_ui_topology_registered", False):
     app.include_router(topology_router)
     app.state.agent_ui_topology_registered = True
