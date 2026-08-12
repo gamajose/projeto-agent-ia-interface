@@ -55,7 +55,7 @@ def master_config(settings: Settings | None = None) -> dict[str, Any]:
             or "10.17.181.44"
         ).strip(),
         "ssh_port": runtime_int("CHECKMK_MASTER_SSH_PORT", 22, minimum=1, maximum=65535, settings=settings),
-        "ssh_user": str(runtime_value("CHECKMK_MASTER_SSH_USER", settings.ssh_default_user, settings=settings) or settings.ssh_default_user).strip(),
+        "ssh_user": str(settings.ssh_bastion_user or settings.ssh_default_user).strip(),
         "container": str(runtime_value("CHECKMK_MASTER_CONTAINER", "checkmk-master-25", settings=settings) or "checkmk-master-25").strip(),
         "site": str(runtime_value("CHECKMK_MASTER_SITE", "master", settings=settings) or "master").strip(),
         "timeout": runtime_int("CHECKMK_MASTER_COMMAND_TIMEOUT_SECONDS", 120, minimum=20, maximum=900, settings=settings),
@@ -68,9 +68,11 @@ def master_config(settings: Settings | None = None) -> dict[str, Any]:
 
 def _master_executor(settings: Settings) -> SSHExecutor:
     cfg = master_config(settings)
-    password = get_secret("CHECKMK_MASTER_SSH_PASSWORD", None, settings=settings)
-    if not password:
-        password = get_secret("SSH_DEFAULT_PASSWORD", settings.ssh_default_password, settings=settings)
+    password = get_secret(
+        "SSH_SRV_VPN_SENHA",
+        settings.ssh_bastion_password,
+        settings=settings,
+    )
     return SSHExecutor(
         host=str(cfg["target"]),
         port=int(cfg["ssh_port"]),
