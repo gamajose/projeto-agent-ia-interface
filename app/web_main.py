@@ -92,7 +92,7 @@ if not getattr(app.state, "agent_operator_experience_registered", False):
 
 @app.middleware("http")
 async def inject_fleet_ui_assets(request: Request, call_next):
-    """Acopla o painel NOC sem alterar o fluxo da Nova análise."""
+    """Acopla NOC/CMK05 e workspace N2 sem alterar a Nova análise."""
     response = await call_next(request)
     if request.url.path not in {"/ui", "/ui/"}:
         return response
@@ -104,12 +104,26 @@ async def inject_fleet_ui_assets(request: Request, call_next):
     async for chunk in response.body_iterator:
         chunks.append(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
     body = b"".join(chunks).decode("utf-8", errors="replace")
-    if "fleet-ui.css" not in body:
-        style = f'<link rel="stylesheet" href="/ui/assets/fleet-ui.css?v={_ASSET_VERSION}" data-fleet-ui="1">'
-        body = body.replace("</head>", f"  {style}\n</head>")
-    if "fleet-ui.js" not in body:
-        marker = f'<script src="/ui/assets/fleet-ui.js?v={_ASSET_VERSION}" defer></script>'
-        body = body.replace("</body>", f"  {marker}\n</body>")
+
+    styles = (
+        ("fleet-ui.css", "fleet-ui"),
+        ("noc-automation.css", "noc-automation"),
+        ("n2-workspace.css", "n2-workspace"),
+    )
+    for filename, marker in styles:
+        if filename not in body:
+            tag = f'<link rel="stylesheet" href="/ui/assets/{filename}?v={_ASSET_VERSION}" data-{marker}="1">'
+            body = body.replace("</head>", f"  {tag}\n</head>")
+
+    scripts = (
+        ("fleet-ui.js", "fleet-ui"),
+        ("n2-workspace.js", "n2-workspace"),
+    )
+    for filename, marker in scripts:
+        if filename not in body:
+            tag = f'<script src="/ui/assets/{filename}?v={_ASSET_VERSION}" data-{marker}="1" defer></script>'
+            body = body.replace("</body>", f"  {tag}\n</body>")
+
     headers = dict(response.headers)
     headers.pop("content-length", None)
     return Response(
