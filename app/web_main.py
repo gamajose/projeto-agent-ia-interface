@@ -105,24 +105,25 @@ async def inject_fleet_ui_assets(request: Request, call_next):
         chunks.append(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
     body = b"".join(chunks).decode("utf-8", errors="replace")
 
-    styles = (
-        ("fleet-ui.css", "fleet-ui"),
+    # Mantidos explícitos para preservar o contrato/cache da UI principal.
+    if "fleet-ui.css" not in body:
+        fleet_style = f'<link rel="stylesheet" href="/ui/assets/fleet-ui.css?v={_ASSET_VERSION}" data-fleet-ui="1">'
+        body = body.replace("</head>", f"  {fleet_style}\n</head>")
+    if "fleet-ui.js" not in body:
+        fleet_script = f'<script src="/ui/assets/fleet-ui.js?v={_ASSET_VERSION}" data-fleet-ui="1" defer></script>'
+        body = body.replace("</body>", f"  {fleet_script}\n</body>")
+
+    for filename, marker in (
         ("noc-automation.css", "noc-automation"),
         ("n2-workspace.css", "n2-workspace"),
-    )
-    for filename, marker in styles:
+    ):
         if filename not in body:
             tag = f'<link rel="stylesheet" href="/ui/assets/{filename}?v={_ASSET_VERSION}" data-{marker}="1">'
             body = body.replace("</head>", f"  {tag}\n</head>")
 
-    scripts = (
-        ("fleet-ui.js", "fleet-ui"),
-        ("n2-workspace.js", "n2-workspace"),
-    )
-    for filename, marker in scripts:
-        if filename not in body:
-            tag = f'<script src="/ui/assets/{filename}?v={_ASSET_VERSION}" data-{marker}="1" defer></script>'
-            body = body.replace("</body>", f"  {tag}\n</body>")
+    if "n2-workspace.js" not in body:
+        n2_script = f'<script src="/ui/assets/n2-workspace.js?v={_ASSET_VERSION}" data-n2-workspace="1" defer></script>'
+        body = body.replace("</body>", f"  {n2_script}\n</body>")
 
     headers = dict(response.headers)
     headers.pop("content-length", None)
