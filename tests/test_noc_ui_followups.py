@@ -42,11 +42,26 @@ def test_browser_does_not_poll_fleet_while_noc_screen_is_hidden() -> None:
 def test_clients_are_materialized_from_checkmk_inventory() -> None:
     sync_source = (PROJECT_ROOT / "app" / "services" / "checkmk_customer_sync.py").read_text(encoding="utf-8")
     web_source = (PROJECT_ROOT / "app" / "web_operator_experience.py").read_text(encoding="utf-8")
+    patrol_source = (PROJECT_ROOT / "app" / "services" / "checkmk_master_patrol.py").read_text(encoding="utf-8")
+    overview_source = (PROJECT_ROOT / "app" / "services" / "customer_overview.py").read_text(encoding="utf-8")
+
     assert "CheckmkSiteORM" in sync_source
     assert "CheckmkHostORM" in sync_source
     assert "_upsert_customer" in sync_source
     assert "_upsert_node" in sync_source
+    assert "session.begin_nested()" in sync_source
+    assert "sites_synced" in sync_source
+    assert "hosts_source" in sync_source
+    assert "stale_disabled" in sync_source
     assert "sync_checkmk_customers_from_inventory()" in web_source
+    assert '"customer_sync": customer_sync' in patrol_source
+
+    # Mesmo que a materialização de uma rota falhe, a tela Clientes consegue
+    # exibir a fonte persistida checkmk_master_hosts como fallback visual.
+    assert "CheckmkHostORM" in overview_source
+    assert "checkmk_hosts_count" in overview_source
+    assert "topology_fallback" in overview_source
+    assert "CMK05/master + topologia persistida" in overview_source
 
 
 def test_incident_css_prevents_detail_clipping() -> None:
