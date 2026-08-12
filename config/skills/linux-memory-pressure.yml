@@ -1,0 +1,21 @@
+id: linux-memory-pressure
+title: Pressão de memória e swap Linux
+priority: 90
+match:
+  service:
+    - '^Memory$'
+    - 'Swap'
+  output:
+    - 'Swap:.*100'
+    - 'virtual memory'
+    - 'warn/crit.*memory'
+target_strategy: internal_ssh
+playbook_id: linux-swap-high
+objective: Confirmar pressão de memória, uso de swap e processos consumidores antes de recomendar qualquer alteração.
+knowledge:
+  - Validar free -h, swapon, vmstat e maiores consumidores de memória.
+  - Distinguir swap ocupada de pressão ativa de memória.
+  - Correlacionar recurso insuficiente com indisponibilidade do monitoramento quando houver evidência.
+constraints:
+  - Não limpar swap automaticamente.
+  - Não encerrar processos automaticamente em produção ou standby.

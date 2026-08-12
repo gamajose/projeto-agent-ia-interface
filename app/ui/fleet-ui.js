@@ -22,7 +22,12 @@
     const method = String(options.method || "GET").toUpperCase();
     const headers = { ...(options.headers || {}) };
     if (method !== "GET") headers["X-Agent-UI"] = "1";
-    const response = await fetch(path, { ...options, method, headers });
+    let body = options.body;
+    if (body && typeof body === "object" && !(body instanceof FormData)) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(body);
+    }
+    const response = await fetch(path, { ...options, method, headers, body });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || `Falha HTTP ${response.status}`);
     return data;
@@ -32,7 +37,7 @@
     if (document.querySelector('link[data-fleet-ui]')) return;
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = "/ui/assets/fleet-ui.css?v=1.34.0";
+    link.href = "/ui/assets/fleet-ui.css?v=1.36.0";
     link.dataset.fleetUi = "1";
     document.head.appendChild(link);
   }
@@ -46,92 +51,99 @@
     panel.className = "panel fleet-panel";
     panel.id = "noc-fleet-panel";
     panel.innerHTML = `
-      <div class="fleet-head">
-        <div>
-          <p class="eyebrow">DESCOBERTA DOS AMBIENTES</p>
-          <h3>Mapeamento da frota</h3>
-          <p class="fleet-description">A descoberta completa só inicia quando você mandar. Depois de iniciada, continua em segundo plano até terminar e retoma do cursor salvo se o serviço reiniciar.</p>
-        </div>
-        <div class="fleet-actions">
-          <button type="button" class="primary-button" id="fleet-start">Iniciar descoberta completa</button>
-          <button type="button" class="secondary-button" id="fleet-patrol-now" hidden>Rodar ronda agora</button>
+      <div class="cmk-master-head">
+        <div><p class="eyebrow">FONTE PRINCIPAL</p><h3>Checkmk Central</h3></div>
+        <div class="cmk-master-actions">
+          <button type="button" class="primary-button" id="cmk-sync">Sincronizar Checkmk</button>
+          <button type="button" class="secondary-button" id="cmk-poll">Ronda agora</button>
           <button type="button" class="secondary-button" id="fleet-refresh">Atualizar</button>
         </div>
       </div>
-      <div id="fleet-status" class="fleet-status"><div class="empty-state">Carregando estado da descoberta...</div></div>
-      <div class="fleet-columns">
-        <div>
-          <div class="fleet-section-title"><strong>Mapeados recentemente</strong><span id="fleet-mapped-count">0</span></div>
-          <div class="table-wrap fleet-table-wrap"><table class="fleet-table"><thead><tr><th>Nome Monitor 1</th><th>IP VPN</th><th>Hostname</th><th>Papel</th><th>Checkmk</th></tr></thead><tbody id="fleet-mapped"><tr><td colspan="5" class="empty-cell">Nenhum ativo mapeado ainda.</td></tr></tbody></table></div>
+      <div id="cmk-master-status"><div class="empty-state">Carregando...</div></div>
+
+      <details class="fleet-contingency">
+        <summary>Descoberta de rede <small>contingência</small></summary>
+        <div class="fleet-head compact">
+          <div><h4>Varredura manual</h4></div>
+          <div class="fleet-actions">
+            <button type="button" class="secondary-button" id="fleet-start">Iniciar descoberta</button>
+          </div>
         </div>
-        <div>
-          <div class="fleet-section-title"><strong>Não acessados</strong><span id="fleet-failed-count">0</span></div>
-          <div class="table-wrap fleet-table-wrap"><table class="fleet-table"><thead><tr><th>IP</th><th>Motivo</th><th>Tentativas</th><th>Última checagem</th></tr></thead><tbody id="fleet-failed"><tr><td colspan="4" class="empty-cell">Nenhuma falha registrada.</td></tr></tbody></table></div>
+        <div id="fleet-status" class="fleet-status"></div>
+        <div class="fleet-columns">
+          <div>
+            <div class="fleet-section-title"><strong>Mapeados</strong><span id="fleet-mapped-count">0</span></div>
+            <div class="table-wrap fleet-table-wrap"><table class="fleet-table"><thead><tr><th>Nome</th><th>IP</th><th>Papel</th></tr></thead><tbody id="fleet-mapped"></tbody></table></div>
+          </div>
+          <div>
+            <div class="fleet-section-title"><strong>Não acessados</strong><span id="fleet-failed-count">0</span></div>
+            <div class="table-wrap fleet-table-wrap"><table class="fleet-table"><thead><tr><th>IP</th><th>Motivo</th><th>Tentativas</th></tr></thead><tbody id="fleet-failed"></tbody></table></div>
+          </div>
         </div>
-      </div>`;
+      </details>`;
     if (anchor) anchor.insertAdjacentElement("afterend", panel);
     else nocView.prepend(panel);
 
     document.querySelector("#fleet-refresh")?.addEventListener("click", () => void loadFleet(true));
+    document.querySelector("#cmk-sync")?.addEventListener("click", () => void runMasterAction("/ui/api/noc/checkmk-master/sync", "#cmk-sync"));
+    document.querySelector("#cmk-poll")?.addEventListener("click", () => void runMasterAction("/ui/api/noc/checkmk-master/poll", "#cmk-poll"));
     document.querySelector("#fleet-start")?.addEventListener("click", () => void startFleet());
-    document.querySelector("#fleet-patrol-now")?.addEventListener("click", () => void patrolNow());
     return true;
   }
 
-  function renderStatus(data) {
+  function renderMaster(data) {
+    const root = document.querySelector("#cmk-master-status");
+    if (!root) return;
+    const patrol = data.checkmk_master || {};
+    const master = patrol.master || {};
+    const total = Number(master.sites_total || 0);
+    const active = Number(master.sites_active || 0);
+    const hosts = Number(master.hosts_total || 0);
+    const problems = Number(patrol.problems_seen ?? master.problems ?? 0);
+    const jobs = Number(patrol.jobs_queued || 0);
+    const guarded = Number(patrol.guarded_sites || 0);
+    const last = patrol.last_completed_at || master.last_poll_at || master.last_sync_at;
+    const error = patrol.last_error || master.last_error;
+    const recent = Array.isArray(master.recent_problems) ? master.recent_problems : [];
+
+    root.innerHTML = `
+      <div class="cmk-master-metrics">
+        <div><span>Sites</span><strong>${esc(active.toLocaleString("pt-BR"))}<small> / ${esc(total.toLocaleString("pt-BR"))}</small></strong></div>
+        <div><span>Hosts</span><strong>${esc(hosts.toLocaleString("pt-BR"))}</strong></div>
+        <div><span>Problemas</span><strong>${esc(problems.toLocaleString("pt-BR"))}</strong></div>
+        <div><span>Jobs</span><strong>${esc(jobs.toLocaleString("pt-BR"))}</strong></div>
+      </div>
+      <div class="cmk-master-line ${error ? "attention" : "healthy"}">
+        <strong>${error ? "Atenção" : "Ativo"}</strong>
+        <span>${esc(master.source || "CMK05/master")} · ${esc(formatDate(last))}</span>
+        ${guarded ? `<small>${esc(guarded)} site(s) em endpoint compartilhado aguardando rota segura.</small>` : ""}
+        ${error ? `<small>${esc(error)}</small>` : ""}
+      </div>
+      ${recent.length ? `<div class="cmk-recent">${recent.slice(0, 8).map((item) => `
+        <article><span>${esc(item.site_id || "-")} · ${esc(item.state || "ALERT")}</span><strong>${esc(item.host || "-")}</strong><small>${esc(item.service || "-")}</small></article>`).join("")}</div>` : ""}`;
+  }
+
+  function renderDiscovery(data) {
     const root = document.querySelector("#fleet-status");
     const start = document.querySelector("#fleet-start");
-    const patrolButton = document.querySelector("#fleet-patrol-now");
     if (!root || !start) return;
     const run = data.run || {};
-    const assets = data.assets || {};
-    const patrol = data.patrol || {};
     const phase = data.phase || "not_started";
     const progress = Number(data.progress_percent || 0);
     const scanned = Number(run.scanned || 0);
     const total = Number(run.total_candidates || 0);
     const accessible = Number(run.accessible || 0);
     const inaccessible = Number(run.inaccessible || 0);
-    const monitors = Number(assets.monitoring_detected || run.monitoring_detected || 0);
-
-    let title = "Descoberta ainda não iniciada";
-    let detail = "Clique em Iniciar descoberta completa quando quiser construir o inventário inicial.";
-    let stateClass = "idle";
-    if (phase === "running") {
-      title = data.stalled ? "Possível travamento detectado" : "Descoberta em andamento";
-      detail = data.stalled
-        ? `Sem atualização de progresso há ${Math.max(1, Math.round(Number(data.heartbeat_age_seconds || 0) / 60))} minuto(s). O cursor permanece salvo no PostgreSQL.`
-        : `Processando a faixa em segundo plano. Última atualização: ${formatDate(run.updated_at)}.`;
-      stateClass = data.stalled ? "stalled" : "running";
-    } else if (phase === "inventory_ready") {
-      title = "Inventário inicial concluído";
-      detail = `A descoberta terminou em ${formatDate(run.completed_at)}. A partir daqui a ronda dos Checkmks encontrados é automática.`;
-      stateClass = "ready";
-    }
-
     start.disabled = phase === "running";
-    start.textContent = phase === "running" ? "Descoberta em execução" : phase === "inventory_ready" ? "Nova descoberta completa" : "Iniciar descoberta completa";
-    if (patrolButton) patrolButton.hidden = phase !== "inventory_ready";
-
-    const patrolText = phase === "inventory_ready"
-      ? (patrol.running
-          ? `Ronda automática em execução · ciclo ${patrol.cycle || 0}`
-          : patrol.last_completed_at
-            ? `Última ronda: ${formatDate(patrol.last_completed_at)} · ${patrol.monitors_checked || 0} monitor(es) · ${patrol.problems_seen || 0} problema(s) observado(s) · ${patrol.new_incidents || 0} incidente(s) novo(s)`
-            : "Ronda automática aguardando o próximo ciclo do worker")
-      : "A ronda automática só começa depois que o inventário inicial estiver completo.";
-
+    start.textContent = phase === "running" ? "Em execução" : "Iniciar descoberta";
     root.innerHTML = `
-      <div class="fleet-state ${stateClass}">
-        <div class="fleet-state-copy"><strong>${esc(title)}</strong><span>${esc(detail)}</span></div>
-        <strong class="fleet-percent">${esc(progress.toFixed(2))}%</strong>
+      <div class="fleet-state ${phase === "running" ? "running" : phase === "inventory_ready" ? "ready" : "idle"}">
+        <div class="fleet-state-copy"><strong>${phase === "running" ? "Descoberta em andamento" : phase === "inventory_ready" ? "Última descoberta concluída" : "Não iniciada"}</strong><span>${esc(scanned.toLocaleString("pt-BR"))}${total ? ` / ${esc(total.toLocaleString("pt-BR"))}` : ""} processados</span></div>
+        <strong class="fleet-percent">${esc(progress.toFixed(1))}%</strong>
       </div>
       <div class="fleet-progress"><span style="width:${Math.min(100, Math.max(0, progress))}%"></span></div>
-      <div class="fleet-patrol-line"><strong>Ronda:</strong><span>${esc(patrolText)}</span>${patrol.last_error ? `<small>${esc(patrol.last_error)}</small>` : ""}</div>
-      <div class="fleet-metrics">
-        <div><span>Processados</span><strong>${esc(scanned.toLocaleString("pt-BR"))}${total ? ` / ${esc(total.toLocaleString("pt-BR"))}` : ""}</strong></div>
+      <div class="fleet-metrics mini">
         <div><span>Acessíveis</span><strong>${esc(accessible.toLocaleString("pt-BR"))}</strong></div>
-        <div><span>Checkmk encontrados</span><strong>${esc(monitors.toLocaleString("pt-BR"))}</strong></div>
         <div><span>Não acessados</span><strong>${esc(inaccessible.toLocaleString("pt-BR"))}</strong></div>
       </div>`;
   }
@@ -143,15 +155,8 @@
     const items = Array.isArray(data.mapped) ? data.mapped : [];
     if (count) count.textContent = String(data.assets?.total ?? items.length);
     body.innerHTML = items.length
-      ? items.slice(0, 40).map((item) => `
-        <tr>
-          <td><strong>${esc(item.name || item.client_name || item.address)}</strong></td>
-          <td>${esc(item.address)}</td>
-          <td>${esc(item.hostname || "—")}</td>
-          <td>${esc((item.roles || []).join(" + ") || item.environment || "—")}</td>
-          <td>${item.monitoring_detected ? `<strong>Sim</strong><small>${esc((item.checkmk_sites || []).join(", ") || `${item.monitoring_confidence || 0}%`)}</small>` : "Não"}</td>
-        </tr>`).join("")
-      : '<tr><td colspan="5" class="empty-cell">Nenhum ativo mapeado ainda.</td></tr>';
+      ? items.slice(0, 30).map((item) => `<tr><td><strong>${esc(item.name || item.client_name || item.address)}</strong></td><td>${esc(item.address)}</td><td>${esc((item.roles || []).join(" + ") || item.environment || "—")}</td></tr>`).join("")
+      : '<tr><td colspan="3" class="empty-cell">Nenhum.</td></tr>';
   }
 
   function renderFailures(data) {
@@ -163,14 +168,8 @@
     const failedTotal = Object.entries(totals).reduce((sum, [status, value]) => status === "ok" ? sum : sum + Number(value || 0), 0);
     if (count) count.textContent = String(failedTotal);
     body.innerHTML = items.length
-      ? items.slice(0, 40).map((item) => `
-        <tr>
-          <td><strong>${esc(item.address)}</strong>${item.client_name ? `<small>${esc(item.client_name)}</small>` : ""}</td>
-          <td><span class="fleet-failure">${esc(item.access_status || "erro")}</span></td>
-          <td>${esc(item.consecutive_failures || 0)}</td>
-          <td>${esc(formatDate(item.last_checked_at))}</td>
-        </tr>`).join("")
-      : '<tr><td colspan="4" class="empty-cell">Nenhuma falha registrada.</td></tr>';
+      ? items.slice(0, 30).map((item) => `<tr><td><strong>${esc(item.address)}</strong></td><td>${esc(item.access_status || "erro")}</td><td>${esc(item.consecutive_failures || 0)}</td></tr>`).join("")
+      : '<tr><td colspan="3" class="empty-cell">Nenhum.</td></tr>';
   }
 
   async function loadFleet(showError = false) {
@@ -178,15 +177,29 @@
     loading = true;
     try {
       const data = await request("/ui/api/noc/fleet");
-      renderStatus(data);
+      renderMaster(data);
+      renderDiscovery(data);
       renderMapped(data);
       renderFailures(data);
     } catch (error) {
-      if (showError) alert(error.message);
-      const root = document.querySelector("#fleet-status");
+      if (showError) window.alert(error.message);
+      const root = document.querySelector("#cmk-master-status");
       if (root) root.innerHTML = `<div class="empty-state">${esc(error.message)}</div>`;
     } finally {
       loading = false;
+    }
+  }
+
+  async function runMasterAction(path, selector) {
+    const button = document.querySelector(selector);
+    if (button) button.disabled = true;
+    try {
+      await request(path, { method: "POST" });
+      await loadFleet(true);
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 
@@ -197,20 +210,7 @@
       await request("/ui/api/noc/fleet/start", { method: "POST" });
       await loadFleet(true);
     } catch (error) {
-      alert(error.message);
-    } finally {
-      if (button) button.disabled = false;
-    }
-  }
-
-  async function patrolNow() {
-    const button = document.querySelector("#fleet-patrol-now");
-    if (button) button.disabled = true;
-    try {
-      await request("/ui/api/noc/fleet/patrol", { method: "POST" });
-      await loadFleet(true);
-    } catch (error) {
-      alert(error.message);
+      window.alert(error.message);
     } finally {
       if (button) button.disabled = false;
     }
@@ -230,6 +230,7 @@
     }, 500);
   }
 
+  window.loadFleet = loadFleet;
   window.addEventListener("beforeunload", () => {
     if (refreshTimer) window.clearInterval(refreshTimer);
   });

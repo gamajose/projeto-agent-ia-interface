@@ -1,0 +1,24 @@
+id: checkmk-runtime
+title: Runtime e serviços do Checkmk
+priority: 85
+match:
+  service:
+    - 'automation helpers'
+    - '^Check_MK$'
+    - 'Check_MK Discovery'
+    - 'Check_MK HW/SW Inventory'
+  output:
+    - 'Processes: 0'
+    - 'Service Check Timed Out'
+    - 'Missing monitoring data'
+  host:
+    - '^checkmk-'
+target_strategy: entry_context
+objective: Validar o site Checkmk, seus processos e a fonte de coleta sem reiniciar componentes fora da política.
+knowledge:
+  - Identificar site OMD e container antes de atuar.
+  - Verificar automation-helper, rrdcached, Nagios/CMC, Redis e estado OMD conforme o sintoma.
+  - Separar falha do plano de monitoramento de falha real no host monitorado.
+constraints:
+  - Não reiniciar container automaticamente.
+  - Produção e standby permanecem somente leitura.

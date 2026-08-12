@@ -1,0 +1,27 @@
+id: snmp-bmc
+title: SNMP, iDRAC, ILOM e BMC
+priority: 100
+match:
+  service:
+    - 'Check_MK Discovery'
+    - '^Check_MK$'
+    - 'Hardware'
+  output:
+    - 'Cannot fetch system description'
+    - 'SNMP'
+    - 'Missing monitoring data'
+  host:
+    - 'idrac'
+    - 'ilom'
+    - '(^|[-_])ilo($|[-_])'
+    - 'bmc'
+target_strategy: entry_context
+playbook_id: checkmk-snmp-timeout
+objective: Validar transporte SNMP e gerenciamento BMC a partir do contexto do cliente, sem presumir acesso SSH ao equipamento de gerenciamento.
+knowledge:
+  - Testar alcance e UDP 161 antes de concluir credencial incorreta.
+  - Diferenciar timeout, versão/comunidade incorreta e autorização SNMPv3.
+  - Usar IPMI/Redfish somente quando já estiver configurado e permitido.
+constraints:
+  - Não alterar SNMP, firewall ou credenciais automaticamente.
+  - Não tentar SSH no BMC apenas porque existe um endereço IP.

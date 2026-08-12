@@ -8,11 +8,16 @@ from rich.panel import Panel
 
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
+from app.services.checkmk_job_instrumentation import install_checkmk_site_job_routing
+from app.services.checkmk_master_patrol import (
+    checkmk_master_patrol_status,
+    start_checkmk_master_patrol_background,
+)
 from app.services.codex_provider_instrumentation import install_codex_provider_preflight
 from app.services.ensemble_instrumentation import install_ensemble_reasoning
 from app.services.fleet_control import fleet_control_status
 from app.services.fleet_scope_control import resume_active_fleet_discovery
-from app.services.fleet_patrol import fleet_patrol_status, start_fleet_patrol_background
+from app.services.fleet_patrol import fleet_patrol_status
 from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
 from app.services.jobs import get_job, run_worker_once
@@ -25,6 +30,7 @@ install_operational_tools()
 install_ensemble_reasoning()
 install_project_playbook_instrumentation()
 install_codex_provider_preflight()
+install_checkmk_site_job_routing()
 app = typer.Typer(no_args_is_help=True)
 console = Console()
 
@@ -38,15 +44,12 @@ def run(
     settings = get_settings()
     ensure_database_schema()
 
-    # Subir o serviço NÃO inicia uma varredura nova. Se o operador já havia
-    # iniciado uma descoberta e o processo reiniciou no meio, o cursor e os
-    # CIDRs salvos naquele run são retomados automaticamente.
+    # A varredura por faixa virou contingência/manual. Se já existia uma
+    # descoberta ativa, ela continua exatamente do cursor persistido.
     fleet_resumed = False if once else resume_active_fleet_discovery(settings=settings)
 
-    # A ronda é permanente, mas fica em espera até a primeira descoberta estar
-    # concluída. Depois disso consulta somente os Checkmks encontrados, sem
-    # repetir a varredura completa da faixa.
-    patrol_started = False if once else start_fleet_patrol_background(settings=settings)
+    # Fonte primária do NOC: CMK05/master -> sites remotos -> estados Checkmk.
+    master_started = False if once else start_checkmk_master_patrol_background(settings=settings)
 
     console.print(Panel(
         f"Worker: {settings.agent_worker_name}\n"
@@ -55,8 +58,9 @@ def run(
         f"Segredos: {secret_backend_status(settings).get('backend')}\n"
         f"StrictHostKeyChecking: {settings.ssh_strict_host_key_checking}\n"
         f"NOC autônomo: {'ativo' if settings.noc_incident_enabled else 'desativado'} · L{settings.noc_autonomy_level}\n"
-        f"Fleet Discovery: {'retomada em segundo plano' if fleet_resumed else 'aguardando comando do operador'}\n"
-        f"Fleet Patrol: {'ativo/aguardando inventário' if patrol_started else 'desativado'}",
+        f"Checkmk Master: {'ativo' if master_started else 'desativado'}\n"
+        f"Fleet Discovery: {'retomada em segundo plano' if fleet_resumed else 'contingência/manual'}\n"
+        f"Fleet Patrol legado: desativado (somente acionamento manual)",
         title="Agent IA Worker",
     ))
 
@@ -69,8 +73,9 @@ def run(
         supervisor_tick(settings=settings)
         console.print(json.dumps({
             "job": result or {"status": "empty"},
+            "checkmk_master": checkmk_master_patrol_status(settings=settings),
             "fleet": fleet_control_status(settings=settings),
-            "patrol": fleet_patrol_status(),
+            "fallback_patrol": fleet_patrol_status(),
         }, ensure_ascii=False, indent=2, default=str))
         return
 
@@ -88,11 +93,13 @@ def run(
 
 @app.command("fleet-status")
 def fleet_status() -> None:
-    """Mostra descoberta, ativos mapeados, falhas de acesso e ronda automática."""
+    """Mostra o CMK05 primário e a descoberta de rede de contingência."""
+    settings = get_settings()
     ensure_database_schema()
     console.print(json.dumps({
-        "discovery": fleet_control_status(),
-        "patrol": fleet_patrol_status(),
+        "checkmk_master": checkmk_master_patrol_status(settings=settings),
+        "discovery": fleet_control_status(settings=settings),
+        "fallback_patrol": fleet_patrol_status(),
     }, ensure_ascii=False, indent=2, default=str))
 
 
