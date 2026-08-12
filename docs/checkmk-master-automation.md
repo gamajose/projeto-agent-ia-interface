@@ -16,22 +16,53 @@ O `sites.mk` do master é lido somente para obter uma lista segura de sites remo
 
 O campo `secret` e outros dados de autenticação não são exportados, persistidos ou enviados à interface.
 
+## Snapshot operacional completo
+
+Cada ciclo do patrol executa um snapshot único por site ativo. No mesmo ciclo, o coletor obtém:
+
+- cliente/site;
+- endpoint Livestatus;
+- todos os hosts conhecidos pelo site;
+- IP interno de cada host;
+- estado do host;
+- serviços fora de `OK` com output completo do Checkmk;
+- sites que não responderam Livestatus.
+
+O snapshot é persistido no PostgreSQL. Um site que falha na consulta não é tratado como saudável: os problemas anteriores daquele site permanecem abertos até existir uma leitura válida que confirme a recuperação.
+
 ## Fluxo principal
 
 ```text
 CMK05 / master
     -> sites ativos
     -> Livestatus de cada site
-    -> hosts + IPs internos
-    -> somente WARN/CRIT/UNKNOWN/DOWN
+    -> hosts + IPs internos + problemas
+    -> PostgreSQL
     -> Incident Manager
     -> Skill Router
     -> contexto do cliente
-    -> investigação
+    -> investigação automática
     -> Supervisor / política
+    -> recheck / recovery
 ```
 
 Estados `OK` não geram investigação de IA. A aplicação usa o Checkmk como camada de sensores e trabalha apenas sobre anomalias.
+
+Quando um problema novo é encontrado, ele é persistido em `checkmk_master_problems`, deduplicado pelo Incident Manager e, quando a rota é segura, gera um job automático de investigação. Problemas já existentes não criam jobs duplicados a cada ciclo.
+
+## Visibilidade na interface
+
+O painel **Checkmk Central** apresenta:
+
+- total de sites ativos/total;
+- total de hosts coletados;
+- problemas ativos;
+- jobs iniciados no ciclo;
+- aba **Problemas**: cliente, site, host, IP, serviço, estado, output, skill e situação da automação;
+- aba **Sites**: cliente/site, endpoint, quantidade de hosts, problemas e status;
+- aba **Sem resposta**: site, cliente, endpoint, erro Livestatus e última tentativa.
+
+Ao abrir um site, a interface mostra todos os hosts/IPs daquele cliente e os problemas ativos por host.
 
 ## Isolamento por cliente
 
@@ -54,7 +85,7 @@ O segundo salto reutiliza a sessão do cliente por meio de `NestedSSHExecutor`.
 
 Quando vários sites usam o mesmo host Livestatus, por exemplo um nó concentrador com portas diferentes, o site é marcado como `shared_endpoint`.
 
-Até existir uma rota de acesso interna específica e comprovada para esse site, o NOC pode registrar o incidente, mas não abre investigação automática a partir daquele endpoint. Isso evita usar o namespace/sessão de um cliente no ambiente de outro.
+Até existir uma rota de acesso interna específica e comprovada para esse site, o NOC registra o incidente e o marca como protegido/guardado, mas não abre investigação automática a partir daquele endpoint. Isso evita usar o namespace/sessão de um cliente no ambiente de outro.
 
 ## Alvos especiais
 
@@ -89,13 +120,9 @@ O alerta continua sendo tratado como sintoma. A skill direciona a coleta; ela n�
 
 ## Ciclos
 
-Por padrão:
+Por padrão, o snapshot operacional completo roda a cada 120 segundos. **Sincronizar Checkmk** e **Ronda agora** executam o mesmo pipeline ponta a ponta imediatamente: sites, hosts, problemas, incidentes e jobs.
 
-- leitura de anomalias do master: a cada 120 segundos;
-- sincronização completa de sites/hosts: a cada 6 horas;
-- descoberta de rede `172.27.*`: somente manual/contingência.
-
-A sincronização pode ser forçada pela interface em **Sincronizar Checkmk** e a leitura de estados em **Ronda agora**.
+A descoberta de rede `172.27.*` continua somente manual/contingência.
 
 ## Acesso ao CMK05
 
@@ -120,17 +147,15 @@ CHECKMK_MASTER_COMMAND_TIMEOUT_SECONDS=120
 CHECKMK_MASTER_SOCKET_TIMEOUT_SECONDS=10
 CHECKMK_MASTER_CONCURRENCY=16
 CHECKMK_MASTER_MAX_SITES=1000
-CHECKMK_MASTER_MAX_RECORDS=50000
 
 CHECKMK_MASTER_PATROL_ENABLED=true
 CHECKMK_MASTER_POLL_INTERVAL_SECONDS=120
-CHECKMK_MASTER_INVENTORY_SYNC_HOURS=6
 ```
 
 Senhas nunca devem ser versionadas, persistidas em evidências ou exibidas na interface.
 
 ## Descoberta de rede
 
-A descoberta de rede existente não foi removida. Ela passa a ser um mecanismo manual de contingência para divergência de inventário, ambiente ainda não cadastrado ou validação excepcional.
+A descoberta de rede existente não foi removida. Ela é um mecanismo manual de contingência para divergência de inventário, ambiente ainda não cadastrado ou validação excepcional.
 
-Uma descoberta que já estava em andamento continua do cursor salvo mesmo após atualização/restart. O novo desenho apenas impede que a ronda por SSH seja o sensor principal do NOC.
+Uma descoberta que já estava em andamento continua do cursor salvo mesmo após atualização/restart. O novo desenho impede que a ronda por SSH seja o sensor principal do NOC.

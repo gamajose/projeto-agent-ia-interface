@@ -7,10 +7,11 @@ from typing import Any
 
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
-from app.services.checkmk_master import (
-    checkmk_master_status,
-    poll_checkmk_master_problems,
-    sync_checkmk_master_inventory,
+from app.services.checkmk_master import checkmk_master_status
+from app.services.checkmk_operational import (
+    checkmk_operational_overview,
+    collect_checkmk_operational_snapshot,
+    update_problem_automation,
 )
 from app.services.checkmk_site_targeting import resolve_checkmk_site_target
 from app.services.jobs import enqueue_investigation
@@ -34,6 +35,9 @@ _PATROL_STATE: dict[str, Any] = {
     "new_incidents": 0,
     "jobs_queued": 0,
     "guarded_sites": 0,
+    "sites_ok": 0,
+    "sites_failed": 0,
+    "hosts_seen": 0,
 }
 
 
@@ -46,9 +50,6 @@ def _config(settings: Settings) -> dict[str, Any]:
         "enabled": runtime_bool("CHECKMK_MASTER_PATROL_ENABLED", True, settings=settings),
         "poll_interval": runtime_int(
             "CHECKMK_MASTER_POLL_INTERVAL_SECONDS", 120, minimum=30, maximum=3600, settings=settings
-        ),
-        "inventory_sync_hours": runtime_int(
-            "CHECKMK_MASTER_INVENTORY_SYNC_HOURS", 6, minimum=1, maximum=168, settings=settings
         ),
     }
 
@@ -90,10 +91,13 @@ def _register_problem(item: dict[str, Any], *, settings: Settings) -> dict[str, 
         settings=settings,
     )
     incident = dict(event.get("incident") or {})
-    if not incident or not event.get("should_investigate", True) or not settings.noc_auto_investigate:
+    if not incident:
+        return {"new": False, "queued": False, "event": event, "route": route}
+
+    if not event.get("should_investigate", True) or not settings.noc_auto_investigate:
         return {"new": False, "queued": False, "event": event, "route": route}
     if not route.get("valid") or not route.get("auto_investigate"):
-        return {"new": bool(event.get("created")), "queued": False, "event": event, "route": route}
+        return {"new": bool(event.get("action") == "created"), "queued": False, "event": event, "route": route}
 
     skill = dict(route.get("skill") or {})
     objective = build_skill_objective(
@@ -102,8 +106,7 @@ def _register_problem(item: dict[str, Any], *, settings: Settings) -> dict[str, 
         site_id=str(route.get("site_id") or item.get("site_id") or ""),
         client_alias=str(route.get("client_alias") or item.get("alias") or ""),
     )
-    if incident:
-        objective = incident_objective(incident) + "\n\n" + objective
+    objective = incident_objective(incident) + "\n\n" + objective
 
     playbook_id = str(skill.get("playbook_id") or "").strip() or None
     queued = enqueue_investigation(
@@ -146,7 +149,36 @@ def _register_problem(item: dict[str, Any], *, settings: Settings) -> dict[str, 
     return {"new": True, "queued": True, "event": event, "route": route, "job": queued}
 
 
+def _persist_automation_result(item: dict[str, Any], result: dict[str, Any]) -> None:
+    event = dict(result.get("event") or {})
+    incident = dict(event.get("incident") or {})
+    route = dict(result.get("route") or {})
+    job = dict(result.get("job") or {})
+    if result.get("queued"):
+        status = "queued"
+    elif route.get("valid") and not route.get("auto_investigate"):
+        status = "guarded"
+    elif not route.get("valid"):
+        status = "needs_attention"
+    else:
+        status = str(incident.get("status") or "detected")
+    update_problem_automation(
+        str(item.get("problem_key") or ""),
+        automation_status=status,
+        incident_id=str(incident.get("id") or "") or None,
+        job_id=str(job.get("job_id") or incident.get("job_id") or "") or None,
+        route=route,
+    )
+
+
 def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync: bool = False) -> dict[str, Any]:
+    """Executa um ciclo operacional completo.
+
+    Cada ciclo le os sites do master, coleta hosts e anomalias via Livestatus,
+    persiste o inventario e entrega cada problema ao Incident Manager. O
+    ``force_sync`` e mantido por compatibilidade; o snapshot ja sincroniza tudo.
+    """
+
     settings = settings or get_settings()
     cfg = _config(settings)
     if not cfg["enabled"]:
@@ -166,61 +198,81 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
             "new_incidents": 0,
             "jobs_queued": 0,
             "guarded_sites": 0,
+            "sites_ok": 0,
+            "sites_failed": 0,
+            "hosts_seen": 0,
         }
     )
     try:
-        master = checkmk_master_status(settings=settings)
-        last_sync = master.get("last_sync_at")
-        sync_due = force_sync or not int(master.get("sites_total") or 0)
-        if last_sync and not sync_due:
-            try:
-                parsed = datetime.fromisoformat(str(last_sync).replace("Z", "+00:00"))
-                sync_due = (_now() - parsed).total_seconds() >= int(cfg["inventory_sync_hours"]) * 3600
-            except ValueError:
-                sync_due = True
-        if sync_due:
-            sync = sync_checkmk_master_inventory(settings=settings)
-            _PATROL_STATE["last_inventory_sync_at"] = sync.get("completed_at")
+        snapshot = collect_checkmk_operational_snapshot(settings=settings)
+        if snapshot.get("status") != "completed":
+            return snapshot
 
-        snapshot = poll_checkmk_master_problems(settings=settings)
         problems = list(snapshot.get("problems") or [])
         recoveries = list(snapshot.get("recoveries") or [])
         new_incidents = 0
         jobs = 0
         guarded = 0
+        processing_errors: list[str] = []
+
         for item in problems:
             try:
                 result = _register_problem(item, settings=settings)
+                _persist_automation_result(item, result)
                 new_incidents += int(bool(result.get("new")))
                 jobs += int(bool(result.get("queued")))
                 route = dict(result.get("route") or {})
                 if route.get("valid") and not route.get("auto_investigate"):
                     guarded += 1
             except Exception as exc:
-                _PATROL_STATE["last_error"] = redact_text(f"{type(exc).__name__}: {exc}")[:1800]
+                message = redact_text(f"{type(exc).__name__}: {exc}")[:600]
+                processing_errors.append(message)
+                update_problem_automation(
+                    str(item.get("problem_key") or ""),
+                    automation_status="needs_attention",
+                )
+
         for item in recoveries:
             _register_recovery(item, settings=settings)
 
         completed = _now()
+        site_errors = list(snapshot.get("site_errors") or [])
+        last_error = None
+        if site_errors:
+            last_error = f"{len(site_errors)} site(s) sem resposta Livestatus"
+        if processing_errors:
+            suffix = f"{len(processing_errors)} problema(s) falharam no roteamento"
+            last_error = f"{last_error}; {suffix}" if last_error else suffix
+
         _PATROL_STATE.update(
             {
                 "last_completed_at": completed.isoformat(),
+                "last_inventory_sync_at": snapshot.get("completed_at"),
                 "problems_seen": len(problems),
                 "recoveries_seen": len(recoveries),
                 "new_incidents": new_incidents,
                 "jobs_queued": jobs,
                 "guarded_sites": guarded,
+                "sites_ok": int(snapshot.get("sites_ok") or 0),
+                "sites_failed": int(snapshot.get("sites_failed") or 0),
+                "hosts_seen": int(snapshot.get("hosts_seen") or 0),
+                "last_error": last_error,
             }
         )
         return {
             "status": "completed",
             "started_at": started.isoformat(),
             "completed_at": completed.isoformat(),
+            "sites_ok": int(snapshot.get("sites_ok") or 0),
+            "sites_failed": int(snapshot.get("sites_failed") or 0),
+            "hosts_seen": int(snapshot.get("hosts_seen") or 0),
             "problems_seen": len(problems),
             "recoveries_seen": len(recoveries),
             "new_incidents": new_incidents,
             "jobs_queued": jobs,
             "guarded_sites": guarded,
+            "site_errors": site_errors,
+            "processing_errors": processing_errors,
             "master": checkmk_master_status(settings=settings),
         }
     except Exception as exc:
@@ -238,6 +290,7 @@ def checkmk_master_patrol_status(*, settings: Settings | None = None) -> dict[st
         **dict(_PATROL_STATE),
         "enabled": bool(_config(settings)["enabled"]),
         "master": checkmk_master_status(settings=settings),
+        "operational": checkmk_operational_overview(problem_limit=200, site_limit=500),
     }
 
 
