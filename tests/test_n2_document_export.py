@@ -5,7 +5,7 @@ import zipfile
 
 from pypdf import PdfReader
 
-from app.services.n2_document_export import export_n2_document
+from app.services.n2_document_export_runtime import export_n2_document
 from app.services.n2_documentation import sanitize_n2_review
 
 
