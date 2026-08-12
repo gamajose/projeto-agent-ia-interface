@@ -52,16 +52,35 @@ def _problem_key(site_id: str, kind: str, host: str, service: str) -> str:
     return "|".join((str(site_id), str(kind), str(host), str(service)))[:768]
 
 
+def _livestatus_queries() -> tuple[str, str]:
+    """Retorna queries LQL exatamente no formato aceito pelo Livestatus.
+
+    O protocolo e orientado a linhas e exige uma linha em branco no final da
+    consulta. Usar ``\\n`` literal envia barra+n pela rede e pode fazer o
+    Livestatus responder ``[]`` mesmo com hosts existentes.
+    """
+
+    query_hosts = """GET hosts
+Columns: name address state
+OutputFormat: json
+
+"""
+    query_services = """GET services
+Columns: host_name host_address description state plugin_output
+Filter: state = 1
+Filter: state = 2
+Filter: state = 3
+Or: 3
+OutputFormat: json
+
+"""
+    return query_hosts, query_services
+
+
 def _snapshot_script(*, settings) -> str:
     cfg = master_config(settings)
     path = f"/omd/sites/{cfg['site']}/etc/check_mk/multisite.d/sites.mk"
-    query_hosts = "GET hosts\\nColumns: name address state\\nOutputFormat: json\\n\\n"
-    query_services = (
-        "GET services\\n"
-        "Columns: host_name host_address description state plugin_output\\n"
-        "Filter: state >= 1\\n"
-        "OutputFormat: json\\n\\n"
-    )
+    query_hosts, query_services = _livestatus_queries()
     return f'''from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ast, json, socket
@@ -117,7 +136,9 @@ def query(host, port, payload):
                 break
             data += chunk
     decoded = data.decode(errors="replace").strip()
-    value = json.loads(decoded or "[]")
+    if not decoded:
+        raise RuntimeError("Livestatus encerrou a conexao sem payload")
+    value = json.loads(decoded)
     if not isinstance(value, list):
         raise RuntimeError("Livestatus nao retornou uma lista JSON")
     return value
@@ -133,6 +154,8 @@ def collect(site_id, site_cfg):
         return {{"type": "site_snapshot", "site": meta, "queried": True, "ok": False, "hosts": [], "problems": [], "error": "socket Livestatus ausente"}}
     try:
         host_rows = query(host, port, {query_hosts!r})
+        if not host_rows:
+            raise RuntimeError("Livestatus respondeu, mas GET hosts retornou zero linhas")
         service_rows = query(host, port, {query_services!r})
         hosts = []
         problems = []
@@ -152,6 +175,8 @@ def collect(site_id, site_cfg):
                     "state": state,
                     "output": "Host fora de UP conforme Livestatus",
                 }})
+        if not hosts:
+            raise RuntimeError("GET hosts respondeu, mas nenhuma linha valida foi interpretada")
         for row in service_rows:
             if not isinstance(row, list) or len(row) < 5:
                 continue
@@ -170,6 +195,8 @@ def collect(site_id, site_cfg):
             "ok": True,
             "hosts": hosts,
             "problems": problems,
+            "host_rows": len(hosts),
+            "problem_rows": len(problems),
         }}
     except Exception as exc:
         return {{
