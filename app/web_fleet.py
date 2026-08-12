@@ -3,6 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.services.checkmk_master_patrol import (
+    checkmk_master_patrol_cycle,
+    checkmk_master_patrol_status,
+)
 from app.services.fleet_control import fleet_control_status
 from app.services.fleet_patrol import fleet_patrol_cycle, fleet_patrol_status
 from app.services.fleet_scope_control import (
@@ -24,17 +28,47 @@ class FleetStartPayload(BaseModel):
 def noc_fleet_status(request: Request) -> dict:
     _require_access(request)
     try:
-        return {**fleet_control_status(), "patrol": fleet_patrol_status()}
+        return {
+            **fleet_control_status(),
+            "checkmk_master": checkmk_master_patrol_status(),
+            "fallback_patrol": fleet_patrol_status(),
+        }
     except Exception as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"descoberta de frota indisponível: {type(exc).__name__}: {exc}",
+            detail=f"estado do NOC indisponível: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+@router.post("/ui/api/noc/checkmk-master/sync")
+def noc_checkmk_master_sync(request: Request) -> dict:
+    """Força sincronização do inventário central e uma leitura de anomalias."""
+    _require_mutation(request)
+    try:
+        return checkmk_master_patrol_cycle(force_sync=True)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"sincronização do CMK05 indisponível: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+@router.post("/ui/api/noc/checkmk-master/poll")
+def noc_checkmk_master_poll(request: Request) -> dict:
+    """Executa uma leitura imediata de WARN/CRIT/UNKNOWN no CMK05/master."""
+    _require_mutation(request)
+    try:
+        return checkmk_master_patrol_cycle(force_sync=False)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"ronda do CMK05 indisponível: {type(exc).__name__}: {exc}",
         ) from exc
 
 
 @router.post("/ui/api/noc/fleet/start")
 def noc_fleet_start(request: Request, payload: FleetStartPayload | None = None) -> dict:
-    """Inicia a descoberta na faixa escolhida, sempre dentro do limite autorizado."""
+    """Inicia a descoberta de rede de contingência na faixa escolhida."""
     _require_mutation(request)
     try:
         return start_fleet_discovery(scope=(payload.scope if payload else None))
@@ -52,24 +86,24 @@ def noc_fleet_tick(request: Request) -> dict:
     """Executa um lote usando os CIDRs persistidos na descoberta ativa."""
     _require_mutation(request)
     if not has_active_fleet_discovery():
-        raise HTTPException(status_code=409, detail="nenhuma descoberta ativa; use Iniciar descoberta completa")
+        raise HTTPException(status_code=409, detail="nenhuma descoberta ativa; use Iniciar descoberta")
     try:
         return scoped_fleet_discovery_tick()
     except Exception as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"descoberta de frota indisponível: {type(exc).__name__}: {exc}",
+            detail=f"descoberta de rede indisponível: {type(exc).__name__}: {exc}",
         ) from exc
 
 
 @router.post("/ui/api/noc/fleet/patrol")
 def noc_fleet_patrol(request: Request) -> dict:
-    """Dispara uma ronda imediata; o worker também executa esse ciclo automaticamente."""
+    """Executa manualmente a ronda legada de contingência."""
     _require_mutation(request)
     try:
         return fleet_patrol_cycle()
     except Exception as exc:
         raise HTTPException(
             status_code=503,
-            detail=f"ronda de frota indisponível: {type(exc).__name__}: {exc}",
+            detail=f"ronda legada indisponível: {type(exc).__name__}: {exc}",
         ) from exc
