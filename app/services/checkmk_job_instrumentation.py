@@ -44,16 +44,15 @@ def install_checkmk_site_job_routing() -> None:
         playbook_id=None,
         settings=None,
     ):
-        del mode, approve, ssh_port
         context = _CONTEXT.get()
         if not context:
             return original_runner(
                 reference,
                 objective,
                 environment=environment,
-                mode="propose",
-                approve=False,
-                ssh_port=None,
+                mode=mode,
+                approve=approve,
+                ssh_port=ssh_port,
                 provider_name=provider_name,
                 model_name=model_name,
                 playbook_mode=playbook_mode,
