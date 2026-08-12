@@ -12,18 +12,32 @@ def test_n2_template_covers_operational_documentation_sections() -> None:
     ids = {item["id"] for item in N2_TEMPLATE_SECTIONS}
     assert {
         "identification",
+        "inventory",
         "infrastructure",
         "database",
-        "backup",
+        "totvs_activation",
+        "sgdb_tnsnames",
+        "winthor_mapping",
+        "backup_policy",
+        "oracle_backup",
+        "erp_backup",
+        "backup_execution",
+        "retention",
         "redundancy",
         "monitoring",
         "closing",
     }.issubset(ids)
 
 
-def test_n2_template_does_not_request_password_fields() -> None:
+def test_n2_template_does_not_request_password_or_secret_fields() -> None:
     fields = [str(field).casefold() for item in N2_TEMPLATE_SECTIONS for field in item.get("fields") or []]
-    assert all("senha" not in field and "password" not in field and "secret" not in field for field in fields)
+    forbidden = ("password", "secret", "community", "token")
+    for field in fields:
+        assert not any(word in field for word in forbidden), field
+        # Texto como "usuários técnicos sem senha" é uma proteção explícita,
+        # não um campo de coleta de credencial.
+        if "senha" in field:
+            assert "sem senha" in field or "não registrar senha" in field, field
 
 
 def test_n2_ui_connects_template_to_existing_investigation_flow() -> None:
@@ -52,3 +66,5 @@ def test_n2_backend_marks_unknown_fields_as_pending_instead_of_inventing() -> No
     assert "Não inferir versão de banco" in source
     assert "credentials_included" in source
     assert '"credentials_included": False' in source
+    assert "Nunca executar reboot, shutdown, poweroff ou halt" in source
+    assert "template_teste" in source

@@ -33,9 +33,20 @@ class PolicyDecision:
 
 # Bloqueio absoluto de lifecycle do SERVIDOR. Reiniciar serviços autorizados é
 # outra categoria; reboot/poweroff/halt do host nunca pode ser executado.
+#
+# Cobrir também wrappers/caminhos comuns é intencional: ``sudo reboot``,
+# ``/sbin/reboot`` ou ``systemctl --no-wall reboot`` precisam cair na mesma
+# trava imutável antes de qualquer aprovação humana ou IA revisora.
 REBOOT_RE = re.compile(
-    r"(^|[;&|]\s*)(reboot|poweroff|halt|shutdown\b|init\s+[06]\b|telinit\s+[06]\b|"
-    r"systemctl\s+(reboot|poweroff|halt|kexec)\b)\b",
+    r"(^|[;&|]\s*)"
+    r"(?:(?:sudo|doas|nohup|command|exec)\s+)*"
+    r"(?:/(?:usr/)?(?:sbin|bin)/)?"
+    r"(?:"
+    r"reboot\b|poweroff\b|halt\b|shutdown\b|"
+    r"init\s+[06]\b|telinit\s+[06]\b|"
+    r"systemctl(?:\s+--[A-Za-z0-9_-]+(?:=\S+)?)*\s+(?:reboot|poweroff|halt|kexec|soft-reboot)\b|"
+    r"systemctl(?:\s+--[A-Za-z0-9_-]+(?:=\S+)?)*\s+(?:start|isolate)\s+(?:reboot|poweroff|halt)\.target\b"
+    r")",
     re.I,
 )
 DB_CLIENT_RE = re.compile(r"(^|[;&|]\s*)(sqlplus|rman|psql|mysql|mariadb|sqlcmd|mongosh?|redis-cli)\b", re.I)

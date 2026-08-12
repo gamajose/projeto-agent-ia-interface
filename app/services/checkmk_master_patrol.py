@@ -40,6 +40,7 @@ _PATROL_STATE: dict[str, Any] = {
     "sites_ok": 0,
     "sites_failed": 0,
     "hosts_seen": 0,
+    "customer_sync": {},
 }
 
 
@@ -201,9 +202,10 @@ def _persist_automation_result(item: dict[str, Any], result: dict[str, Any]) -> 
 def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync: bool = False) -> dict[str, Any]:
     """Executa um ciclo operacional completo.
 
-    Cada ciclo le os sites do master, coleta hosts e anomalias via Livestatus,
-    persiste o inventario e entrega cada problema ao Incident Manager. O
-    ``force_sync`` e mantido por compatibilidade; o snapshot ja sincroniza tudo.
+    Cada ciclo lê os sites do master, coleta hosts e anomalias via Livestatus,
+    persiste o inventário, materializa a aba Clientes e entrega cada problema ao
+    Incident Manager. ``force_sync`` é mantido por compatibilidade; o snapshot
+    já sincroniza tudo.
     """
 
     settings = settings or get_settings()
@@ -228,6 +230,7 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
             "sites_ok": 0,
             "sites_failed": 0,
             "hosts_seen": 0,
+            "customer_sync": {},
         }
     )
     try:
@@ -235,12 +238,16 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
         if snapshot.get("status") != "completed":
             return snapshot
 
-        # Mantém a aba Clientes abastecida com o mesmo inventário que o CMK05
-        # acabou de confirmar. Falha aqui não invalida a ronda de monitoramento.
+        customer_sync: dict[str, Any]
         try:
-            sync_checkmk_customers_from_inventory()
-        except Exception:
-            pass
+            customer_sync = sync_checkmk_customers_from_inventory()
+        except Exception as exc:
+            customer_sync = {
+                "sites_total": 0,
+                "sites_synced": 0,
+                "sites_failed": 1,
+                "errors": [{"error": redact_text(f"{type(exc).__name__}: {exc}")[:1000]}],
+            }
 
         problems = list(snapshot.get("problems") or [])
         recoveries = list(snapshot.get("recoveries") or [])
@@ -278,6 +285,10 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
         if processing_errors:
             suffix = f"{len(processing_errors)} problema(s) falharam no roteamento"
             last_error = f"{last_error}; {suffix}" if last_error else suffix
+        customer_sync_failures = int(customer_sync.get("sites_failed") or 0) + int(customer_sync.get("host_errors") or 0)
+        if customer_sync_failures:
+            suffix = f"{customer_sync_failures} falha(s) ao salvar Clientes/hosts"
+            last_error = f"{last_error}; {suffix}" if last_error else suffix
 
         _PATROL_STATE.update(
             {
@@ -291,6 +302,7 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
                 "sites_ok": int(snapshot.get("sites_ok") or 0),
                 "sites_failed": int(snapshot.get("sites_failed") or 0),
                 "hosts_seen": int(snapshot.get("hosts_seen") or 0),
+                "customer_sync": customer_sync,
                 "last_error": last_error,
             }
         )
@@ -308,6 +320,7 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
             "guarded_sites": guarded,
             "site_errors": site_errors,
             "processing_errors": processing_errors,
+            "customer_sync": customer_sync,
             "master": checkmk_master_status(settings=settings),
         }
     except Exception as exc:
