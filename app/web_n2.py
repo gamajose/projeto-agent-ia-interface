@@ -102,7 +102,7 @@ def n2_export(document_format: str, payload: N2ExportPayload, request: Request) 
     if fmt not in {"docx", "pdf"}:
         raise HTTPException(status_code=422, detail="formato inválido; use docx ou pdf")
     try:
-        from app.services.n2_document_export import export_n2_document
+        from app.services.n2_document_export_runtime import export_n2_document
 
         content, filename, media_type = export_n2_document(sanitize_n2_review(payload.review), fmt)
         return Response(
