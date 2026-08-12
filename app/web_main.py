@@ -13,7 +13,9 @@ from app.services.ensemble_instrumentation import install_ensemble_reasoning
 from app.services.operational_tool_instrumentation import install_operational_tools
 from app.services.multi_host_instrumentation import install_multi_host_instrumentation
 from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
+from app.services.ssh_resilience import install_ssh_resilience
 
+install_ssh_resilience()
 install_ai_instrumentation()
 install_operational_tools()
 install_multi_host_instrumentation()
