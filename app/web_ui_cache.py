@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import re
+import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -15,71 +16,112 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _UI_DIR = Path(__file__).resolve().parent / "ui"
 
 
-def _asset_version() -> str:
+def _project_version() -> str:
+    """Lê primeiro a versão do checkout atual.
+
+    Um ``git pull`` atualiza os arquivos imediatamente, mas a metadata de uma
+    instalação editable pode continuar apontando para a versão anterior até um
+    novo ``pip install``. Para cache de frontend a fonte correta é o checkout
+    que está servindo os assets, não a metadata antiga do pacote.
+    """
+
+    try:
+        pyproject = (_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, flags=re.MULTILINE)
+        if match:
+            return match.group(1)
+    except OSError:
+        pass
     try:
         return importlib.metadata.version("agent-ia-infra")
     except importlib.metadata.PackageNotFoundError:
-        pyproject = (_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, flags=re.MULTILINE)
-        return match.group(1) if match else "dev"
+        return "dev"
+
+
+def _git_revision() -> str:
+    """Adiciona o commit atual à chave de cache quando o deploy é um clone Git."""
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=_PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _asset_version() -> str:
+    version = _project_version()
+    revision = _git_revision()
+    return f"{version}-{revision}" if revision else version
 
 
 _ASSET_VERSION = _asset_version()
 
 
+def _inject_style(content: str, filename: str, *, marker: str | None = None) -> str:
+    if filename in content:
+        return content
+    marker_attr = f' data-{marker}="1"' if marker else ""
+    tag = f'<link rel="stylesheet" href="/ui/assets/{filename}?v={_ASSET_VERSION}"{marker_attr}>'
+    return content.replace("</head>", f"  {tag}\n</head>")
+
+
+def _inject_script(content: str, filename: str, *, marker: str | None = None, defer: bool = False) -> str:
+    if filename in content:
+        return content
+    marker_attr = f' data-{marker}="1"' if marker else ""
+    defer_attr = " defer" if defer else ""
+    tag = f'<script src="/ui/assets/{filename}?v={_ASSET_VERSION}"{marker_attr}{defer_attr}></script>'
+    return content.replace("</body>", f"  {tag}\n</body>")
+
+
 def _inject_topology_assets(content: str) -> str:
-    stylesheet = f'<link rel="stylesheet" href="/ui/assets/topology.css?v={_ASSET_VERSION}">'
-    script = f'<script src="/ui/assets/topology.js?v={_ASSET_VERSION}"></script>'
-    if "topology.css" not in content:
-        content = content.replace("</head>", f"  {stylesheet}\n</head>")
-    if "topology.js" not in content:
-        content = content.replace("</body>", f"  {script}\n</body>")
+    content = _inject_style(content, "topology.css")
+    content = _inject_script(content, "topology.js")
     return content
 
 
 def _inject_operator_assets(content: str) -> str:
-    stylesheet = f'<link rel="stylesheet" href="/ui/assets/operator-experience.css?v={_ASSET_VERSION}">'
-    core_script = f'<script src="/ui/assets/ui-core.js?v={_ASSET_VERSION}"></script>'
-    experience_script = f'<script src="/ui/assets/operator-experience.js?v={_ASSET_VERSION}"></script>'
-    if "operator-experience.css" not in content:
-        content = content.replace("</head>", f"  {stylesheet}\n</head>")
-    if "ui-core.js" not in content:
-        content = content.replace("</body>", f"  {core_script}\n</body>")
-    if "operator-experience.js" not in content:
-        content = content.replace("</body>", f"  {experience_script}\n</body>")
+    content = _inject_style(content, "operator-experience.css")
+    content = _inject_script(content, "ui-core.js")
+    content = _inject_script(content, "operator-experience.js")
     return content
 
 
 def _inject_adaptive_assets(content: str) -> str:
-    script = f'<script src="/ui/assets/adaptive-analysis.js?v={_ASSET_VERSION}"></script>'
-    if "adaptive-analysis.js" not in content:
-        content = content.replace("</body>", f"  {script}\n</body>")
-    return content
+    return _inject_script(content, "adaptive-analysis.js")
 
 
 def _inject_operator_refresh_assets(content: str) -> str:
-    styles = (
+    for asset in (
         "navigation-refresh.css",
         "fleet-scope.css",
         "execution-visibility.css",
-    )
-    scripts = (
+    ):
+        content = _inject_style(content, asset)
+    for asset in (
         "navigation-refresh.js",
         "fleet-scope.js",
         "execution-visibility.js",
-    )
-    for asset in styles:
-        if asset not in content:
-            content = content.replace(
-                "</head>",
-                f'  <link rel="stylesheet" href="/ui/assets/{asset}?v={_ASSET_VERSION}">\n</head>',
-            )
-    for asset in scripts:
-        if asset not in content:
-            content = content.replace(
-                "</body>",
-                f'  <script src="/ui/assets/{asset}?v={_ASSET_VERSION}"></script>\n</body>',
-            )
+    ):
+        content = _inject_script(content, asset)
+    return content
+
+
+def _inject_noc_extension_assets(content: str) -> str:
+    """Acopla o NOC e a Área N2 sem reescrever a resposta em middleware."""
+
+    content = _inject_style(content, "fleet-ui.css", marker="fleet-ui")
+    content = _inject_style(content, "noc-automation.css", marker="noc-automation")
+    content = _inject_style(content, "n2-workspace.css", marker="n2-workspace")
+    content = _inject_script(content, "fleet-ui.js", marker="fleet-ui", defer=True)
+    content = _inject_script(content, "n2-workspace.js", marker="n2-workspace", defer=True)
     return content
 
 
@@ -93,6 +135,7 @@ def versioned_interface(request: Request) -> HTMLResponse:
     content = _inject_operator_assets(content)
     content = _inject_adaptive_assets(content)
     content = _inject_operator_refresh_assets(content)
+    content = _inject_noc_extension_assets(content)
     return HTMLResponse(
         content,
         headers={

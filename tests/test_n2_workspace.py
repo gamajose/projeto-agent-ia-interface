@@ -36,6 +36,16 @@ def test_n2_ui_connects_template_to_existing_investigation_flow() -> None:
     assert "nunca reinicie o servidor" in source
 
 
+def test_n2_is_optional_tool_inside_projects_and_does_not_replace_navigation() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.js").read_text(encoding="utf-8")
+    assert "#view-projects .project-builder-head" in source
+    assert "Área N2" in source
+    assert "n2-workspace-modal" in source
+    assert 'data-view="n2"' not in source
+    assert "view-n2" not in source
+    assert "showView(\"n2\")" not in source
+
+
 def test_n2_backend_marks_unknown_fields_as_pending_instead_of_inventing() -> None:
     source = (PROJECT_ROOT / "app" / "services" / "n2_workspace.py").read_text(encoding="utf-8")
     assert '"missing"' in source

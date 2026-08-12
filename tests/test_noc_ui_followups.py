@@ -31,6 +31,14 @@ def test_checkmk_patrol_is_automatic_at_two_minutes_by_default() -> None:
     assert "start_checkmk_master_patrol_background" in source
 
 
+def test_browser_does_not_poll_fleet_while_noc_screen_is_hidden() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "fleet-ui.js").read_text(encoding="utf-8")
+    assert "function isNocActive()" in source
+    assert "if (!showError && !isNocActive()) return" in source
+    assert "if (document.hidden || !isNocActive()) return" in source
+    assert "}, 30000);" in source
+
+
 def test_clients_are_materialized_from_checkmk_inventory() -> None:
     sync_source = (PROJECT_ROOT / "app" / "services" / "checkmk_customer_sync.py").read_text(encoding="utf-8")
     web_source = (PROJECT_ROOT / "app" / "web_operator_experience.py").read_text(encoding="utf-8")

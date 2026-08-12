@@ -28,67 +28,97 @@
     return data;
   }
 
-  function activate() {
-    if (typeof window.showView === "function") {
-      window.showView("n2");
-    } else if (typeof showView === "function") {
-      showView("n2");
-    } else {
-      document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === "n2"));
-      document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === "view-n2"));
-    }
+  function modal() {
+    return document.querySelector("#n2-workspace-modal");
+  }
+
+  function openModal() {
+    const root = modal();
+    if (!root) return;
+    root.classList.add("open");
+    root.setAttribute("aria-hidden", "false");
+    document.body.classList.add("n2-modal-open");
     void loadSites();
   }
 
-  function ensureUi() {
-    if (document.querySelector("#view-n2")) return true;
-    const nav = document.querySelector(".nav");
-    const main = document.querySelector(".main");
-    if (!nav || !main) return false;
+  function closeModal() {
+    const root = modal();
+    if (!root) return;
+    root.classList.remove("open");
+    root.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("n2-modal-open");
+  }
 
+  function ensureEntryButton() {
+    const projectHead = document.querySelector("#view-projects .project-builder-head");
+    if (!projectHead || document.querySelector("#open-n2-workspace")) return Boolean(projectHead);
+    let actions = projectHead.querySelector(".n2-project-actions");
+    if (!actions) {
+      actions = document.createElement("div");
+      actions.className = "n2-project-actions";
+      projectHead.appendChild(actions);
+    }
     const button = document.createElement("button");
-    button.className = "nav-item";
-    button.dataset.view = "n2";
-    button.innerHTML = '<span class="nav-icon" aria-hidden="true">▤</span><span>N2</span>';
-    const projects = nav.querySelector('[data-view="projects"]');
-    projects?.insertAdjacentElement("afterend", button);
-    if (!projects) nav.appendChild(button);
-    button.addEventListener("click", activate);
+    button.type = "button";
+    button.id = "open-n2-workspace";
+    button.className = "secondary-button n2-entry-button";
+    button.innerHTML = '<span aria-hidden="true">▤</span><span>Área N2</span>';
+    button.title = "Abrir ferramenta de documentação e validação para o analista N2";
+    actions.appendChild(button);
+    button.addEventListener("click", openModal);
+    return true;
+  }
 
-    const view = document.createElement("section");
-    view.className = "view";
-    view.id = "view-n2";
-    view.innerHTML = `
-      <div class="n2-shell">
-        <article class="panel n2-sidebar-panel">
-          <div class="n2-title"><p class="eyebrow">WORKSPACE N2</p><h3>Documentação e validação com IA</h3><p>Use o inventário do CMK05 como ponto de partida. O que não estiver comprovado vira pendência de coleta.</p></div>
-          <label class="n2-field"><span>Cliente / site</span><select id="n2-site"><option value="">Carregando...</option></select></label>
-          <div class="n2-responsibles">
-            <label class="n2-field"><span>Responsável Infra</span><input id="n2-resp-infra" placeholder="Nome"></label>
-            <label class="n2-field"><span>Responsável DBA</span><input id="n2-resp-dba" placeholder="Nome"></label>
-            <label class="n2-field"><span>Responsável NOC</span><input id="n2-resp-noc" placeholder="Nome"></label>
-            <label class="n2-field"><span>Revisão</span><input id="n2-resp-review" placeholder="Nome"></label>
+  function ensureModal() {
+    if (modal()) return true;
+    if (!document.body) return false;
+    const root = document.createElement("aside");
+    root.className = "n2-workspace-modal";
+    root.id = "n2-workspace-modal";
+    root.setAttribute("aria-hidden", "true");
+    root.setAttribute("role", "dialog");
+    root.setAttribute("aria-modal", "true");
+    root.setAttribute("aria-labelledby", "n2-workspace-title");
+    root.innerHTML = `
+      <div class="n2-modal-backdrop" data-close-n2></div>
+      <div class="n2-modal-panel">
+        <header class="n2-modal-header">
+          <div><p class="eyebrow">FERRAMENTA PARA O ANALISTA N2</p><h2 id="n2-workspace-title">Documentação e validação com IA</h2><p>Área adicional. A operação normal do Agent IA continua exatamente como está.</p></div>
+          <button type="button" class="icon-button" data-close-n2 aria-label="Fechar Área N2">×</button>
+        </header>
+        <div class="n2-modal-body">
+          <div class="n2-shell">
+            <article class="panel n2-sidebar-panel">
+              <div class="n2-title"><p class="eyebrow">BASE DO CMK05</p><h3>Selecionar ambiente</h3><p>A IA aproveita o que já está comprovado e marca o restante como pendência de coleta.</p></div>
+              <label class="n2-field"><span>Cliente / site</span><select id="n2-site"><option value="">Carregando...</option></select></label>
+              <div class="n2-responsibles">
+                <label class="n2-field"><span>Responsável Infra</span><input id="n2-resp-infra" placeholder="Nome"></label>
+                <label class="n2-field"><span>Responsável DBA</span><input id="n2-resp-dba" placeholder="Nome"></label>
+                <label class="n2-field"><span>Responsável NOC</span><input id="n2-resp-noc" placeholder="Nome"></label>
+                <label class="n2-field"><span>Revisão</span><input id="n2-resp-review" placeholder="Nome"></label>
+              </div>
+              <button type="button" class="primary-button" id="n2-build-draft">Montar rascunho N2</button>
+              <div class="n2-safe-note"><strong>Sem credenciais</strong><span>Senhas, communities e secrets não entram no rascunho nem no prompt.</span></div>
+            </article>
+            <div class="n2-main">
+              <article class="panel" id="n2-context-panel"><div class="empty-state">Selecione um cliente para abrir o ambiente.</div></article>
+              <article class="panel" id="n2-draft-panel" hidden></article>
+            </div>
           </div>
-          <button type="button" class="primary-button" id="n2-build-draft">Montar rascunho N2</button>
-          <div class="n2-safe-note"><strong>Sem credenciais</strong><span>Senhas, communities e secrets não entram no rascunho nem no prompt.</span></div>
-        </article>
-
-        <div class="n2-main">
-          <article class="panel" id="n2-context-panel"><div class="empty-state">Selecione um cliente para abrir o ambiente.</div></article>
-          <article class="panel" id="n2-draft-panel" hidden></article>
         </div>
       </div>`;
-    main.appendChild(view);
+    document.body.appendChild(root);
 
-    view.querySelector("#n2-site")?.addEventListener("change", (event) => void loadContext(event.currentTarget.value));
-    view.querySelector("#n2-build-draft")?.addEventListener("click", () => void buildDraft());
+    root.querySelectorAll("[data-close-n2]").forEach((item) => item.addEventListener("click", closeModal));
+    root.querySelector("#n2-site")?.addEventListener("change", (event) => void loadContext(event.currentTarget.value));
+    root.querySelector("#n2-build-draft")?.addEventListener("click", () => void buildDraft());
     return true;
   }
 
   async function loadSites() {
-    if (!ensureUi()) return;
-    const select = document.querySelector("#n2-site");
+    const select = modal()?.querySelector("#n2-site");
     if (!select || (loaded && sites.length)) return;
+    select.innerHTML = '<option value="">Carregando clientes...</option>';
     try {
       const data = await request("/ui/api/n2/sites?limit=1000");
       sites = data.items || [];
@@ -112,6 +142,7 @@
       : `Validar o host ${host?.host || "selecionado"} (${host?.ip || "sem IP"}) dentro do cliente ${site.alias || site.site_id}.`;
     const objective = `Cliente/site: ${site.alias || site.site_id} (${site.site_id}). Host interno: ${host?.host || "-"} / ${host?.ip || "-"}. ${problemText} Investigue com segurança, preserve o isolamento deste cliente e nunca reinicie o servidor.`;
 
+    closeModal();
     const openButton = document.querySelector("#topbar-start-investigation") || document.querySelector("[data-open-analysis]");
     openButton?.click();
     window.setTimeout(() => {
@@ -125,7 +156,7 @@
   }
 
   function renderContext() {
-    const root = document.querySelector("#n2-context-panel");
+    const root = modal()?.querySelector("#n2-context-panel");
     if (!root || !context) return;
     const site = context.site || {};
     const hosts = context.hosts || [];
@@ -148,8 +179,8 @@
   }
 
   async function loadContext(siteId) {
-    const root = document.querySelector("#n2-context-panel");
-    const draftRoot = document.querySelector("#n2-draft-panel");
+    const root = modal()?.querySelector("#n2-context-panel");
+    const draftRoot = modal()?.querySelector("#n2-draft-panel");
     if (!siteId) {
       context = null;
       if (root) root.innerHTML = '<div class="empty-state">Selecione um cliente para abrir o ambiente.</div>';
@@ -168,7 +199,7 @@
   }
 
   function renderDraft() {
-    const root = document.querySelector("#n2-draft-panel");
+    const root = modal()?.querySelector("#n2-draft-panel");
     if (!root || !draft) return;
     root.hidden = false;
     const sections = draft.sections || [];
@@ -180,9 +211,10 @@
   }
 
   async function buildDraft() {
-    const siteId = document.querySelector("#n2-site")?.value || "";
+    const root = modal();
+    const siteId = root?.querySelector("#n2-site")?.value || "";
     if (!siteId) return;
-    const button = document.querySelector("#n2-build-draft");
+    const button = root?.querySelector("#n2-build-draft");
     const original = button?.textContent || "Montar rascunho N2";
     if (button) { button.disabled = true; button.textContent = "Montando..."; }
     try {
@@ -191,10 +223,10 @@
         body: {
           site_id: siteId,
           responsibles: {
-            infra: document.querySelector("#n2-resp-infra")?.value || "",
-            dba: document.querySelector("#n2-resp-dba")?.value || "",
-            noc: document.querySelector("#n2-resp-noc")?.value || "",
-            review: document.querySelector("#n2-resp-review")?.value || "",
+            infra: root?.querySelector("#n2-resp-infra")?.value || "",
+            dba: root?.querySelector("#n2-resp-dba")?.value || "",
+            noc: root?.querySelector("#n2-resp-noc")?.value || "",
+            review: root?.querySelector("#n2-resp-review")?.value || "",
           },
         },
       });
@@ -210,13 +242,15 @@
     let attempts = 0;
     const timer = window.setInterval(() => {
       attempts += 1;
-      if (ensureUi()) {
-        window.clearInterval(timer);
-      } else if (attempts > 120) {
-        window.clearInterval(timer);
-      }
+      const ready = ensureModal() && ensureEntryButton();
+      if (ready) window.clearInterval(timer);
+      else if (attempts > 120) window.clearInterval(timer);
     }, 300);
   }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && modal()?.classList.contains("open")) closeModal();
+  });
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();

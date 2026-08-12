@@ -61,11 +61,15 @@
     return data;
   }
 
+  function isNocActive() {
+    return Boolean(document.querySelector("#view-noc")?.classList.contains("active"));
+  }
+
   function ensureStyles() {
     if (document.querySelector('link[data-fleet-ui]')) return;
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = "/ui/assets/fleet-ui.css?v=1.38.0";
+    link.href = "/ui/assets/fleet-ui.css?v=1.38.1";
     link.dataset.fleetUi = "1";
     document.head.appendChild(link);
   }
@@ -91,7 +95,7 @@
           <button type="button" class="secondary-button" id="fleet-refresh">Atualizar</button>
         </div>
       </div>
-      <div id="cmk-master-status"><div class="empty-state">Carregando...</div></div>
+      <div id="cmk-master-status"><div class="empty-state">Abra o NOC para carregar o snapshot atual.</div></div>
       <div id="cmk-action-result" class="cmk-action-result" hidden></div>
 
       <div class="cmk-operations" id="cmk-operations">
@@ -124,7 +128,7 @@
       <details class="cmk-policy-panel" id="cmk-policy-panel">
         <summary>Correções automáticas <small>defina o que o NOC pode ajustar</small></summary>
         <div class="cmk-policy-warning"><strong>Servidor:</strong> reboot, shutdown, poweroff e halt ficam bloqueados permanentemente.</div>
-        <div class="cmk-policy-grid" id="cmk-policy-grid"><div class="empty-state">Carregando políticas...</div></div>
+        <div class="cmk-policy-grid" id="cmk-policy-grid"><div class="empty-state">As políticas serão carregadas ao abrir o NOC.</div></div>
       </details>
 
       <details class="fleet-contingency">
@@ -412,6 +416,7 @@
   }
 
   async function loadFleet(showError = false) {
+    if (!showError && !isNocActive()) return;
     if (loading || !ensurePanel()) return;
     loading = true;
     try {
@@ -474,14 +479,39 @@
     }
   }
 
+  function scheduleNocRefresh() {
+    window.setTimeout(() => {
+      if (!document.hidden && isNocActive()) void loadFleet(false);
+    }, 0);
+  }
+
+  function bindVisibilityRefresh() {
+    document.addEventListener("click", (event) => {
+      if (event.target.closest?.('[data-view="noc"]')) scheduleNocRefresh();
+    });
+    const nocView = document.querySelector("#view-noc");
+    if (nocView) {
+      new MutationObserver(() => {
+        if (nocView.classList.contains("active")) scheduleNocRefresh();
+      }).observe(nocView, { attributes: true, attributeFilter: ["class"] });
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && isNocActive()) scheduleNocRefresh();
+    });
+  }
+
   function boot() {
     let attempts = 0;
     const waiter = window.setInterval(() => {
       attempts += 1;
       if (ensurePanel()) {
         window.clearInterval(waiter);
-        void loadFleet(false);
-        refreshTimer = window.setInterval(() => void loadFleet(false), 10000);
+        bindVisibilityRefresh();
+        if (isNocActive()) void loadFleet(false);
+        refreshTimer = window.setInterval(() => {
+          if (document.hidden || !isNocActive()) return;
+          void loadFleet(false);
+        }, 30000);
       } else if (attempts > 120) {
         window.clearInterval(waiter);
       }

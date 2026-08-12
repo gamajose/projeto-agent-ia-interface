@@ -53,7 +53,7 @@ def test_execution_visibility_exposes_access_journey() -> None:
     assert "Ver eventos da investigação" in source
 
 
-def test_versioned_ui_injects_new_assets() -> None:
+def test_versioned_ui_injects_all_runtime_assets_without_response_middleware() -> None:
     source = (PROJECT_ROOT / "app" / "web_ui_cache.py").read_text(encoding="utf-8")
     for asset in (
         "navigation-refresh.css",
@@ -62,9 +62,23 @@ def test_versioned_ui_injects_new_assets() -> None:
         "fleet-scope.js",
         "execution-visibility.css",
         "execution-visibility.js",
+        "fleet-ui.css",
+        "fleet-ui.js",
+        "noc-automation.css",
+        "n2-workspace.css",
+        "n2-workspace.js",
     ):
         assert asset in source
 
     web_main = (PROJECT_ROOT / "app" / "web_main.py").read_text(encoding="utf-8")
-    assert "fleet-ui.css?v={_ASSET_VERSION}" in web_main
-    assert "fleet-ui.js?v={_ASSET_VERSION}" in web_main
+    assert '@app.middleware("http")' not in web_main
+    assert "app.include_router(ui_cache_router)" in web_main
+
+
+def test_asset_cache_key_tracks_checkout_not_stale_installed_metadata() -> None:
+    source = (PROJECT_ROOT / "app" / "web_ui_cache.py").read_text(encoding="utf-8")
+    assert "def _project_version()" in source
+    assert "pyproject.toml" in source
+    assert "def _git_revision()" in source
+    assert 'git", "rev-parse", "--short=12", "HEAD"' in source
+    assert 'return f"{version}-{revision}" if revision else version' in source
