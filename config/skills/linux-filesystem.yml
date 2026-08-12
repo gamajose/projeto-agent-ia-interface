@@ -1,0 +1,21 @@
+id: linux-filesystem
+title: Filesystem e capacidade de disco Linux
+priority: 90
+match:
+  service:
+    - '^Filesystem'
+    - 'Disk'
+    - 'Mount'
+  output:
+    - 'used'
+    - 'inode'
+    - 'filesystem'
+target_strategy: internal_ssh
+playbook_id: linux-filesystem-high
+objective: Confirmar ocupação, inodes, mounts e maiores consumidores antes de recomendar expansão ou limpeza.
+knowledge:
+  - Validar df -h, df -i, mounts e consumo por diretório.
+  - Distinguir volume cheio, inode esgotado, mount ausente e filesystem somente leitura.
+constraints:
+  - Não remover arquivos automaticamente.
+  - Não executar fsck, resize ou alteração de filesystem sem aprovação explícita.
