@@ -11,6 +11,7 @@ ACTION="${1:-status}"
 SCOPE="${2:-all}"
 
 info() { printf '[INFO] %s\n' "$*"; }
+warn() { printf '[AVISO] %s\n' "$*"; }
 fail() { printf '[ERRO] %s\n' "$*" >&2; exit 1; }
 
 [[ -f "$COMPOSE_FILE" ]] || fail "compose não encontrado: $COMPOSE_FILE"
@@ -32,6 +33,7 @@ read_env_value() {
 }
 
 OMNIROUTE_PORT="$(read_env_value OMNIROUTE_PORT 20128)"
+POSTGRES_PASSWORD="$(read_env_value POSTGRES_PASSWORD)"
 [[ "$OMNIROUTE_PORT" =~ ^[0-9]+$ ]] || fail "OMNIROUTE_PORT inválida: $OMNIROUTE_PORT"
 
 DOCKER=(docker)
@@ -51,6 +53,48 @@ container_exists() {
 
 container_running() {
   [[ "$("${DOCKER[@]}" inspect --format '{{.State.Running}}' "$1" 2>/dev/null || true)" == "true" ]]
+}
+
+wait_postgres_ready() {
+  local elapsed=0
+  while ((elapsed < 90)); do
+    if "${DOCKER[@]}" exec agent-ia-postgres pg_isready -U agent_ia -d agent_ia >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  return 1
+}
+
+postgres_password_valid() {
+  [[ -n "$POSTGRES_PASSWORD" ]] || return 1
+  "${DOCKER[@]}" exec -e PGPASSWORD="$POSTGRES_PASSWORD" agent-ia-postgres \
+    psql -h 127.0.0.1 -U agent_ia -d agent_ia -tAc 'SELECT 1' 2>/dev/null \
+    | grep -qx '1'
+}
+
+sync_postgres_password() {
+  local escaped_password
+  container_running agent-ia-postgres || return 0
+  [[ -n "$POSTGRES_PASSWORD" ]] || fail "POSTGRES_PASSWORD está vazio em $ENV_FILE"
+  wait_postgres_ready || fail "PostgreSQL local não respondeu ao pg_isready"
+
+  if postgres_password_valid; then
+    info "Credencial do PostgreSQL local validada com o .env"
+    return 0
+  fi
+
+  warn "A senha do volume PostgreSQL existente não corresponde ao .env; sincronizando somente o usuário local agent_ia"
+  escaped_password="${POSTGRES_PASSWORD//\'/\'\'}"
+  printf "ALTER ROLE agent_ia WITH PASSWORD '%s';\n" "$escaped_password" \
+    | "${DOCKER[@]}" exec -i -u postgres agent-ia-postgres \
+        psql -v ON_ERROR_STOP=1 -d agent_ia >/dev/null \
+    || fail "não foi possível sincronizar a senha do PostgreSQL local; o volume foi preservado"
+
+  postgres_password_valid \
+    || fail "a senha do PostgreSQL local continua divergente após a sincronização"
+  info "Credencial do PostgreSQL local sincronizada sem apagar o volume"
 }
 
 container_publishes_omniroute() {
@@ -83,8 +127,7 @@ read_omniroute_mode() {
 }
 
 ensure_container() {
-  local service="$1"
-  local name="$2"
+  local service="$1" name="$2"
   if container_exists "$name"; then
     if container_running "$name"; then
       info "Reutilizando container ativo: $name"
@@ -92,10 +135,14 @@ ensure_container() {
       info "Iniciando container existente: $name"
       "${DOCKER[@]}" start "$name" >/dev/null
     fi
-    return
+  else
+    info "Criando serviço $service pelo Docker Compose"
+    "${COMPOSE[@]}" up -d "$service"
   fi
-  info "Criando serviço $service pelo Docker Compose"
-  "${COMPOSE[@]}" up -d "$service"
+
+  if [[ "$name" == "agent-ia-postgres" ]]; then
+    sync_postgres_password
+  fi
 }
 
 ensure_omniroute() {
@@ -130,8 +177,7 @@ ensure_omniroute() {
 }
 
 stop_container() {
-  local name="$1"
-  local timeout="${2:-30}"
+  local name="$1" timeout="${2:-30}"
   container_exists "$name" || return 0
   container_running "$name" || return 0
   info "Parando $name"
