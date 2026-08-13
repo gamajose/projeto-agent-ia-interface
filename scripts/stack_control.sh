@@ -89,7 +89,7 @@ sync_postgres_password() {
   escaped_password="${POSTGRES_PASSWORD//\'/\'\'}"
   printf "ALTER ROLE agent_ia WITH PASSWORD '%s';\n" "$escaped_password" \
     | "${DOCKER[@]}" exec -i -u postgres agent-ia-postgres \
-        psql -v ON_ERROR_STOP=1 -d agent_ia >/dev/null \
+        psql -U agent_ia -v ON_ERROR_STOP=1 -d agent_ia >/dev/null \
     || fail "não foi possível sincronizar a senha do PostgreSQL local; o volume foi preservado"
 
   postgres_password_valid \
