@@ -1,6 +1,15 @@
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
 
+  function ensureFixStyles() {
+    if (document.querySelector('link[data-compact-fixes]')) return;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = '/ui/assets/compact-operations-fixes.css';
+    link.dataset.compactFixes = '1';
+    document.head.appendChild(link);
+  }
+
   function modal(id, title, subtitle = '') {
     let node = document.getElementById(id);
     if (node) return node;
@@ -49,7 +58,7 @@
     if (reviewStep) reviewStep.textContent = '3';
   }
 
-  function compactAll() { compactN2(); }
+  function compactAll() { ensureFixStyles(); compactN2(); }
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') document.querySelectorAll('.compact-modal.open').forEach(close); });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', compactAll); else compactAll();
   setInterval(() => { if (!document.hidden) compactAll(); }, 1200);
