@@ -11,6 +11,7 @@ OPENCODE_MODE="yes"
 OLLAMA_MODE="${AGENT_INSTALL_OLLAMA:-true}"
 OLLAMA_MODEL="${AGENT_OLLAMA_MODEL:-auto}"
 PYTHON_BIN="${PYTHON_BIN:-}"
+TARGET_USER_OVERRIDE="${AGENT_INSTALL_USER:-}"
 
 info() { printf '\033[1;34m[INFO]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[AVISO]\033[0m %s\n' "$*"; }
@@ -30,6 +31,7 @@ Opções:
   --install-dir CAMINHO   raiz da instalação; padrão: /opt/agent-ia
   --ref REFERENCIA        branch ou tag; padrão: main
   --repo URL              repositório Git
+  --user USUARIO          usuário Linux que executará web/worker
   --non-interactive       não solicita dados opcionais
   --skip-docker           não instala Docker; exige Docker já funcional
   --with-opencode         prepara também o OpenCode integrado; padrão
@@ -40,8 +42,8 @@ Opções:
   --help                  mostra esta ajuda
 
 Variáveis equivalentes:
-  AGENT_INSTALL_ROOT, AGENT_REPO_URL, AGENT_REPO_REF, PYTHON_BIN,
-  AGENT_INSTALL_OLLAMA e AGENT_OLLAMA_MODEL
+  AGENT_INSTALL_ROOT, AGENT_REPO_URL, AGENT_REPO_REF, AGENT_INSTALL_USER,
+  PYTHON_BIN, AGENT_INSTALL_OLLAMA e AGENT_OLLAMA_MODEL
 EOF
 }
 
@@ -50,6 +52,7 @@ while (($#)); do
     --install-dir) shift; [[ $# -gt 0 ]] || fail "informe o caminho após --install-dir"; INSTALL_ROOT="$1" ;;
     --repo) shift; [[ $# -gt 0 ]] || fail "informe a URL após --repo"; REPO_URL="$1" ;;
     --ref) shift; [[ $# -gt 0 ]] || fail "informe a referência após --ref"; REPO_REF="$1" ;;
+    --user) shift; [[ $# -gt 0 ]] || fail "informe o usuário após --user"; TARGET_USER_OVERRIDE="$1" ;;
     --non-interactive) NON_INTERACTIVE=true ;;
     --skip-docker) SKIP_DOCKER=true ;;
     --with-opencode) OPENCODE_MODE="yes" ;;
@@ -66,10 +69,6 @@ done
 [[ "$INSTALL_ROOT" == /* ]] || fail "--install-dir precisa ser um caminho absoluto"
 [[ "$INSTALL_ROOT" != *[[:space:]]* ]] || fail "--install-dir não pode conter espaços; use um caminho como /opt/agent-ia"
 APP_DIR="$INSTALL_ROOT/app"
-TARGET_USER="${SUDO_USER:-${USER:-$(id -un)}}"
-TARGET_GROUP="$(id -gn "$TARGET_USER")"
-TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
-[[ -n "$TARGET_HOME" ]] || TARGET_HOME="$HOME"
 SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$PWD}")" 2>/dev/null && pwd || printf '%s' "$PWD")"
 SOURCE_ENV=""
 
@@ -78,6 +77,50 @@ if [[ -f "$SOURCE_DIR/pyproject.toml" && -d "$SOURCE_DIR/app" ]]; then
 else
   SOURCE_DIR=""
 fi
+
+detect_target_user() {
+  local candidate="" owner=""
+
+  if [[ -n "$TARGET_USER_OVERRIDE" ]]; then
+    id "$TARGET_USER_OVERRIDE" >/dev/null 2>&1 || fail "usuário inexistente: $TARGET_USER_OVERRIDE"
+    printf '%s' "$TARGET_USER_OVERRIDE"
+    return
+  fi
+
+  candidate="${SUDO_USER:-}"
+  if [[ -n "$candidate" && "$candidate" != "root" ]] && id "$candidate" >/dev/null 2>&1; then
+    printf '%s' "$candidate"
+    return
+  fi
+
+  candidate="${USER:-}"
+  if [[ -n "$candidate" && "$candidate" != "root" ]] && id "$candidate" >/dev/null 2>&1; then
+    printf '%s' "$candidate"
+    return
+  fi
+
+  candidate="$(logname 2>/dev/null || true)"
+  if [[ -n "$candidate" && "$candidate" != "root" ]] && id "$candidate" >/dev/null 2>&1; then
+    printf '%s' "$candidate"
+    return
+  fi
+
+  if [[ -n "$SOURCE_DIR" ]]; then
+    owner="$(stat -c '%U' "$SOURCE_DIR" 2>/dev/null || true)"
+    if [[ -n "$owner" && "$owner" != "root" && "$owner" != "UNKNOWN" ]] && id "$owner" >/dev/null 2>&1; then
+      printf '%s' "$owner"
+      return
+    fi
+  fi
+
+  printf '%s' "root"
+}
+
+TARGET_USER="$(detect_target_user)"
+TARGET_GROUP="$(id -gn "$TARGET_USER")"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+[[ -n "$TARGET_HOME" ]] || TARGET_HOME="$HOME"
+info "Usuário operacional selecionado: $TARGET_USER"
 
 if ((EUID == 0)); then
   SUDO=()
@@ -99,6 +142,10 @@ as_target() {
   else
     "$@"
   fi
+}
+
+git_target() {
+  as_target git -c "safe.directory=$APP_DIR" -C "$APP_DIR" "$@"
 }
 
 python_supported() {
@@ -220,18 +267,18 @@ restore_mode_only_changes() {
   while IFS= read -r -d '' path; do
     [[ -f "$APP_DIR/$path" ]] || continue
 
-    index_sha="$(as_target git -C "$APP_DIR" rev-parse ":$path" 2>/dev/null || true)"
-    work_sha="$(as_target git -C "$APP_DIR" hash-object -- "$APP_DIR/$path" 2>/dev/null || true)"
+    index_sha="$(git_target rev-parse ":$path" 2>/dev/null || true)"
+    work_sha="$(git_target hash-object -- "$APP_DIR/$path" 2>/dev/null || true)"
     [[ -n "$index_sha" && "$index_sha" == "$work_sha" ]] || continue
 
-    tracked_mode="$(as_target git -C "$APP_DIR" ls-files -s -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
+    tracked_mode="$(git_target ls-files -s -- "$path" 2>/dev/null | awk 'NR==1 {print $1}')"
     case "$tracked_mode" in
       100755) "${SUDO[@]}" chmod 755 "$APP_DIR/$path" ;;
       100644) "${SUDO[@]}" chmod 644 "$APP_DIR/$path" ;;
       *) continue ;;
     esac
     restored=$((restored + 1))
-  done < <(as_target git -C "$APP_DIR" diff --name-only -z --)
+  done < <(git_target diff --name-only -z --)
 
   if ((restored > 0)); then
     info "Permissões de $restored arquivo(s) restauradas conforme o Git"
@@ -239,8 +286,7 @@ restore_mode_only_changes() {
 }
 
 repository_clean() {
-  as_target git -C "$APP_DIR" diff --quiet -- \
-    && as_target git -C "$APP_DIR" diff --cached --quiet --
+  git_target diff --quiet -- && git_target diff --cached --quiet --
 }
 
 port_available() {
@@ -359,18 +405,25 @@ ensure_supported_python
 "${SUDO[@]}" mkdir -p "$INSTALL_ROOT"
 "${SUDO[@]}" chown "$TARGET_USER:$TARGET_GROUP" "$INSTALL_ROOT"
 
+if [[ -e "$APP_DIR" ]]; then
+  info "Normalizando ownership da aplicação para $TARGET_USER:$TARGET_GROUP"
+  "${SUDO[@]}" chown -R "$TARGET_USER:$TARGET_GROUP" "$APP_DIR"
+fi
+
 if [[ -d "$APP_DIR/.git" ]]; then
   info "Instalação existente encontrada em $APP_DIR"
   restore_mode_only_changes
   if repository_clean; then
-    as_target git -C "$APP_DIR" fetch --prune origin
-    as_target git -C "$APP_DIR" checkout "$REPO_REF"
-    if as_target git -C "$APP_DIR" show-ref --verify --quiet "refs/remotes/origin/$REPO_REF"; then
-      as_target git -C "$APP_DIR" merge --ff-only "origin/$REPO_REF"
+    git_target fetch --prune origin "+refs/heads/$REPO_REF:refs/remotes/origin/$REPO_REF" 2>/dev/null \
+      || git_target fetch --prune origin "$REPO_REF"
+    if git_target show-ref --verify --quiet "refs/remotes/origin/$REPO_REF"; then
+      git_target checkout -B "$REPO_REF" "origin/$REPO_REF"
+    else
+      git_target checkout "$REPO_REF"
     fi
   else
     warn "há alterações locais reais em $APP_DIR; o código foi preservado sem atualizar"
-    as_target git -C "$APP_DIR" status --short
+    git_target status --short
   fi
 elif [[ -e "$APP_DIR" ]]; then
   fail "$APP_DIR já existe, mas não é um clone Git válido"
@@ -404,9 +457,6 @@ case "${OLLAMA_MODE,,}" in
     ;;
 esac
 
-# Uma instalação anterior pode manter o processo web ativo no caminho antigo.
-# Reiniciar somente esta unidade faz o systemd carregar WorkingDirectory,
-# ExecStart, porta e configuração de IA da nova raiz.
 info "Ativando a interface a partir de $APP_DIR"
 "${SUDO[@]}" systemctl restart agent-ia-web.service
 "${SUDO[@]}" systemctl is-active --quiet agent-ia-web.service \
