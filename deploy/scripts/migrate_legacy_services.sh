@@ -6,6 +6,7 @@ MODE="${1:-}"
 STATE_FILE="${2:-}"
 readonly LEGACY_WEB="agent-ia-web.service"
 readonly LEGACY_WORKER="agent-ia-worker.service"
+readonly PRIVILEGED_WRAPPER="${AGENT_LEGACY_SYSTEMCTL_WRAPPER:-/usr/local/sbin/agent-ia-legacy-systemctl}"
 
 log() { printf '[legacy-migration] %s\n' "$*"; }
 fail() { printf '[legacy-migration] ERRO: %s\n' "$*" >&2; exit 1; }
@@ -30,11 +31,19 @@ privileged_systemctl() {
     systemctl "$@"
     return
   fi
-  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
-    sudo -n systemctl "$@"
-    return
+
+  # Um preflight de sudo genérico rejeitaria sudoers que autorizam apenas
+  # operações específicas. Por isso tentamos diretamente a operação necessária.
+  if command -v sudo >/dev/null 2>&1; then
+    if [[ -x "$PRIVILEGED_WRAPPER" ]] && sudo -n "$PRIVILEGED_WRAPPER" "$@"; then
+      return
+    fi
+    if sudo -n systemctl "$@"; then
+      return
+    fi
   fi
-  fail "o runner precisa de permissão não interativa para gerenciar os serviços legados"
+
+  fail "sem permissão não interativa para systemctl. Prepare a permissão restrita do runner e repita o deploy"
 }
 
 active() {
