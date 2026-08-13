@@ -33,8 +33,13 @@ read_env_value() {
 }
 
 OMNIROUTE_PORT="$(read_env_value OMNIROUTE_PORT 20128)"
+POSTGRES_PORT="$(read_env_value POSTGRES_PORT 5432)"
+REDIS_PORT="$(read_env_value REDIS_PORT 6379)"
 POSTGRES_PASSWORD="$(read_env_value POSTGRES_PASSWORD)"
+REDIS_PASSWORD="$(read_env_value REDIS_PASSWORD)"
 [[ "$OMNIROUTE_PORT" =~ ^[0-9]+$ ]] || fail "OMNIROUTE_PORT inválida: $OMNIROUTE_PORT"
+[[ "$POSTGRES_PORT" =~ ^[0-9]+$ ]] || fail "POSTGRES_PORT inválida: $POSTGRES_PORT"
+[[ "$REDIS_PORT" =~ ^[0-9]+$ ]] || fail "REDIS_PORT inválida: $REDIS_PORT"
 
 DOCKER=(docker)
 if ! docker info >/dev/null 2>&1; then
@@ -53,6 +58,12 @@ container_exists() {
 
 container_running() {
   [[ "$("${DOCKER[@]}" inspect --format '{{.State.Running}}' "$1" 2>/dev/null || true)" == "true" ]]
+}
+
+container_published_port() {
+  local name="$1" internal_port="$2"
+  "${DOCKER[@]}" port "$name" "$internal_port/tcp" 2>/dev/null \
+    | awk -F: 'NF {print $NF; exit}'
 }
 
 wait_postgres_ready() {
@@ -97,6 +108,59 @@ sync_postgres_password() {
   info "Credencial do PostgreSQL local sincronizada sem apagar o volume"
 }
 
+redis_password_valid() {
+  [[ -n "$REDIS_PASSWORD" ]] || return 1
+  "${DOCKER[@]}" exec -e REDISCLI_AUTH="$REDIS_PASSWORD" agent-ia-redis \
+    redis-cli ping 2>/dev/null | grep -qx 'PONG'
+}
+
+validate_service_port() {
+  local name="$1" internal_port="$2" expected="$3" published=""
+  published="$(container_published_port "$name" "$internal_port" || true)"
+  [[ "$published" == "$expected" ]]
+}
+
+ensure_container() {
+  local service="$1" name="$2" internal_port="" expected_port=""
+
+  case "$name" in
+    agent-ia-postgres)
+      internal_port=5432
+      expected_port="$POSTGRES_PORT"
+      ;;
+    agent-ia-redis)
+      internal_port=6379
+      expected_port="$REDIS_PORT"
+      ;;
+  esac
+
+  if container_exists "$name"; then
+    info "Reconciliando container existente: $name"
+  else
+    info "Criando serviço $service pelo Docker Compose"
+  fi
+
+  # `docker compose up` é idempotente e recria apenas o container quando a
+  # publicação de porta/comando mudou. Volumes nomeados são preservados.
+  "${COMPOSE[@]}" up -d --no-deps "$service"
+
+  container_running "$name" || fail "$name não permaneceu em execução"
+
+  if [[ -n "$internal_port" ]] && ! validate_service_port "$name" "$internal_port" "$expected_port"; then
+    warn "$name ainda publica uma porta diferente da configurada; recriando somente o container e preservando o volume"
+    "${COMPOSE[@]}" up -d --no-deps --force-recreate "$service"
+    container_running "$name" || fail "$name não iniciou após a reconciliação de porta"
+    validate_service_port "$name" "$internal_port" "$expected_port" \
+      || fail "$name não publicou 127.0.0.1:$expected_port como esperado"
+  fi
+
+  if [[ "$name" == "agent-ia-postgres" ]]; then
+    sync_postgres_password
+  elif [[ "$name" == "agent-ia-redis" ]]; then
+    redis_password_valid || fail "Redis local iniciou, mas a credencial configurada não foi aceita"
+  fi
+}
+
 container_publishes_omniroute() {
   local published=""
   container_exists omniroute || return 1
@@ -124,25 +188,6 @@ write_omniroute_mode() {
 
 read_omniroute_mode() {
   [[ -f "$OMNIROUTE_MODE_FILE" ]] && head -n 1 "$OMNIROUTE_MODE_FILE" || true
-}
-
-ensure_container() {
-  local service="$1" name="$2"
-  if container_exists "$name"; then
-    if container_running "$name"; then
-      info "Reutilizando container ativo: $name"
-    else
-      info "Iniciando container existente: $name"
-      "${DOCKER[@]}" start "$name" >/dev/null
-    fi
-  else
-    info "Criando serviço $service pelo Docker Compose"
-    "${COMPOSE[@]}" up -d "$service"
-  fi
-
-  if [[ "$name" == "agent-ia-postgres" ]]; then
-    sync_postgres_password
-  fi
 }
 
 ensure_omniroute() {
@@ -231,14 +276,19 @@ stop_scope() {
 }
 
 status_container() {
-  local name="$1" state health
+  local name="$1" state health published=""
   if ! container_exists "$name"; then
     printf '%-22s %s\n' "$name" "ausente"
     return
   fi
   state="$("${DOCKER[@]}" inspect --format '{{.State.Status}}' "$name")"
   health="$("${DOCKER[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}sem-healthcheck{{end}}' "$name")"
-  printf '%-22s %-12s %s\n' "$name" "$state" "$health"
+  case "$name" in
+    agent-ia-postgres) published="$(container_published_port "$name" 5432 || true)" ;;
+    agent-ia-redis) published="$(container_published_port "$name" 6379 || true)" ;;
+  esac
+  [[ -n "$published" ]] && published=" porta=$published"
+  printf '%-22s %-12s %s%s\n' "$name" "$state" "$health" "$published"
 }
 
 status_omniroute() {
