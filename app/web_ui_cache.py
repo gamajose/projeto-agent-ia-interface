@@ -81,6 +81,34 @@ def _inject_script(content: str, filename: str, *, marker: str | None = None, de
     return content.replace("</body>", f"  {tag}\n</body>")
 
 
+def _inject_n2_shell(content: str) -> str:
+    """Coloca N2 no HTML servido, sem depender da criação do botão por JavaScript."""
+
+    if 'data-view="n2"' not in content:
+        nav_button = (
+            '<button class="nav-item" data-view="n2" title="Documentação N2 com IA">'
+            '<span class="nav-icon">▤</span><span>N2</span></button>'
+        )
+        content, count = re.subn(
+            r'(<button class="nav-item" data-view="projects"[^>]*>.*?</button>)',
+            rf'\1\n        {nav_button}',
+            content,
+            count=1,
+            flags=re.DOTALL,
+        )
+        if not count:
+            content = content.replace("</nav>", f"  {nav_button}\n      </nav>", 1)
+
+    if 'id="view-n2"' not in content:
+        shell = '<section class="view n2-page" id="view-n2" data-n2-shell="1"></section>'
+        marker = '<section class="view" id="view-opencode">'
+        if marker in content:
+            content = content.replace(marker, f"{shell}\n\n      {marker}", 1)
+        else:
+            content = content.replace("</main>", f"  {shell}\n    </main>", 1)
+    return content
+
+
 def _inject_topology_assets(content: str) -> str:
     content = _inject_style(content, "topology.css")
     content = _inject_script(content, "topology.js")
@@ -115,13 +143,15 @@ def _inject_operator_refresh_assets(content: str) -> str:
 
 
 def _inject_noc_extension_assets(content: str) -> str:
-    """Acopla o NOC e a Área N2 sem reescrever a resposta em middleware."""
+    """Acopla o NOC e o módulo documental N2 à interface principal."""
 
     content = _inject_style(content, "fleet-ui.css", marker="fleet-ui")
     content = _inject_style(content, "noc-automation.css", marker="noc-automation")
     content = _inject_style(content, "n2-workspace.css", marker="n2-workspace")
+    content = _inject_style(content, "n2-persistence.css", marker="n2-persistence")
     content = _inject_script(content, "fleet-ui.js", marker="fleet-ui", defer=True)
-    content = _inject_script(content, "n2-workspace.js", marker="n2-workspace", defer=True)
+    content = _inject_script(content, "n2-documentation.js", marker="n2-documentation", defer=True)
+    content = _inject_script(content, "navigation-policy.js", marker="navigation-policy", defer=True)
     return content
 
 
@@ -131,6 +161,7 @@ def versioned_interface(request: Request) -> HTMLResponse:
     _require_access(request)
     content = (_UI_DIR / "index.html").read_text(encoding="utf-8")
     content = re.sub(r"([?&]v=)[0-9]+(?:\.[0-9]+){1,3}", rf"\g<1>{_ASSET_VERSION}", content)
+    content = _inject_n2_shell(content)
     content = _inject_topology_assets(content)
     content = _inject_operator_assets(content)
     content = _inject_adaptive_assets(content)

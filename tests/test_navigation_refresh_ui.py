@@ -66,9 +66,14 @@ def test_versioned_ui_injects_all_runtime_assets_without_response_middleware() -
         "fleet-ui.js",
         "noc-automation.css",
         "n2-workspace.css",
-        "n2-workspace.js",
+        "n2-persistence.css",
+        "n2-documentation.js",
+        "navigation-policy.js",
     ):
         assert asset in source
+
+    assert "n2-workspace.js" not in source
+    assert "def _inject_n2_shell" in source
 
     web_main = (PROJECT_ROOT / "app" / "web_main.py").read_text(encoding="utf-8")
     assert '@app.middleware("http")' not in web_main
