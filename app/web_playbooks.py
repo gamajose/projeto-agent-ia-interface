@@ -10,6 +10,12 @@ from app.db.base import ensure_database_schema
 from app.services.ai_providers import ProviderError
 from app.services.intelligent_playbook_import import preview_intelligent_import
 from app.services.persistence import get_investigation
+from app.services.playbook_crud import (
+    delete_playbook_document,
+    list_playbook_documents,
+    read_playbook_document,
+    update_playbook_document,
+)
 from app.services.playbook_editor import draft_playbook, save_playbook
 from app.services.playbook_import import preview_imported_playbook
 from app.web import _require_access, _require_mutation
@@ -126,3 +132,68 @@ def playbook_storage(request: Request) -> dict[str, Any]:
     _require_access(request)
     settings = get_settings()
     return {"backend": "yaml_files", "directory": settings.agent_playbook_dir, "database_role": "histórico de uso, resultado e efetividade"}
+
+
+@router.get("/ui/api/playbooks/manage")
+def playbooks_manage(request: Request) -> dict[str, Any]:
+    _require_access(request)
+    try:
+        items = list_playbook_documents(get_settings())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"catálogo de playbooks indisponível: {type(exc).__name__}: {exc}") from exc
+    return {"total": len(items), "items": items}
+
+
+@router.get("/ui/api/playbooks/{playbook_id}")
+def playbook_detail(playbook_id: str, request: Request) -> dict[str, Any]:
+    _require_access(request)
+    try:
+        return read_playbook_document(playbook_id, get_settings())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.put("/ui/api/playbooks/{playbook_id}")
+def update_playbook(playbook_id: str, payload: PlaybookCreatePayload, request: Request) -> dict[str, Any]:
+    _require_mutation(request)
+    if payload.id.strip().lower() != playbook_id.strip().lower():
+        raise HTTPException(status_code=409, detail="o identificador não pode ser renomeado durante a edição; crie um novo playbook para usar outro ID")
+    try:
+        item = update_playbook_document(
+            playbook_id,
+            title=payload.title,
+            priority=payload.priority,
+            profiles=payload.profiles,
+            patterns=payload.patterns,
+            steps_yaml=payload.steps_yaml,
+            summary=payload.summary,
+            required_inputs=payload.required_inputs,
+            safety_rules=payload.safety_rules,
+            validation_notes=payload.validation_notes,
+            import_notes=payload.import_notes,
+            source_filename=payload.source_filename,
+            settings=get_settings(),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"não foi possível atualizar o playbook: {exc}") from exc
+    return {"saved": True, "message": "Playbook atualizado e recarregado no catálogo.", "item": item}
+
+
+@router.delete("/ui/api/playbooks/{playbook_id}")
+def delete_playbook(playbook_id: str, request: Request) -> dict[str, Any]:
+    _require_mutation(request)
+    try:
+        item = delete_playbook_document(playbook_id, get_settings())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"não foi possível remover o playbook: {exc}") from exc
+    return {"message": "Playbook removido do catálogo.", **item}
