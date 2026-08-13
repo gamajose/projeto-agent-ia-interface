@@ -36,13 +36,25 @@ def test_navigation_refresh_promotes_user_actions_to_single_global_header() -> N
     assert ".global-header-actions" in css
 
 
+def test_navigation_refresh_observer_does_not_react_to_its_own_svg_mutations() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "navigation-refresh.js").read_text(encoding="utf-8")
+    assert "holder.dataset.navIconView !== view" in source
+    assert "function nodeAddsNavigationItem" in source
+    assert "mutation.addedNodes" in source
+    assert "node.matches('.nav-item')" in source
+    assert "if (!navigationChanged) return" in source
+    assert "new MutationObserver(() =>" not in source
+
+
 def test_checkmk_central_panel_keeps_long_status_visible() -> None:
-    css = (PROJECT_ROOT / "app" / "ui" / "fleet-ui.css").read_text(encoding="utf-8")
-    compact = "".join(css.split())
-    assert ".fleet-panel" in css
+    css = PROJECT_ROOT / "app" / "ui" / "fleet-ui.css"
+    assert css.is_file()
+    text = css.read_text(encoding="utf-8")
+    compact = "".join(text.split())
+    assert ".fleet-panel" in text
     assert "overflow:visible" in compact
     assert "overflow-wrap:anywhere" in compact
-    assert ".cmk-error-copy" in css
+    assert ".cmk-error-copy" in text
 
 
 def test_execution_visibility_exposes_access_journey() -> None:
