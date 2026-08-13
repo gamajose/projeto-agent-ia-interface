@@ -9,6 +9,7 @@ from app.services.ai_providers import ProviderError
 from app.services.noc_skills import delete_noc_skill, load_noc_skills, save_noc_skill
 from app.services.skill_from_playbook import preview_skills_from_playbook
 from app.web import _require_access, _require_mutation
+from app.web_storage_metrics import router as storage_metrics_router
 
 
 router = APIRouter(tags=["interface-noc-skills"])
@@ -87,3 +88,6 @@ def noc_skill_delete(skill_id: str, request: Request) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"não foi possível remover a skill: {type(exc).__name__}: {exc}") from exc
+
+
+router.include_router(storage_metrics_router)
