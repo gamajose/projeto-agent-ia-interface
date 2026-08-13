@@ -17,13 +17,7 @@ _UI_DIR = Path(__file__).resolve().parent / "ui"
 
 
 def _project_version() -> str:
-    """Lê primeiro a versão do checkout atual.
-
-    Um ``git pull`` atualiza os arquivos imediatamente, mas a metadata de uma
-    instalação editable pode continuar apontando para a versão anterior até um
-    novo ``pip install``. Para cache de frontend a fonte correta é o checkout
-    que está servindo os assets, não a metadata antiga do pacote.
-    """
+    """Lê primeiro a versão do checkout atual."""
 
     try:
         pyproject = (_PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -82,16 +76,12 @@ def _inject_script(content: str, filename: str, *, marker: str | None = None, de
 
 
 def _inject_top_navigation_shell(content: str) -> str:
-    """Mantém o layout superior mesmo antes dos JavaScripts de navegação rodarem."""
-
     if '<body class="top-navigation-layout">' in content:
         return content
     return content.replace("<body>", '<body class="top-navigation-layout">', 1)
 
 
 def _inject_n2_shell(content: str) -> str:
-    """Coloca N2 no HTML servido, sem depender da criação do botão por JavaScript."""
-
     if 'data-view="n2"' not in content:
         nav_button = (
             '<button class="nav-item" data-view="n2" title="Documentação N2 com IA">'
@@ -151,17 +141,33 @@ def _inject_operator_refresh_assets(content: str) -> str:
 
 
 def _inject_noc_extension_assets(content: str) -> str:
-    """Acopla o NOC, controle dos agentes e módulo documental N2."""
+    """Acopla NOC, N2 e a camada operacional compacta."""
 
-    content = _inject_style(content, "fleet-ui.css", marker="fleet-ui")
-    content = _inject_style(content, "noc-automation.css", marker="noc-automation")
-    content = _inject_style(content, "noc-agents-control.css", marker="noc-agents-control")
-    content = _inject_style(content, "n2-workspace.css", marker="n2-workspace")
-    content = _inject_style(content, "n2-persistence.css", marker="n2-persistence")
-    content = _inject_script(content, "fleet-ui.js", marker="fleet-ui", defer=True)
-    content = _inject_script(content, "noc-agents-control.js", marker="noc-agents-control", defer=True)
-    content = _inject_script(content, "n2-documentation.js", marker="n2-documentation", defer=True)
-    content = _inject_script(content, "navigation-policy.js", marker="navigation-policy", defer=True)
+    for asset, marker in (
+        ("fleet-ui.css", "fleet-ui"),
+        ("noc-automation.css", "noc-automation"),
+        ("noc-agents-control.css", "noc-agents-control"),
+        ("n2-workspace.css", "n2-workspace"),
+        ("n2-persistence.css", "n2-persistence"),
+        ("compact-operations.css", "compact-operations"),
+    ):
+        content = _inject_style(content, asset, marker=marker)
+
+    for asset, marker in (
+        ("fleet-ui.js", "fleet-ui"),
+        ("noc-agents-control.js", "noc-agents-control"),
+        ("n2-documentation.js", "n2-documentation"),
+        ("navigation-policy.js", "navigation-policy"),
+        ("compact-operations.js", "compact-operations"),
+        ("compact-noc-layout.js", "compact-noc-layout"),
+        ("noc-metric-modals.js", "noc-metric-modals"),
+        ("noc-queue-controls.js", "noc-queue-controls"),
+        ("noc-queue-pagination.js", "noc-queue-pagination"),
+        ("noc-skills-manager.js", "noc-skills-manager"),
+        ("noc-resolved-detail.js", "noc-resolved-detail"),
+        ("inventory-pagination.js", "inventory-pagination"),
+    ):
+        content = _inject_script(content, asset, marker=marker, defer=True)
     return content
 
 
