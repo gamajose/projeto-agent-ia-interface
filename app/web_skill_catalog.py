@@ -5,7 +5,9 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.services.ai_providers import ProviderError
 from app.services.noc_skills import delete_noc_skill, load_noc_skills, save_noc_skill
+from app.services.skill_from_playbook import preview_skills_from_playbook
 from app.web import _require_access, _require_mutation
 
 
@@ -30,6 +32,12 @@ class SkillPayload(BaseModel):
     constraints: list[str] = Field(default_factory=list, max_length=50)
 
 
+class SkillFromPlaybookPayload(BaseModel):
+    playbook_id: str = Field(min_length=2, max_length=64)
+    provider: str | None = Field(default=None, max_length=80)
+    model: str | None = Field(default=None, max_length=255)
+
+
 @router.get("/ui/api/noc/skills/catalog")
 def noc_skills_catalog(request: Request) -> dict:
     _require_access(request)
@@ -49,6 +57,25 @@ def noc_skill_save(payload: SkillPayload, request: Request) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"não foi possível salvar a skill: {type(exc).__name__}: {exc}") from exc
+
+
+@router.post("/ui/api/noc/skills/from-playbook-preview")
+def noc_skills_from_playbook(payload: SkillFromPlaybookPayload, request: Request) -> dict:
+    _require_mutation(request)
+    try:
+        return preview_skills_from_playbook(
+            payload.playbook_id,
+            provider=payload.provider,
+            model=payload.model,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProviderError as exc:
+        raise HTTPException(status_code=503, detail=f"IA indisponível para ler o playbook: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"não foi possível gerar skills: {type(exc).__name__}: {exc}") from exc
 
 
 @router.delete("/ui/api/noc/skills/catalog/{skill_id}")
