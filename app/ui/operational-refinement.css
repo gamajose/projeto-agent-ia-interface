@@ -1,0 +1,106 @@
+/* Refinamentos pós interface compacta: menos altura, ações próximas do contexto e modais responsivos. */
+
+/* Fila de incidentes */
+#view-noc .noc-grid > .panel:first-child .panel-header{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:14px!important;flex-wrap:nowrap!important;padding-block:16px!important}
+#view-noc .noc-grid > .panel:first-child .panel-header>div:first-child{flex:0 0 auto}
+#view-noc .noc-grid > .panel:first-child .panel-header .eyebrow{display:none!important}
+#view-noc .noc-grid > .panel:first-child .panel-header h3{margin:0!important}
+#view-noc .noc-grid > .panel:first-child .noc-toolbar{display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:9px!important;flex:1 1 auto!important;min-width:0!important}
+#view-noc .noc-live{font-size:0!important;line-height:0!important;width:10px!important;min-width:10px!important;height:10px!important;padding:0!important;margin:0 2px 0 0!important;overflow:visible!important}
+#view-noc .noc-live::before{margin:0!important}
+.compact-queue-tools{display:grid!important;grid-template-columns:minmax(180px,240px) 138px 112px!important;gap:7px!important;align-items:center!important;flex:0 1 auto!important;margin-left:0!important}
+.compact-queue-tools input,.compact-queue-tools select{height:36px!important;min-height:36px!important;margin:0!important;padding:7px 10px!important;font-size:12px!important;border-radius:10px!important}
+.compact-queue-tools input{min-width:0!important;width:100%!important}
+.compact-queue-tools select{min-width:0!important;width:100%!important}
+
+/* Checkmk Central */
+#noc-fleet-panel .cmk-master-head>div:first-child>.eyebrow{display:none!important}
+#noc-fleet-panel .cmk-master-head h3{margin-top:0!important}
+
+/* Agentes e políticas */
+#compact-agent-modal .agent-modal-tools{padding:0 0 12px!important;margin:0 0 12px!important;border-bottom:1px solid var(--border,#263b56);justify-content:flex-start!important}
+#compact-agent-modal .agent-modal-tools .secondary-button{min-height:34px!important}
+#noc-fleet-panel .cmk-master-actions>#compact-policy-button{display:none!important}
+
+/* Descoberta de rede */
+#compact-discovery-modal .compact-modal-head>div{display:none!important}
+#compact-discovery-modal .compact-modal-head{justify-content:flex-end!important;padding-block:10px!important}
+#compact-discovery-modal .fleet-contingency>.fleet-head.compact{display:flex!important;align-items:flex-start!important;justify-content:flex-start!important;gap:10px!important;margin:0!important;padding:0 0 10px!important}
+#compact-discovery-modal .fleet-contingency>.fleet-head.compact>div:first-child{display:none!important}
+#compact-discovery-modal .fleet-actions{display:flex!important;justify-content:flex-start!important;align-items:center!important;width:100%!important;gap:8px!important}
+#compact-discovery-modal #fleet-start{margin:0!important;align-self:flex-start!important}
+#compact-discovery-modal .fleet-scope-field{display:grid!important;grid-template-columns:minmax(220px,420px)!important;gap:5px!important;width:min(520px,100%)!important;margin:0 0 14px!important;padding:10px 12px!important;border:1px solid var(--border,#263b56)!important;border-radius:12px!important;background:rgba(255,255,255,.018)!important}
+#compact-discovery-modal .fleet-scope-field input{width:100%!important}
+#compact-discovery-modal .fleet-scope-field small{line-height:1.35!important}
+#compact-discovery-modal .fleet-columns{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:12px!important;align-items:start!important}
+#compact-discovery-modal .fleet-columns>div{min-width:0!important;display:flex!important;flex-direction:column!important}
+#compact-discovery-modal .fleet-section-title{min-height:34px!important;align-items:center!important}
+#compact-discovery-modal .fleet-table-wrap{width:100%!important;min-height:220px!important;max-height:50vh!important;overflow:auto!important}
+
+/* Visão geral */
+#view-dashboard .dashboard-grid{display:none!important}
+.database-overview-panel{margin-top:14px!important}
+.database-overview-panel .panel-header{align-items:center!important}
+.database-overview-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(320px,.75fr);gap:12px}
+.database-resource-card{border:1px solid var(--border,#263b56);border-radius:14px;background:rgba(255,255,255,.018);padding:14px;min-width:0}
+.database-resource-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+.database-resource-head h4{margin:0;font-size:15px}.database-resource-state{display:inline-flex;align-items:center;gap:6px;color:var(--muted,#8fa6bf);font-size:11px}.database-resource-state i{width:8px;height:8px;border-radius:50%;background:var(--good,#45d483);box-shadow:0 0 0 4px rgba(69,212,131,.08)}
+.database-resource-card[data-state="unavailable"] .database-resource-state i{background:var(--bad,#ff6577);box-shadow:0 0 0 4px rgba(255,101,119,.08)}
+.database-resource-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.database-resource-metrics>div{padding:10px;border:1px solid var(--border,#263b56);border-radius:10px;min-width:0;background:rgba(255,255,255,.012)}
+.database-resource-metrics span{display:block;color:var(--muted,#8fa6bf);font-size:10px;text-transform:uppercase;letter-spacing:.05em}.database-resource-metrics strong{display:block;margin-top:5px;font-size:14px;overflow-wrap:anywhere}
+.database-table-list{margin-top:12px;border-top:1px solid var(--border,#263b56);padding-top:10px}.database-table-list h5{margin:0 0 8px;font-size:12px}.database-table-list table{width:100%;border-collapse:collapse}.database-table-list th,.database-table-list td{padding:7px 5px;border-bottom:1px solid rgba(38,59,86,.6);font-size:11px;text-align:left}.database-table-list th{color:var(--muted,#8fa6bf);font-size:9px;text-transform:uppercase;letter-spacing:.05em}
+.settings-guardrail-panel .panel-header{display:none!important}.settings-guardrail-panel{border:0!important;background:transparent!important;box-shadow:none!important;padding:0!important;margin:0!important}
+
+/* Inventário */
+#view-inventory .panel-header>div:first-child>.eyebrow{display:none!important}
+#view-inventory .panel-header>div:first-child h3{margin-top:0!important}
+.inventory-playbook-button{white-space:nowrap}
+
+/* Playbooks em modal */
+#compact-playbooks-modal .compact-modal-panel{width:min(1440px,97vw)!important;max-height:94vh!important}
+#compact-playbooks-modal .compact-modal-head{padding-block:10px!important}
+#compact-playbooks-modal .playbook-modal-head-actions{display:flex;align-items:center;gap:7px;margin-left:auto}
+#compact-playbooks-modal .compact-modal-close{margin-left:0!important}
+#compact-playbooks-modal #view-playbooks>.panel>.panel-header{display:none!important}
+#compact-playbooks-modal #view-playbooks{display:block!important;padding:0!important;margin:0!important}
+#compact-playbooks-modal .playbook-manager-toolbar{display:grid;grid-template-columns:minmax(220px,1fr) auto 120px;gap:8px;align-items:center;margin:0 0 12px}
+#compact-playbooks-modal .playbook-manager-toolbar input,#compact-playbooks-modal .playbook-manager-toolbar select{height:36px!important;min-height:36px!important}
+#compact-playbooks-modal .playbook-grid{grid-template-columns:repeat(auto-fill,minmax(270px,1fr))!important;gap:10px!important}
+#compact-playbooks-modal .playbook-card{cursor:pointer;display:flex;flex-direction:column;min-height:220px}
+#compact-playbooks-modal .playbook-card .card-meta{flex:1}
+.playbook-card-actions{display:flex;gap:6px;margin-top:10px;padding-top:9px;border-top:1px solid var(--border,#263b56)}
+.playbook-card-actions button{min-height:30px!important;padding:5px 9px!important;font-size:11px!important}
+#playbook-manager-pager{margin-top:10px}
+#playbook-import-log{margin-top:14px!important}
+
+/* Skills extraídas de playbooks */
+.skill-import-layout{display:grid;gap:14px}.skill-import-controls{display:grid;grid-template-columns:minmax(260px,1fr) auto;gap:9px;align-items:end}.skill-import-controls label{display:grid;gap:5px}.skill-import-controls select{width:100%;min-height:38px}.skill-import-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border:1px solid var(--border,#263b56);border-radius:11px;background:rgba(255,255,255,.018);font-size:12px}.skill-import-summary span{color:var(--muted,#8fa6bf)}.skill-import-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:9px;margin-top:9px}.skill-import-card{cursor:pointer;display:block}.skill-import-card header{display:flex!important;gap:9px!important}.skill-import-card header>input{width:16px;height:16px;flex:0 0 auto;margin-top:3px}.skill-import-card p{margin-top:8px!important}.skill-import-actions{padding-top:10px;border-top:1px solid var(--border,#263b56)}
+
+/* N2 */
+#view-n2 .n2-compact-head:empty{display:none!important}
+#view-n2 .n2-host-card .n2-step-title{display:flex!important;align-items:center!important;gap:10px!important}
+#view-n2 .n2-host-card .n2-step-title>div{flex:1;min-width:0}
+#view-n2 .n2-host-card #n2-history-compact{margin-left:auto!important;flex:0 0 auto!important}
+
+/* Nova investigação: sempre acima da navegação e usando toda a altura útil. */
+.analysis-modal{z-index:12050!important}
+.analysis-modal-panel{top:10px!important;left:50%!important;bottom:auto!important;width:min(1180px,calc(100vw - 20px))!important;max-height:calc(100dvh - 20px)!important;transform:translate(-50%,10px) scale(.99)!important}
+.analysis-modal.open .analysis-modal-panel{transform:translate(-50%,0) scale(1)!important}
+.analysis-modal-header{top:0!important}
+
+@media(max-width:1100px){
+  #view-noc .noc-grid>.panel:first-child .panel-header{align-items:flex-start!important;flex-wrap:wrap!important}
+  #view-noc .noc-grid>.panel:first-child .noc-toolbar{width:100%!important;justify-content:flex-start!important}
+  .compact-queue-tools{grid-template-columns:minmax(180px,1fr) 132px 108px!important;flex:1!important}
+  .database-overview-grid{grid-template-columns:1fr}
+  .database-resource-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:760px){
+  .compact-queue-tools{grid-template-columns:1fr!important;width:100%!important}
+  #compact-discovery-modal .fleet-columns{grid-template-columns:1fr!important}
+  #compact-playbooks-modal .playbook-manager-toolbar{grid-template-columns:1fr!important}
+  .database-resource-metrics{grid-template-columns:1fr 1fr}
+  .skill-import-controls{grid-template-columns:1fr}.skill-import-summary{align-items:flex-start;flex-direction:column}.skill-import-grid{grid-template-columns:1fr}
+  .analysis-modal-panel{top:4px!important;width:calc(100vw - 8px)!important;max-height:calc(100dvh - 8px)!important;border-radius:12px!important}
+}
