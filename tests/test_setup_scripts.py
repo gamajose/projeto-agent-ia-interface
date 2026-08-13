@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import subprocess
 
 
@@ -15,6 +16,7 @@ def test_installation_scripts_have_valid_bash_syntax() -> None:
         PROJECT_ROOT / "scripts" / "stack_control.sh",
         PROJECT_ROOT / "scripts" / "setup_wsl.sh",
         PROJECT_ROOT / "scripts" / "start_web.sh",
+        PROJECT_ROOT / "scripts" / "update_wsl.sh",
     ]
 
     result = subprocess.run(
@@ -26,6 +28,13 @@ def test_installation_scripts_have_valid_bash_syntax() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_systemd_entry_scripts_are_executable_in_git_checkout() -> None:
+    for relative in ("scripts/start_web.sh", "scripts/stack_control.sh"):
+        path = PROJECT_ROOT / relative
+        assert path.is_file()
+        assert os.access(path, os.X_OK), f"{relative} precisa manter +x no Git para o systemd"
 
 
 def test_setup_script_uses_linux_filesystem_and_python311_for_virtualenv() -> None:
@@ -55,6 +64,9 @@ def test_start_script_loads_dotenv_safely_before_server() -> None:
     assert "from dotenv import dotenv_values" in content
     assert 'source "$ENV_FILE"' not in content
     assert 'export "$assignment"' in content
+    assert "INSTALL_VENV_DIR" in content
+    assert "CONFIGURED_VENV_DIR" in content
+    assert "read_env_value AGENT_VENV_DIR" in content
     assert content.index("dotenv_values(path)") < content.index('exec "$AGENT_WEB"')
 
 
