@@ -110,7 +110,7 @@ install_ollama() {
 }
 
 ensure_service() {
-  local ollama_bin service_user service_group
+  local ollama_bin service_user service_group parent_data
   ollama_bin="$(command -v ollama)"
 
   if ! systemctl cat ollama.service >/dev/null 2>&1; then
@@ -139,8 +139,15 @@ EOF
   service_user="$(systemctl show ollama.service -p User --value 2>/dev/null || true)"
   service_user="${service_user:-root}"
   service_group="$(id -gn "$service_user" 2>/dev/null || printf 'root')"
+  parent_data="$INSTALL_ROOT/data"
 
   "${SUDO[@]}" mkdir -p "$MODELS_DIR" "$DROPIN_DIR"
+
+  # O instalador principal protege $INSTALL_ROOT/data com modo 700. O Ollama
+  # roda normalmente com um usuário próprio (ollama), portanto precisa apenas
+  # atravessar os diretórios pais até o diretório de modelos. Concedemos somente
+  # o bit de execução aos demais usuários; não abrimos leitura/listagem de data.
+  "${SUDO[@]}" chmod o+x "$INSTALL_ROOT" "$parent_data"
   "${SUDO[@]}" chown -R "$service_user:$service_group" "$DATA_DIR"
   "${SUDO[@]}" chmod 750 "$DATA_DIR" "$MODELS_DIR"
 
