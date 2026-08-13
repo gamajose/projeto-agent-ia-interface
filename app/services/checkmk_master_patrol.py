@@ -17,6 +17,13 @@ from app.services.checkmk_operational import (
 from app.services.checkmk_site_targeting import resolve_checkmk_site_target
 from app.services.jobs import enqueue_investigation
 from app.services.noc_action_policy import classify_problem_category, record_history_transition
+from app.services.noc_autonomy_control import (
+    complete_selected_run,
+    get_noc_autonomy_control,
+    next_selected_run,
+    problem_authorization,
+    requeue_selected_run,
+)
 from app.services.noc_incidents import attach_job, incident_objective, register_checkmk_event
 from app.services.noc_skills import build_skill_objective
 from app.services.redaction import redact_text
@@ -36,6 +43,8 @@ _PATROL_STATE: dict[str, Any] = {
     "recoveries_seen": 0,
     "new_incidents": 0,
     "jobs_queued": 0,
+    "problems_authorized": 0,
+    "problems_paused": 0,
     "guarded_sites": 0,
     "sites_ok": 0,
     "sites_failed": 0,
@@ -85,7 +94,14 @@ def _register_recovery(item: dict[str, Any], *, settings: Settings) -> None:
         return
 
 
-def _register_problem(item: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
+def _register_problem(
+    item: dict[str, Any],
+    *,
+    settings: Settings,
+    scope_override: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    passive: bool = False,
+) -> dict[str, Any]:
     item = dict(item)
     item["policy_category"] = classify_problem_category(item)
     route = resolve_checkmk_site_target(item)
@@ -104,10 +120,42 @@ def _register_problem(item: dict[str, Any], *, settings: Settings) -> dict[str, 
     if not incident:
         return {"new": False, "queued": False, "event": event, "route": route}
 
-    if not event.get("should_investigate", True) or not settings.noc_auto_investigate:
-        return {"new": False, "queued": False, "event": event, "route": route}
+    effective_scope = scope_override
+    if passive:
+        effective_scope = {"enabled": False, "mode": "automatic", "sites": [], "hosts": [], "problem_keys": []}
+    authorization = problem_authorization(item, scope_override=effective_scope, settings=settings)
+
+    new_or_waiting = bool(event.get("should_investigate", False)) or (
+        str(incident.get("status") or "new") == "new"
+        and not incident.get("job_id")
+        and not incident.get("investigation_id")
+    )
+    if not settings.noc_auto_investigate:
+        authorization = {**authorization, "allowed": False, "reason": "investigação automática desabilitada na configuração"}
+    if not authorization.get("allowed"):
+        return {
+            "new": bool(event.get("action") == "created"),
+            "queued": False,
+            "event": event,
+            "route": route,
+            "authorization": authorization,
+        }
+    if not new_or_waiting:
+        return {
+            "new": False,
+            "queued": False,
+            "event": event,
+            "route": route,
+            "authorization": {**authorization, "reason": "incidente já está em processamento ou já foi investigado"},
+        }
     if not route.get("valid") or not route.get("auto_investigate"):
-        return {"new": bool(event.get("action") == "created"), "queued": False, "event": event, "route": route}
+        return {
+            "new": bool(event.get("action") == "created"),
+            "queued": False,
+            "event": event,
+            "route": route,
+            "authorization": authorization,
+        }
 
     skill = dict(route.get("skill") or {})
     objective = build_skill_objective(
@@ -119,6 +167,7 @@ def _register_problem(item: dict[str, Any], *, settings: Settings) -> dict[str, 
     objective = incident_objective(incident) + "\n\n" + objective
 
     playbook_id = str(skill.get("playbook_id") or "").strip() or None
+    scope = dict(authorization.get("scope") or {})
     queued = enqueue_investigation(
         str(route.get("entry_address") or ""),
         objective,
@@ -132,6 +181,9 @@ def _register_problem(item: dict[str, Any], *, settings: Settings) -> dict[str, 
             "source": "checkmk_master",
             "site_scope": True,
             "noc_incident_id": incident.get("id"),
+            "noc_control_revision": scope.get("revision"),
+            "noc_run_id": run_id,
+            "noc_scope_mode": scope.get("mode"),
             "checkmk_problem_key": item.get("problem_key"),
             "policy_category": item.get("policy_category"),
             "site_id": route.get("site_id"),
@@ -158,7 +210,14 @@ def _register_problem(item: dict[str, Any], *, settings: Settings) -> dict[str, 
     )
     if incident.get("id"):
         attach_job(str(incident["id"]), str(queued["job_id"]), settings=settings)
-    return {"new": True, "queued": True, "event": event, "route": route, "job": queued}
+    return {
+        "new": bool(event.get("action") == "created"),
+        "queued": True,
+        "event": event,
+        "route": route,
+        "job": queued,
+        "authorization": authorization,
+    }
 
 
 def _persist_automation_result(item: dict[str, Any], result: dict[str, Any]) -> None:
@@ -166,9 +225,13 @@ def _persist_automation_result(item: dict[str, Any], result: dict[str, Any]) -> 
     incident = dict(event.get("incident") or {})
     route = dict(result.get("route") or {})
     job = dict(result.get("job") or {})
+    authorization = dict(result.get("authorization") or {})
     if result.get("queued"):
         status = "queued"
-        reason = "Investigação automática iniciada. A correção dependerá da política da categoria."
+        reason = "Agente autorizado: investigação iniciada. A correção ainda depende das políticas da categoria."
+    elif authorization and not authorization.get("allowed"):
+        status = "paused"
+        reason = str(authorization.get("reason") or "Atuação autônoma pausada pelo operador.")
     elif route.get("valid") and not route.get("auto_investigate"):
         status = "manual_required"
         reason = str(route.get("reason") or "Rota protegida; exige validação do analista.")
@@ -177,7 +240,7 @@ def _persist_automation_result(item: dict[str, Any], result: dict[str, Any]) -> 
         reason = str(route.get("reason") or "Não foi possível montar uma rota segura para investigação.")
     else:
         status = str(incident.get("status") or "detected")
-        reason = "Problema detectado pelo Checkmk e registrado no NOC."
+        reason = str(authorization.get("reason") or "Problema detectado pelo Checkmk e registrado no NOC.")
     update_problem_automation(
         str(item.get("problem_key") or ""),
         automation_status="needs_attention" if status in {"manual_required", "access_blocked"} else status,
@@ -195,19 +258,30 @@ def _persist_automation_result(item: dict[str, Any], result: dict[str, Any]) -> 
             "route_valid": route.get("valid"),
             "route_strategy": route.get("strategy"),
             "shared_endpoint": route.get("shared_endpoint"),
+            "autonomy_allowed": authorization.get("allowed"),
+            "autonomy_mode": (authorization.get("scope") or {}).get("mode"),
         },
     )
 
 
-def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync: bool = False) -> dict[str, Any]:
-    """Executa um ciclo operacional completo.
+def checkmk_master_patrol_cycle(
+    *,
+    settings: Settings | None = None,
+    force_sync: bool = False,
+    scope_override: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    passive: bool = False,
+) -> dict[str, Any]:
+    """Atualiza inventário/erros e só inicia agentes quando há autorização runtime.
 
-    Cada ciclo lê os sites do master, coleta hosts e anomalias via Livestatus,
-    persiste o inventário, materializa a aba Clientes e entrega cada problema ao
-    Incident Manager. ``force_sync`` é mantido por compatibilidade; o snapshot
-    já sincroniza tudo.
+    A leitura do CMK05/master continua periódica e leve. SSH/investigações não são
+    disparados no boot: o controle de autonomia nasce desligado e pode ser ligado
+    em modo automático, limitado por escopo, ou usado numa execução pontual.
+    ``passive=True`` força sincronização sem atuação, mesmo se o modo contínuo
+    estiver ligado.
     """
 
+    del force_sync  # compatibilidade com chamadas anteriores
     settings = settings or get_settings()
     cfg = _config(settings)
     if not cfg["enabled"]:
@@ -216,6 +290,11 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
         return {"status": "busy"}
 
     started = _now()
+    effective_control = (
+        {"enabled": False, "mode": "automatic", "sites": [], "hosts": [], "problem_keys": []}
+        if passive
+        else dict(scope_override or get_noc_autonomy_control(settings=settings))
+    )
     _PATROL_STATE.update(
         {
             "running": True,
@@ -226,11 +305,15 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
             "recoveries_seen": 0,
             "new_incidents": 0,
             "jobs_queued": 0,
+            "problems_authorized": 0,
+            "problems_paused": 0,
             "guarded_sites": 0,
             "sites_ok": 0,
             "sites_failed": 0,
             "hosts_seen": 0,
             "customer_sync": {},
+            "automation_enabled": bool(effective_control.get("enabled")),
+            "automation_mode": str(effective_control.get("mode") or "automatic"),
         }
     )
     try:
@@ -238,9 +321,8 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
         if snapshot.get("status") != "completed":
             return snapshot
 
-        customer_sync: dict[str, Any]
         try:
-            customer_sync = sync_checkmk_customers_from_inventory()
+            customer_sync: dict[str, Any] = sync_checkmk_customers_from_inventory()
         except Exception as exc:
             customer_sync = {
                 "sites_total": 0,
@@ -254,14 +336,25 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
         new_incidents = 0
         jobs = 0
         guarded = 0
+        authorized = 0
+        paused = 0
         processing_errors: list[str] = []
 
         for item in problems:
             try:
-                result = _register_problem(item, settings=settings)
+                result = _register_problem(
+                    item,
+                    settings=settings,
+                    scope_override=effective_control,
+                    run_id=run_id,
+                    passive=passive,
+                )
                 _persist_automation_result(item, result)
                 new_incidents += int(bool(result.get("new")))
                 jobs += int(bool(result.get("queued")))
+                authorization = dict(result.get("authorization") or {})
+                authorized += int(bool(authorization.get("allowed")))
+                paused += int(bool(authorization) and not bool(authorization.get("allowed")))
                 route = dict(result.get("route") or {})
                 if route.get("valid") and not route.get("auto_investigate"):
                     guarded += 1
@@ -298,6 +391,8 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
                 "recoveries_seen": len(recoveries),
                 "new_incidents": new_incidents,
                 "jobs_queued": jobs,
+                "problems_authorized": authorized,
+                "problems_paused": paused,
                 "guarded_sites": guarded,
                 "sites_ok": int(snapshot.get("sites_ok") or 0),
                 "sites_failed": int(snapshot.get("sites_failed") or 0),
@@ -317,7 +412,10 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
             "recoveries_seen": len(recoveries),
             "new_incidents": new_incidents,
             "jobs_queued": jobs,
+            "problems_authorized": authorized,
+            "problems_paused": paused,
             "guarded_sites": guarded,
+            "automation": effective_control,
             "site_errors": site_errors,
             "processing_errors": processing_errors,
             "customer_sync": customer_sync,
@@ -332,6 +430,23 @@ def checkmk_master_patrol_cycle(*, settings: Settings | None = None, force_sync:
         _THREAD_LOCK.release()
 
 
+def process_pending_selected_run(*, settings: Settings | None = None) -> dict[str, Any] | None:
+    settings = settings or get_settings()
+    run = next_selected_run(settings=settings)
+    if not run:
+        return None
+    result = checkmk_master_patrol_cycle(
+        settings=settings,
+        scope_override=dict(run.get("scope") or {}),
+        run_id=str(run.get("id") or ""),
+    )
+    if result.get("status") == "busy":
+        requeue_selected_run(run, settings=settings)
+        return {"status": "busy", "run_id": run.get("id")}
+    completed = complete_selected_run(run, result, settings=settings)
+    return {"status": completed.get("status"), "run_id": completed.get("id"), "result": result}
+
+
 def checkmk_master_patrol_status(*, settings: Settings | None = None) -> dict[str, Any]:
     settings = settings or get_settings()
     config = _config(settings)
@@ -339,6 +454,7 @@ def checkmk_master_patrol_status(*, settings: Settings | None = None) -> dict[st
         **dict(_PATROL_STATE),
         "enabled": bool(config["enabled"]),
         "poll_interval_seconds": int(config["poll_interval"]),
+        "autonomy_control": get_noc_autonomy_control(settings=settings),
         "master": checkmk_master_status(settings=settings),
         "operational": checkmk_operational_overview(problem_limit=200, site_limit=500),
     }
