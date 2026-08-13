@@ -103,8 +103,8 @@ def test_configurator_selects_dedicated_ports_and_updates_dsns() -> None:
     assert "INSTALL_EXISTING_POSTGRES_PASSWORD" in content
     assert "INSTALL_EXISTING_REDIS_PASSWORD" in content
     assert "getpass" not in content
-    assert "Senha atual do PostgreSQL" not in content
-    assert "Senha atual do Redis" not in content
+    assert "resolve_existing_password" in content
+    assert "return \"\", False" in content
 
 
 def test_stack_control_reconciles_ports_and_waits_for_redis_without_deleting_volumes() -> None:
