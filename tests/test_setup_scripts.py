@@ -119,7 +119,8 @@ def test_stack_control_reconciles_ports_and_waits_for_redis_without_deleting_vol
     assert 'up -d --no-deps --force-recreate "$service"' in content
     assert "preservando o volume" in content
     assert "sync_postgres_password" in content
-    assert "Credencial do PostgreSQL local sincronizada sem apagar o volume" in content
+    assert "reconciliado pelo socket local em todo start" in content
+    assert "Credencial do PostgreSQL local sincronizada com o .env sem apagar o volume" in content
     assert "Credencial do Redis local validada com o .env" in content
     assert "Reutilizando OmniRoute externo já ativo" in content
     assert "OmniRoute externo preservado" in content
