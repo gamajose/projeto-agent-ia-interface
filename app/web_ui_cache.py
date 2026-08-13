@@ -143,13 +143,15 @@ def _inject_operator_refresh_assets(content: str) -> str:
 
 
 def _inject_noc_extension_assets(content: str) -> str:
-    """Acopla o NOC e o módulo documental N2 à interface principal."""
+    """Acopla o NOC, controle dos agentes e módulo documental N2."""
 
     content = _inject_style(content, "fleet-ui.css", marker="fleet-ui")
     content = _inject_style(content, "noc-automation.css", marker="noc-automation")
+    content = _inject_style(content, "noc-agents-control.css", marker="noc-agents-control")
     content = _inject_style(content, "n2-workspace.css", marker="n2-workspace")
     content = _inject_style(content, "n2-persistence.css", marker="n2-persistence")
     content = _inject_script(content, "fleet-ui.js", marker="fleet-ui", defer=True)
+    content = _inject_script(content, "noc-agents-control.js", marker="noc-agents-control", defer=True)
     content = _inject_script(content, "n2-documentation.js", marker="n2-documentation", defer=True)
     content = _inject_script(content, "navigation-policy.js", marker="navigation-policy", defer=True)
     return content
