@@ -91,12 +91,10 @@ sync_postgres_password() {
   [[ -n "$POSTGRES_PASSWORD" ]] || fail "POSTGRES_PASSWORD está vazio em $ENV_FILE"
   wait_postgres_ready || fail "PostgreSQL local não respondeu ao pg_isready"
 
-  if postgres_password_valid; then
-    info "Credencial do PostgreSQL local validada com o .env"
-    return 0
-  fi
-
-  warn "A senha do volume PostgreSQL existente não corresponde ao .env; sincronizando somente o usuário local agent_ia"
+  # Não usamos a conexão TCP interna como prova definitiva da senha: um volume
+  # antigo pode ter uma regra pg_hba local/trust e aceitar qualquer PGPASSWORD
+  # dentro do próprio container, enquanto a porta publicada exige SCRAM/MD5.
+  # O role do Agent IA é, portanto, reconciliado pelo socket local em todo start.
   escaped_password="${POSTGRES_PASSWORD//\'/\'\'}"
   printf "ALTER ROLE agent_ia WITH PASSWORD '%s';\n" "$escaped_password" \
     | "${DOCKER[@]}" exec -i -u postgres agent-ia-postgres \
@@ -104,8 +102,8 @@ sync_postgres_password() {
     || fail "não foi possível sincronizar a senha do PostgreSQL local; o volume foi preservado"
 
   postgres_password_valid \
-    || fail "a senha do PostgreSQL local continua divergente após a sincronização"
-  info "Credencial do PostgreSQL local sincronizada sem apagar o volume"
+    || fail "a credencial PostgreSQL não pôde ser validada após a sincronização"
+  info "Credencial do PostgreSQL local sincronizada com o .env sem apagar o volume"
 }
 
 redis_password_valid() {
