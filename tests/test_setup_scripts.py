@@ -28,15 +28,23 @@ def test_installation_scripts_have_valid_bash_syntax() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_setup_script_uses_linux_filesystem_and_supported_python_for_virtualenv() -> None:
+def test_setup_script_uses_linux_filesystem_and_python311_for_virtualenv() -> None:
     content = (PROJECT_ROOT / "scripts" / "setup_wsl.sh").read_text(encoding="utf-8")
 
     assert "$HOME/.venvs/$PROJECT_NAME" in content
-    assert "sys.version_info >= (3, 11)" in content
-    assert "python3.12 python3.11 python3" in content
+    assert 'REQUIRED_PYTHON="3.11"' in content
+    assert "sys.version_info[:2] == (3, 11)" in content
+    assert "python3.11 python3" in content
+    assert "python3.12 python3.11 python3" not in content
     assert "python3.11 python3.11-pip" in content
-    assert "ambiente virtual existente usa Python incompatível" in content
+    assert "python3.11 python3.11-venv python3.11-dev" in content
+    assert "UV_UNMANAGED_INSTALL" in content
+    assert "UV_PYTHON_INSTALL_DIR" in content
+    assert 'python install "$REQUIRED_PYTHON"' in content
+    assert "não usa Python $REQUIRED_PYTHON" in content
     assert '"$PYTHON_BIN" -m venv "$VENV_DIR"' in content
+    assert 'export PATH="$VENV_DIR/bin:$PATH"' in content
+    assert "AGENT_PYTHON_BIN" in content
     assert "--break-system-packages" not in content
     assert '"$PIP" install -e "$PROJECT_DIR"' in content
 
@@ -116,7 +124,7 @@ def test_full_installer_creates_required_services_without_reboot() -> None:
     assert "docker compose down" not in content
 
 
-def test_configurator_prompts_and_validates_existing_service_passwords() -> None:
+def test_configurator_recovers_existing_service_passwords_without_exposing_them() -> None:
     content = (PROJECT_ROOT / "scripts" / "configure_install_env.py").read_text(encoding="utf-8")
 
     assert "resolve_existing_password" in content
@@ -125,10 +133,16 @@ def test_configurator_prompts_and_validates_existing_service_passwords() -> None
     assert "Senha atual do Redis" in content
     assert "validate_postgres_password" in content
     assert "validate_redis_password" in content
+    assert "recover_postgres_password" in content
+    assert "recover_redis_password" in content
+    assert "container_environment_value" in content
+    assert "container_command" in content
+    assert '["sudo", "-n", "docker"' in content
     assert "INSTALL_EXISTING_POSTGRES_PASSWORD" in content
     assert "INSTALL_EXISTING_REDIS_PASSWORD" in content
-    assert '"PGPASSWORD"' in content
-    assert '"REDISCLI_AUTH"' in content
+    assert "PGPASSWORD" in content
+    assert "REDISCLI_AUTH" in content
+    assert "stdin_text=f\"{password}\\n\"" in content
     assert 'f"PGPASSWORD={password}"' not in content
     assert 'f"REDISCLI_AUTH={password}"' not in content
     assert "POSTGRES_PASSWORD=" not in content.split("def container_exists", 1)[0]
@@ -143,7 +157,7 @@ def test_stack_control_reuses_containers_and_external_omniroute() -> None:
     assert "OmniRoute externo preservado" in content
     assert "OMNIROUTE_MODE_FILE" in content
     assert "omniroute_http_ready" in content
-    assert "docker compose" not in content  # comando é montado por array para usar o plugin v2
+    assert "docker compose" not in content
     assert '"${COMPOSE[@]}" up -d "$service"' in content
     assert "docker rm" not in content
     assert " compose down" not in content
