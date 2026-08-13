@@ -32,8 +32,8 @@ privileged_systemctl() {
     return
   fi
 
-  # Não teste sudo -n true: um sudoers seguro pode autorizar somente o wrapper
-  # abaixo e corretamente negar sudo genérico. Tentamos a operação exata.
+  # Um preflight de sudo genérico rejeitaria sudoers que autorizam apenas
+  # operações específicas. Por isso tentamos diretamente a operação necessária.
   if command -v sudo >/dev/null 2>&1; then
     if [[ -x "$PRIVILEGED_WRAPPER" ]] && sudo -n "$PRIVILEGED_WRAPPER" "$@"; then
       return
