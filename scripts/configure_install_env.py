@@ -237,11 +237,14 @@ def main() -> None:
 
     current = read_pairs(base_lines)
 
-    postgres_password = (
+    explicit_postgres_password = os.environ.get("INSTALL_EXISTING_POSTGRES_PASSWORD", "").strip()
+    explicit_redis_password = os.environ.get("INSTALL_EXISTING_REDIS_PASSWORD", "").strip()
+
+    postgres_password = explicit_postgres_password or (
         current.get("POSTGRES_PASSWORD", "").strip()
         or password_from_url(current.get("POSTGRES_DSN", ""))
     )
-    redis_password = (
+    redis_password = explicit_redis_password or (
         current.get("REDIS_PASSWORD", "").strip()
         or password_from_url(current.get("REDIS_URL", ""))
     )
@@ -361,6 +364,8 @@ def main() -> None:
             {
                 "postgres_password_created": postgres_created,
                 "redis_password_created": redis_created,
+                "postgres_password_prompted": False,
+                "redis_password_prompted": False,
                 "approval_secret_created": approval_created,
                 "api_token_created": api_created,
                 "omniroute_password_created": initial_created,
