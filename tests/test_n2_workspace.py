@@ -102,7 +102,8 @@ def test_n2_persists_documents_and_can_reopen_them() -> None:
     web = (PROJECT_ROOT / "app" / "web_n2.py").read_text(encoding="utf-8")
     model = (PROJECT_ROOT / "app" / "db" / "n2_models.py").read_text(encoding="utf-8")
     store = (PROJECT_ROOT / "app" / "services" / "n2_document_store.py").read_text(encoding="utf-8")
-    assert "Documentos salvos" in source
+    assert "DOCUMENTOS SALVOS" in source
+    assert 'id="n2-document-list"' in source
     assert "/ui/api/n2/documents" in source
     assert "saveReview" in source
     assert "openDocument" in source
