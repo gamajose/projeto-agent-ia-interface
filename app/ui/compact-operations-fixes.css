@@ -1,0 +1,12 @@
+#compact-agent-modal .noc-agent-title small{display:none!important}
+.cmk-status-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch}
+.cmk-status-pair>#cmk-master-status{display:contents}
+.cmk-status-pair>#cmk-master-status .cmk-master-metrics{grid-column:1/-1}
+.cmk-status-pair>#cmk-master-status .cmk-master-line{min-height:54px!important;margin:0!important}
+.cmk-status-pair>#cmk-action-result:not([hidden]){display:block!important;margin:0!important;min-height:54px!important}
+#compact-filter-modal .cmk-filter,#compact-filter-modal .cmk-history-filters{display:grid!important;grid-template-columns:minmax(260px,1fr) minmax(180px,.35fr) minmax(180px,.35fr);gap:8px;margin:0!important}
+#compact-filter-modal .cmk-filter input{grid-column:1/-1}
+#compact-policy-modal .cmk-policy-panel,#compact-discovery-modal .fleet-contingency{display:block!important;border:0!important;background:transparent!important}
+#compact-policy-modal summary,#compact-discovery-modal summary{display:none!important}
+#inventory-pager{margin-top:10px}
+@media(max-width:900px){.cmk-status-pair{grid-template-columns:1fr}.cmk-status-pair>#cmk-master-status .cmk-master-metrics{grid-column:1}#compact-filter-modal .cmk-filter,#compact-filter-modal .cmk-history-filters{grid-template-columns:1fr}}
