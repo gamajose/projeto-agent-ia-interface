@@ -34,6 +34,7 @@ from app.web_playbooks import router as playbooks_router
 from app.web_projects import router as projects_router
 from app.web_replay import router as replay_router
 from app.web_settings import enable_dynamic_provider_payload, router as settings_router
+from app.web_skill_catalog import router as skill_catalog_router
 from app.web_tools import router as tools_router
 from app.web_topology import router as topology_router
 from app.web_ui_cache import router as ui_cache_router
@@ -41,8 +42,6 @@ from app.web_ui_cache import router as ui_cache_router
 
 enable_dynamic_provider_payload()
 if not getattr(app.state, "agent_ui_cache_registered", False):
-    # A rota versionada precisa ser registrada antes da rota estática legada
-    # de app.web. Assim /ui sempre recebe os assets do checkout atual.
     app.include_router(ui_cache_router)
     app.state.agent_ui_cache_registered = True
 register_ui(app)
@@ -73,6 +72,9 @@ if not getattr(app.state, "agent_ui_incidents_registered", False):
 if not getattr(app.state, "agent_ui_fleet_registered", False):
     app.include_router(fleet_router)
     app.state.agent_ui_fleet_registered = True
+if not getattr(app.state, "agent_ui_skill_catalog_registered", False):
+    app.include_router(skill_catalog_router)
+    app.state.agent_ui_skill_catalog_registered = True
 if not getattr(app.state, "agent_ui_n2_registered", False):
     app.include_router(n2_router)
     app.state.agent_ui_n2_registered = True
