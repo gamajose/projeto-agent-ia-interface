@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
+from app.services.noc_autonomy_control import get_noc_autonomy_control
 from app.services.noc_incidents import (
     acknowledge_incident,
     get_noc_incident,
@@ -61,6 +62,7 @@ def noc_operational_dashboard(request: Request) -> dict:
                 "self_heal_enabled": settings.noc_self_heal_enabled,
                 "watch_interval_seconds": settings.noc_watch_interval_seconds,
                 "max_reinvestigations": settings.noc_max_reinvestigations,
+                "autonomy_control": get_noc_autonomy_control(settings=settings),
             },
         }
     except Exception as exc:
