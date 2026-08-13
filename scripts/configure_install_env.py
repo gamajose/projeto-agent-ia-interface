@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
@@ -114,6 +114,15 @@ def password_from_url(value: str) -> str:
         return ""
 
 
+def port_from_url(value: str) -> int | None:
+    if not value or "://" not in value:
+        return None
+    try:
+        return urlsplit(value).port
+    except ValueError:
+        return None
+
+
 def keep_or_generate(values: dict[str, str], key: str, *, size: int = 32) -> tuple[str, bool]:
     current = values.get(key, "").strip()
     if current and current != "CHANGE_ME":
@@ -121,14 +130,14 @@ def keep_or_generate(values: dict[str, str], key: str, *, size: int = 32) -> tup
     return generated_secret(size), True
 
 
-def validated_port(value: str | None, default: int) -> str:
+def validated_port(value: str | None, default: int, label: str = "serviço") -> str:
     raw = str(value or default).strip()
     try:
         port = int(raw)
     except ValueError as exc:
-        raise ValueError(f"porta OmniRoute inválida: {raw!r}") from exc
+        raise ValueError(f"porta de {label} inválida: {raw!r}") from exc
     if not 1 <= port <= 65535:
-        raise ValueError("porta OmniRoute deve estar entre 1 e 65535")
+        raise ValueError(f"porta de {label} deve estar entre 1 e 65535")
     return str(port)
 
 
@@ -175,13 +184,7 @@ def docker_command(
     environment: dict[str, str] | None = None,
     stdin_text: str | None = None,
 ) -> subprocess.CompletedProcess[str] | None:
-    """Executa Docker sem expor secrets no argv e contorna grupo recém-adicionado.
-
-    O instalador pode incluir o usuário no grupo docker durante a mesma execução.
-    O processo atual ainda não recebe esse grupo suplementar até uma nova sessão.
-    Nessa situação, tentamos ``sudo -n docker`` somente quando o erro indica falta
-    de acesso ao daemon. A senha sudo nunca é lida ou armazenada por este script.
-    """
+    """Executa Docker e tenta sudo -n apenas quando o socket negar acesso."""
 
     process_environment = os.environ.copy()
     process_environment.update(environment or {})
@@ -285,16 +288,10 @@ def validate_redis_password(password: str) -> bool:
 
 
 def prompt_secret(prompt: str, environment_name: str) -> str:
-    try:
-        value = getpass.getpass(prompt).strip()
-    except (EOFError, OSError) as exc:
-        raise RuntimeError(
-            f"não foi possível abrir o terminal para ler a senha; "
-            f"execute em um terminal interativo ou informe {environment_name}"
-        ) from exc
-    if not value:
-        raise RuntimeError("a senha não pode ficar vazia para um serviço já existente")
-    return value
+    """Compatibilidade de API: o instalador não solicita segredo interativamente."""
+    raise RuntimeError(
+        f"não foi possível recuperar a credencial automaticamente; informe {environment_name} no ambiente"
+    )
 
 
 def resolve_existing_password(
@@ -306,6 +303,8 @@ def resolve_existing_password(
     validator: Callable[[str], bool],
     recoverer: Callable[[], str] | None = None,
 ) -> tuple[str, bool]:
+    """Recupera uma credencial existente sem interromper a instalação com prompt."""
+
     explicit = os.environ.get(environment_name, "").strip()
     if explicit:
         if container_running(container) and not validator(explicit):
@@ -323,14 +322,80 @@ def resolve_existing_password(
         if not container_running(container) or validator(recovered):
             return recovered, False
 
-    for attempt in range(1, 4):
-        candidate = prompt_secret(prompt, environment_name)
-        if not container_running(container) or validator(candidate):
-            return candidate, True
-        if attempt < 3:
-            print("Senha não aceita. Tente novamente.", flush=True)
+    # O container pertence ao Agent IA, mas a credencial não pôde ser recuperada.
+    # Não bloqueamos a instalação com prompt. Para PostgreSQL, stack_control pode
+    # sincronizar o role local; para Redis, o container pode ser recriado com a
+    # credencial preservada/gerada e o volume de dados permanece intacto.
+    return "", False
 
-    raise RuntimeError(f"a senha informada não foi aceita por {container} após 3 tentativas")
+
+def container_published_port(container: str, internal_port: int) -> int | None:
+    if not container_running(container):
+        return None
+    result = docker_command("port", container, f"{internal_port}/tcp")
+    if not result or result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        match = re.search(r":(\d+)\s*$", line.strip())
+        if match:
+            port = int(match.group(1))
+            if 1 <= port <= 65535:
+                return port
+    return None
+
+
+def port_available(port: int) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError:
+        return False
+    finally:
+        sock.close()
+    return True
+
+
+def choose_service_port(
+    *,
+    current: dict[str, str],
+    key: str,
+    url_key: str,
+    default: int,
+    container: str,
+    internal_port: int,
+    span: int = 100,
+) -> tuple[int, bool]:
+    published = container_published_port(container, internal_port)
+    if published is not None:
+        return published, published != default
+
+    candidates: list[int] = []
+    raw = current.get(key, "").strip()
+    if raw.isdigit():
+        candidates.append(int(raw))
+    url_port = port_from_url(current.get(url_key, ""))
+    if url_port:
+        candidates.append(url_port)
+    candidates.append(default)
+
+    seen: set[int] = set()
+    for candidate in candidates:
+        if candidate in seen or not 1 <= candidate <= 65535:
+            continue
+        seen.add(candidate)
+        if port_available(candidate):
+            return candidate, candidate != default
+
+    for candidate in range(default + 1, min(default + span, 65535) + 1):
+        if candidate in seen:
+            continue
+        if port_available(candidate):
+            return candidate, True
+
+    raise RuntimeError(
+        f"nenhuma porta livre encontrada entre {default} e {min(default + span, 65535)}"
+    )
 
 
 def main() -> None:
@@ -378,6 +443,23 @@ def main() -> None:
     if redis_created:
         redis_password = generated_secret(28)
 
+    postgres_port, postgres_port_changed = choose_service_port(
+        current=current,
+        key="POSTGRES_PORT",
+        url_key="POSTGRES_DSN",
+        default=5432,
+        container="agent-ia-postgres",
+        internal_port=5432,
+    )
+    redis_port, redis_port_changed = choose_service_port(
+        current=current,
+        key="REDIS_PORT",
+        url_key="REDIS_URL",
+        default=6379,
+        container="agent-ia-redis",
+        internal_port=6379,
+    )
+
     approval_secret, approval_created = keep_or_generate(current, "APPROVAL_SECRET", size=48)
     api_token, api_created = keep_or_generate(current, "AGENT_API_TOKEN", size=36)
 
@@ -391,14 +473,16 @@ def main() -> None:
     install_root = args.install_root.resolve()
     venv_dir = args.venv_dir.resolve()
     registry_path = install_root / "data" / "providers.json"
-    omniroute_port = validated_port(current.get("OMNIROUTE_PORT"), 20128)
+    omniroute_port = validated_port(current.get("OMNIROUTE_PORT"), 20128, "OmniRoute")
 
     updates = {
         "APP_ENV": "production",
         "POSTGRES_PASSWORD": postgres_password,
         "REDIS_PASSWORD": redis_password,
-        "POSTGRES_DSN": f"postgresql+psycopg://agent_ia:{quote(postgres_password, safe='')}@127.0.0.1:5432/agent_ia",
-        "REDIS_URL": f"redis://:{quote(redis_password, safe='')}@127.0.0.1:6379/1",
+        "POSTGRES_PORT": str(postgres_port),
+        "REDIS_PORT": str(redis_port),
+        "POSTGRES_DSN": f"postgresql+psycopg://agent_ia:{quote(postgres_password, safe='')}@127.0.0.1:{postgres_port}/agent_ia",
+        "REDIS_URL": f"redis://:{quote(redis_password, safe='')}@127.0.0.1:{redis_port}/1",
         "APPROVAL_SECRET": approval_secret,
         "AGENT_API_TOKEN": api_token,
         "AGENT_INSTALL_ROOT": str(install_root),
@@ -474,6 +558,10 @@ def main() -> None:
                 "approval_secret_created": approval_created,
                 "api_token_created": api_created,
                 "omniroute_password_created": initial_created,
+                "postgres_port": postgres_port,
+                "redis_port": redis_port,
+                "postgres_port_changed": postgres_port_changed,
+                "redis_port_changed": redis_port_changed,
                 "omniroute_port": int(omniroute_port),
                 "env": str(args.env),
                 "omniroute_env": str(args.omniroute_env),

@@ -88,6 +88,8 @@ def test_configurator_generates_portable_paths_and_local_secrets(tmp_path: Path)
     assert values["AGENT_UI_ALLOWED_NETWORKS"] == "127.0.0.1/32,::1/128,192.168.28.0/24"
     assert values["POSTGRES_PASSWORD"] not in {"", "CHANGE_ME", None}
     assert values["REDIS_PASSWORD"] not in {"", "CHANGE_ME", None}
+    assert values["POSTGRES_PORT"]
+    assert values["REDIS_PORT"]
     assert values["POSTGRES_PASSWORD"] in values["POSTGRES_DSN"]
     assert values["REDIS_PASSWORD"] in values["REDIS_URL"]
     assert omni["INITIAL_PASSWORD"] == "senha-painel-forte"
@@ -151,30 +153,40 @@ def test_configurator_uses_explicit_existing_credentials_without_printing_them(t
     assert redis_existing not in output
 
 
-def test_existing_service_password_is_prompted_and_validated(monkeypatch) -> None:
+def test_choose_service_port_skips_busy_default(monkeypatch) -> None:
     module = load_configurator_module()
-    monkeypatch.delenv("INSTALL_EXISTING_POSTGRES_PASSWORD", raising=False)
-    monkeypatch.setattr(module, "container_exists", lambda container: True)
-    monkeypatch.setattr(module, "container_running", lambda container: True)
-    monkeypatch.setattr(module, "prompt_secret", lambda prompt, environment_name: "senha-correta")
+    monkeypatch.setattr(module, "container_published_port", lambda container, internal_port: None)
+    monkeypatch.setattr(module, "port_available", lambda port: port == 5433)
 
-    value, prompted = module.resolve_existing_password(
+    port, changed = module.choose_service_port(
+        current={"POSTGRES_DSN": "postgresql://agent_ia:x@127.0.0.1:5432/agent_ia"},
+        key="POSTGRES_PORT",
+        url_key="POSTGRES_DSN",
+        default=5432,
         container="agent-ia-postgres",
-        environment_name="INSTALL_EXISTING_POSTGRES_PASSWORD",
-        current_password="senha-incorreta",
-        prompt="Senha atual do PostgreSQL: ",
-        validator=lambda password: password == "senha-correta",
+        internal_port=5432,
     )
 
-    assert value == "senha-correta"
-    assert prompted is True
+    assert port == 5433
+    assert changed is True
 
 
-def test_prompt_secret_uses_hidden_terminal_input(monkeypatch) -> None:
+def test_choose_service_port_keeps_running_agent_container_mapping(monkeypatch) -> None:
     module = load_configurator_module()
-    monkeypatch.setattr(module.getpass, "getpass", lambda prompt: "senha-oculta")
+    monkeypatch.setattr(module, "container_published_port", lambda container, internal_port: 6380)
+    monkeypatch.setattr(module, "port_available", lambda port: False)
 
-    assert module.prompt_secret("Senha: ", "INSTALL_PASSWORD") == "senha-oculta"
+    port, changed = module.choose_service_port(
+        current={"REDIS_PORT": "6379"},
+        key="REDIS_PORT",
+        url_key="REDIS_URL",
+        default=6379,
+        container="agent-ia-redis",
+        internal_port=6379,
+    )
+
+    assert port == 6380
+    assert changed is True
 
 
 def test_configurator_writes_optional_bastion_without_printing_password(tmp_path: Path) -> None:
