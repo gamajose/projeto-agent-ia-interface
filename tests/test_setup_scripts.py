@@ -54,13 +54,12 @@ def test_start_script_loads_dotenv_safely_before_server() -> None:
     assert content.index("dotenv_values(path)") < content.index('exec "$AGENT_WEB"')
 
 
-def test_bootstrap_uses_predictable_path_and_supports_remote_install() -> None:
+def test_bootstrap_uses_python311_target_user_and_safe_git_checkout() -> None:
     content = (PROJECT_ROOT / "install.sh").read_text(encoding="utf-8")
 
     assert "AGENT_INSTALL_ROOT:-/opt/agent-ia" in content
     assert "projeto-agent-ia-interface.git" in content
     assert "git clone" in content
-    assert "merge --ff-only" in content
     assert "scripts/install_all.sh" in content
     assert "não pode conter espaços" in content
     assert "runuser -u" in content
@@ -68,19 +67,72 @@ def test_bootstrap_uses_predictable_path_and_supports_remote_install() -> None:
     assert "python3.12" not in content
     assert "python3.11 /usr/bin/python3.11 /usr/local/bin/python3.11" in content
     assert "python install 3.11" in content
-    assert "Python 3.11.x não encontrado" in content
+    assert "detect_target_user" in content
+    assert "AGENT_INSTALL_USER" in content
+    assert "Usuário operacional selecionado" in content
+    assert "Normalizando ownership da aplicação" in content
+    assert 'safe.directory=$APP_DIR' in content
+    assert 'checkout -B "$REPO_REF" "origin/$REPO_REF"' in content
     assert "restore_mode_only_changes" in content
-    assert "hash-object" in content
-    assert "ls-files -s" in content
-    assert "core.fileMode=false" not in content
     assert "alterações locais reais" in content
     assert "prepare_ui_port" in content
     assert "wait_ui" in content
     assert "setup_ollama.sh" in content
     assert "AGENT_INSTALL_OLLAMA" in content
     assert 'systemctl restart agent-ia-web.service' in content
-    assert 'systemctl is-active --quiet agent-ia-web.service' in content
-    assert "rm -rf" not in content
+    assert "docker volume rm" not in content
+    assert "reboot" not in content.lower()
+
+
+def test_configurator_selects_dedicated_ports_and_updates_dsns() -> None:
+    content = (PROJECT_ROOT / "scripts" / "configure_install_env.py").read_text(encoding="utf-8")
+
+    assert "choose_service_port" in content
+    assert "container_published_port" in content
+    assert "port_available" in content
+    assert 'key="POSTGRES_PORT"' in content
+    assert 'key="REDIS_PORT"' in content
+    assert '"POSTGRES_PORT": str(postgres_port)' in content
+    assert '"REDIS_PORT": str(redis_port)' in content
+    assert "127.0.0.1:{postgres_port}" in content
+    assert "127.0.0.1:{redis_port}" in content
+    assert "postgres_port_changed" in content
+    assert "redis_port_changed" in content
+    assert "getpass" not in content
+    assert "Senha atual do PostgreSQL" not in content
+    assert "Senha atual do Redis" not in content
+
+
+def test_stack_control_reconciles_ports_without_deleting_volumes() -> None:
+    content = (PROJECT_ROOT / "scripts" / "stack_control.sh").read_text(encoding="utf-8")
+
+    assert "POSTGRES_PORT" in content
+    assert "REDIS_PORT" in content
+    assert "container_published_port" in content
+    assert "validate_service_port" in content
+    assert 'up -d --no-deps "$service"' in content
+    assert 'up -d --no-deps --force-recreate "$service"' in content
+    assert "preservando o volume" in content
+    assert "sync_postgres_password" in content
+    assert "Credencial do PostgreSQL local sincronizada sem apagar o volume" in content
+    assert "redis_password_valid" in content
+    assert "Reutilizando OmniRoute externo já ativo" in content
+    assert "OmniRoute externo preservado" in content
+    assert "docker volume rm" not in content
+    assert " compose down" not in content
+
+
+def test_compose_uses_configurable_local_ports() -> None:
+    content = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "container_name: agent-ia-postgres" in content
+    assert "container_name: agent-ia-redis" in content
+    assert "container_name: omniroute" in content
+    assert '${POSTGRES_PORT:-5432}:5432' in content
+    assert '${REDIS_PORT:-6379}:6379' in content
+    assert "127.0.0.1" in content
+    assert "omniroute_data:/app/data" in content
+    assert "stop_grace_period: 40s" in content
 
 
 def test_ollama_setup_is_local_idempotent_and_selects_small_model_for_low_ram() -> None:
@@ -116,54 +168,6 @@ def test_full_installer_creates_required_services_without_reboot() -> None:
     assert 'python" -m app.db.init_db' in content
     assert "systemctl enable --now" in content
     assert "wait_omniroute 180" in content
-    assert "wait_container omniroute" not in content
     assert "reboot" not in content.lower()
     assert "shutdown" not in content.lower()
     assert "docker compose down" not in content
-
-
-def test_configurator_prompts_and_validates_existing_service_passwords() -> None:
-    content = (PROJECT_ROOT / "scripts" / "configure_install_env.py").read_text(encoding="utf-8")
-
-    assert "resolve_existing_password" in content
-    assert "getpass.getpass" in content
-    assert "Senha atual do PostgreSQL" in content
-    assert "Senha atual do Redis" in content
-    assert "validate_postgres_password" in content
-    assert "validate_redis_password" in content
-    assert "INSTALL_EXISTING_POSTGRES_PASSWORD" in content
-    assert "INSTALL_EXISTING_REDIS_PASSWORD" in content
-    assert '"PGPASSWORD"' in content
-    assert '"REDISCLI_AUTH"' in content
-    assert 'f"PGPASSWORD={password}"' not in content
-    assert 'f"REDISCLI_AUTH={password}"' not in content
-    assert "POSTGRES_PASSWORD=" not in content.split("def container_exists", 1)[0]
-
-
-def test_stack_control_reuses_containers_and_external_omniroute() -> None:
-    content = (PROJECT_ROOT / "scripts" / "stack_control.sh").read_text(encoding="utf-8")
-
-    assert "container_exists" in content
-    assert "Reutilizando container ativo" in content
-    assert "Reutilizando OmniRoute externo já ativo" in content
-    assert "OmniRoute externo preservado" in content
-    assert "OMNIROUTE_MODE_FILE" in content
-    assert "omniroute_http_ready" in content
-    assert "sync_postgres_password" in content
-    assert "Credencial do PostgreSQL local sincronizada sem apagar o volume" in content
-    assert "docker compose" not in content
-    assert '"${COMPOSE[@]}" up -d "$service"' in content
-    assert "docker rm" not in content
-    assert " compose down" not in content
-
-
-def test_compose_includes_persistent_omniroute() -> None:
-    content = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-
-    assert "container_name: agent-ia-postgres" in content
-    assert "container_name: agent-ia-redis" in content
-    assert "container_name: omniroute" in content
-    assert "diegosouzapw/omniroute:latest" in content
-    assert "omniroute_data:/app/data" in content
-    assert "127.0.0.1" in content
-    assert "stop_grace_period: 40s" in content
