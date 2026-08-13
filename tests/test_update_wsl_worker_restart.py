@@ -20,13 +20,18 @@ def test_update_wsl_has_valid_bash_syntax() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_update_wsl_restarts_operational_worker_after_setup() -> None:
+def test_update_wsl_restarts_web_and_worker_after_setup() -> None:
     content = UPDATE_SCRIPT.read_text(encoding="utf-8")
 
     setup_call = 'bash "$PROJECT_DIR/scripts/setup_ai_stack.sh" "${SETUP_ARGS[@]}"'
-    restart_call = "restart_operational_worker"
+    restart_call = "restart_operational_services"
 
     assert "agent-ia-worker.service" in content
     assert "run_systemctl restart agent-ia-worker.service" in content
     assert "run_systemctl is-active --quiet agent-ia-worker.service" in content
+    assert "agent-ia-web.service" in content
+    assert "run_systemctl restart agent-ia-web.service" in content
+    assert "run_systemctl is-active --quiet agent-ia-web.service" in content
+    assert 'http://127.0.0.1:$port/ui' in content
+    assert "validate_web" in content
     assert content.index(setup_call) < content.rindex(restart_call)

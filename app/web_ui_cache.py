@@ -81,6 +81,14 @@ def _inject_script(content: str, filename: str, *, marker: str | None = None, de
     return content.replace("</body>", f"  {tag}\n</body>")
 
 
+def _inject_top_navigation_shell(content: str) -> str:
+    """Mantém o layout superior mesmo antes dos JavaScripts de navegação rodarem."""
+
+    if '<body class="top-navigation-layout">' in content:
+        return content
+    return content.replace("<body>", '<body class="top-navigation-layout">', 1)
+
+
 def _inject_n2_shell(content: str) -> str:
     """Coloca N2 no HTML servido, sem depender da criação do botão por JavaScript."""
 
@@ -162,6 +170,7 @@ def _inject_noc_extension_assets(content: str) -> str:
 def versioned_interface(request: Request) -> HTMLResponse:
     _require_access(request)
     content = (_UI_DIR / "index.html").read_text(encoding="utf-8")
+    content = _inject_top_navigation_shell(content)
     content = re.sub(r"([?&]v=)[0-9]+(?:\.[0-9]+){1,3}", rf"\g<1>{_ASSET_VERSION}", content)
     content = _inject_n2_shell(content)
     content = _inject_topology_assets(content)

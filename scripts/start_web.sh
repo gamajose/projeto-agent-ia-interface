@@ -4,7 +4,35 @@ set -Eeuo pipefail
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_NAME="$(basename "$PROJECT_DIR")"
 ENV_FILE="${AGENT_ENV_FILE:-$PROJECT_DIR/.env}"
-BOOTSTRAP_VENV_DIR="${AGENT_VENV_DIR:-$HOME/.venvs/$PROJECT_NAME}"
+INSTALL_VENV_DIR="$(dirname "$PROJECT_DIR")/venv"
+DEFAULT_VENV_DIR="$HOME/.venvs/$PROJECT_NAME"
+
+read_env_value() {
+    local key="$1" value=""
+    [[ -f "$ENV_FILE" ]] || return 0
+    value="$(awk -F= -v wanted="$key" '
+        $1 == wanted {
+            sub(/^[^=]*=/, "")
+            gsub(/\r/, "")
+            print
+            exit
+        }
+    ' "$ENV_FILE")"
+    value="${value#\"}"
+    value="${value%\"}"
+    value="${value#\'}"
+    value="${value%\'}"
+    printf '%s' "$value"
+}
+
+# A instalação padronizada usa /opt/agent-ia/venv. Clones de desenvolvimento
+# no WSL usam por padrão $HOME/.venvs/<nome-do-projeto>. O .env pode sobrescrever
+# ambos sem precisar que o systemd injete AGENT_VENV_DIR antes deste script.
+if [[ -x "$INSTALL_VENV_DIR/bin/python" ]]; then
+    DEFAULT_VENV_DIR="$INSTALL_VENV_DIR"
+fi
+CONFIGURED_VENV_DIR="$(read_env_value AGENT_VENV_DIR)"
+BOOTSTRAP_VENV_DIR="${AGENT_VENV_DIR:-${CONFIGURED_VENV_DIR:-$DEFAULT_VENV_DIR}}"
 BOOTSTRAP_PYTHON="$BOOTSTRAP_VENV_DIR/bin/python"
 
 if [[ -f "$ENV_FILE" ]]; then
@@ -44,7 +72,7 @@ if [[ -n "${OPENCODE_CLI_PATH:-}" ]]; then
     export PATH="$OPENCODE_BIN_DIR:$PATH"
 fi
 
-VENV_DIR="${AGENT_VENV_DIR:-$HOME/.venvs/$PROJECT_NAME}"
+VENV_DIR="${AGENT_VENV_DIR:-$BOOTSTRAP_VENV_DIR}"
 AGENT_WEB="$VENV_DIR/bin/agent-web"
 
 if [[ ! -x "$AGENT_WEB" ]]; then
@@ -54,5 +82,6 @@ if [[ ! -x "$AGENT_WEB" ]]; then
 fi
 
 cd "$PROJECT_DIR"
-printf '[INFO] Iniciando interface em %s:%s\n' "${AGENT_UI_HOST:-127.0.0.1}" "${AGENT_UI_PORT:-8080}"
+printf '[INFO] Iniciando interface em %s:%s usando %s\n' \
+    "${AGENT_UI_HOST:-127.0.0.1}" "${AGENT_UI_PORT:-8080}" "$AGENT_WEB"
 exec "$AGENT_WEB" "$@"

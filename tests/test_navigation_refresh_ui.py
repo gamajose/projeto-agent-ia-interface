@@ -46,6 +46,17 @@ def test_navigation_refresh_observer_does_not_react_to_its_own_svg_mutations() -
     assert "new MutationObserver(() =>" not in source
 
 
+def test_navigation_policy_observer_does_not_loop_on_its_own_icon_mutation() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "navigation-policy.js").read_text(encoding="utf-8")
+    assert "holder.dataset.navigationPolicyIcon !== 'n2'" in source
+    assert "function nodeContainsNavItem" in source
+    assert "mutation.addedNodes" in source
+    assert "mutation.removedNodes" in source
+    assert "node.matches('.nav-item')" in source
+    assert "if (navigationChanged) applyNavigationPolicy()" in source
+    assert "new MutationObserver(applyNavigationPolicy)" not in source
+
+
 def test_checkmk_central_panel_keeps_long_status_visible() -> None:
     css = PROJECT_ROOT / "app" / "ui" / "fleet-ui.css"
     assert css.is_file()
@@ -86,6 +97,8 @@ def test_versioned_ui_injects_all_runtime_assets_without_response_middleware() -
 
     assert "n2-workspace.js" not in source
     assert "def _inject_n2_shell" in source
+    assert "def _inject_top_navigation_shell" in source
+    assert '<body class=\"top-navigation-layout\">' in source
 
     web_main = (PROJECT_ROOT / "app" / "web_main.py").read_text(encoding="utf-8")
     assert '@app.middleware("http")' not in web_main
