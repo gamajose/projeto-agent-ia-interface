@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -20,7 +22,14 @@ from app.services.noc_action_policy import (
     list_noc_automation_policies,
     update_noc_automation_policy,
 )
-from app.web import _require_access, _require_mutation
+from app.services.noc_autonomy_control import (
+    get_noc_autonomy_control,
+    get_selected_run,
+    request_selected_run,
+    update_noc_autonomy_control,
+)
+from app.services.noc_skills import load_noc_skills
+from app.web import _operator_name, _require_access, _require_mutation
 
 
 router = APIRouter(tags=["interface-fleet"])
@@ -32,6 +41,20 @@ class FleetStartPayload(BaseModel):
 
 class NocPolicyPayload(BaseModel):
     enabled: bool
+
+
+class NocAutonomyPayload(BaseModel):
+    enabled: bool
+    mode: Literal["automatic", "selected"] = "automatic"
+    sites: list[str] = Field(default_factory=list, max_length=1000)
+    hosts: list[str] = Field(default_factory=list, max_length=2000)
+    problem_keys: list[str] = Field(default_factory=list, max_length=5000)
+
+
+class NocSelectedRunPayload(BaseModel):
+    sites: list[str] = Field(default_factory=list, max_length=1000)
+    hosts: list[str] = Field(default_factory=list, max_length=2000)
+    problem_keys: list[str] = Field(default_factory=list, max_length=5000)
 
 
 @router.get("/ui/api/noc/fleet")
@@ -81,6 +104,75 @@ def noc_checkmk_master_site_detail(request: Request, site_id: str) -> dict:
         ) from exc
 
 
+@router.get("/ui/api/noc/autonomy")
+def noc_autonomy_status(request: Request) -> dict:
+    """Estado runtime da chave que autoriza os agentes a acessar ambientes."""
+    _require_access(request)
+    try:
+        return get_noc_autonomy_control()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"controle de autonomia indisponível: {type(exc).__name__}: {exc}") from exc
+
+
+@router.post("/ui/api/noc/autonomy")
+def noc_autonomy_update(payload: NocAutonomyPayload, request: Request) -> dict:
+    """Liga/desliga a atuação contínua e persiste exatamente o escopo escolhido."""
+    _require_mutation(request)
+    try:
+        return update_noc_autonomy_control(
+            enabled=payload.enabled,
+            mode=payload.mode,
+            sites=payload.sites,
+            hosts=payload.hosts,
+            problem_keys=payload.problem_keys,
+            operator=_operator_name(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"não foi possível atualizar a autonomia: {type(exc).__name__}: {exc}") from exc
+
+
+@router.post("/ui/api/noc/autonomy/run-selected")
+def noc_autonomy_run_selected(payload: NocSelectedRunPayload, request: Request) -> dict:
+    """Enfileira uma atuação pontual somente no cliente/host/sensor selecionado."""
+    _require_mutation(request)
+    try:
+        return request_selected_run(
+            sites=payload.sites,
+            hosts=payload.hosts,
+            problem_keys=payload.problem_keys,
+            operator=_operator_name(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"não foi possível enfileirar o escopo selecionado: {type(exc).__name__}: {exc}") from exc
+
+
+@router.get("/ui/api/noc/autonomy/runs/{run_id}")
+def noc_autonomy_run_status(run_id: str, request: Request) -> dict:
+    _require_access(request)
+    try:
+        result = get_selected_run(run_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"execução selecionada indisponível: {type(exc).__name__}: {exc}") from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="execução selecionada não encontrada ou expirada")
+    return result
+
+
+@router.get("/ui/api/noc/skills")
+def noc_skills(request: Request) -> dict:
+    """Catálogo visual dos especialistas/skills disponíveis para o roteamento NOC."""
+    _require_access(request)
+    try:
+        items = [skill.as_dict() for skill in load_noc_skills()]
+        return {"total": len(items), "items": items}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"skills do NOC indisponíveis: {type(exc).__name__}: {exc}") from exc
+
+
 @router.get("/ui/api/noc/history")
 def noc_history(
     request: Request,
@@ -127,10 +219,10 @@ def noc_policy_update(category: str, payload: NocPolicyPayload, request: Request
 
 @router.post("/ui/api/noc/checkmk-master/sync")
 def noc_checkmk_master_sync(request: Request) -> dict:
-    """Executa ciclo completo: sites, hosts, problemas, incidentes e jobs."""
+    """Sincroniza sites, hosts e problemas em modo observação, sem iniciar SSH."""
     _require_mutation(request)
     try:
-        return checkmk_master_patrol_cycle(force_sync=True)
+        return checkmk_master_patrol_cycle(force_sync=True, passive=True)
     except Exception as exc:
         raise HTTPException(
             status_code=503,
@@ -140,10 +232,10 @@ def noc_checkmk_master_sync(request: Request) -> dict:
 
 @router.post("/ui/api/noc/checkmk-master/poll")
 def noc_checkmk_master_poll(request: Request) -> dict:
-    """Executa imediatamente um ciclo operacional completo no CMK05/master."""
+    """Atualiza imediatamente os problemas em modo observação, sem iniciar agentes."""
     _require_mutation(request)
     try:
-        return checkmk_master_patrol_cycle(force_sync=False)
+        return checkmk_master_patrol_cycle(force_sync=False, passive=True)
     except Exception as exc:
         raise HTTPException(
             status_code=503,
