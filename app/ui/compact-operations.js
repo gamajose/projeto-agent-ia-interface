@@ -1,18 +1,23 @@
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
-  const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
-  function modal(id, title) {
+  function modal(id, title, subtitle = '') {
     let node = document.getElementById(id);
     if (node) return node;
     node = document.createElement('aside');
     node.id = id;
     node.className = 'compact-modal';
-    node.innerHTML = `<div class="compact-modal-backdrop" data-close></div><section class="compact-modal-panel compact-modal-wide"><header class="compact-modal-head"><h3>${title}</h3><button class="compact-modal-close" type="button" data-close>×</button></header><div class="compact-modal-body"></div></section>`;
+    node.setAttribute('aria-hidden', 'true');
+    node.innerHTML = `<div class="compact-modal-backdrop" data-close></div><section class="compact-modal-panel compact-modal-wide"><header class="compact-modal-head"><div><h3>${title}</h3>${subtitle ? `<p>${subtitle}</p>` : ''}</div><button class="compact-modal-close" type="button" data-close>×</button></header><div class="compact-modal-body"></div></section>`;
     document.body.appendChild(node);
-    node.addEventListener('click', (event) => { if (event.target.closest('[data-close]')) node.classList.remove('open'); });
+    node.addEventListener('click', (event) => { if (event.target.closest('[data-close]')) close(node); });
     return node;
   }
+
+  function open(node) { if (!node) return; node.classList.add('open'); node.setAttribute('aria-hidden', 'false'); }
+  function close(node) { if (!node) return; node.classList.remove('open'); node.setAttribute('aria-hidden', 'true'); }
+
+  window.AgentCompactUI = { modal, open, close };
 
   function compactN2() {
     const view = $('#view-n2');
@@ -25,11 +30,11 @@
     view.prepend(bar);
     const saved = $('.n2-saved-card', view);
     if (saved) {
-      const history = modal('compact-n2-history', 'Histórico N2');
+      const history = modal('compact-n2-history', 'Histórico N2', 'Documentações salvas para reabrir ou exportar.');
       $('.compact-modal-body', history).appendChild(saved);
       $('#n2-new-document', saved)?.remove();
       $('.n2-saved-head > div:first-child', saved)?.remove();
-      $('#n2-history-compact')?.addEventListener('click', () => history.classList.add('open'));
+      $('#n2-history-compact')?.addEventListener('click', () => open(history));
     }
     const hostCard = $('.n2-host-card', view);
     const runCard = $('.n2-run-card', view);
@@ -45,6 +50,7 @@
   }
 
   function compactAll() { compactN2(); }
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') document.querySelectorAll('.compact-modal.open').forEach(close); });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', compactAll); else compactAll();
   setInterval(() => { if (!document.hidden) compactAll(); }, 1200);
 })();
