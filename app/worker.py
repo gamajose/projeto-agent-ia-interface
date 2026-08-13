@@ -11,6 +11,7 @@ from app.db.base import ensure_database_schema
 from app.services.checkmk_job_instrumentation import install_checkmk_site_job_routing
 from app.services.checkmk_master_patrol import (
     checkmk_master_patrol_status,
+    process_pending_selected_run,
     start_checkmk_master_patrol_background,
 )
 from app.services.codex_provider_instrumentation import install_codex_provider_preflight
@@ -18,13 +19,15 @@ from app.services.ensemble_instrumentation import install_ensemble_reasoning
 from app.services.fleet_control import fleet_control_status
 from app.services.fleet_scope_control import resume_active_fleet_discovery
 from app.services.fleet_patrol import fleet_patrol_status
-from app.services.noc_history_hooks import handle_worker_result_with_history
-from app.services.noc_policy_instrumentation import install_noc_policy_guard
-from app.services.operational_tool_instrumentation import install_operational_tools
-from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
 from app.services.jobs import get_job, run_worker_once
+from app.services.noc_autonomy_control import get_noc_autonomy_control
+from app.services.noc_history_hooks import handle_worker_result_with_history
+from app.services.noc_job_guard import install_noc_job_guard
+from app.services.noc_policy_instrumentation import install_noc_policy_guard
 from app.services.noc_supervisor import supervisor_tick
 from app.services.noc_worker_hooks import reconcile_noc_jobs
+from app.services.operational_tool_instrumentation import install_operational_tools
+from app.services.project_playbook_instrumentation import install_project_playbook_instrumentation
 from app.services.secrets import secret_backend_status
 from app.services.ssh_resilience import install_ssh_resilience
 
@@ -36,6 +39,7 @@ install_project_playbook_instrumentation()
 install_codex_provider_preflight()
 install_checkmk_site_job_routing()
 install_noc_policy_guard()
+install_noc_job_guard()
 app = typer.Typer(no_args_is_help=True)
 console = Console()
 
@@ -45,7 +49,7 @@ def run(
     once: bool = typer.Option(False, "--once", help="Processa no máximo um job e encerra."),
     block_seconds: int | None = typer.Option(None, "--bloqueio", help="Tempo de espera por job."),
 ) -> None:
-    """Executa jobs e mantém o ciclo autônomo de incidentes NOC."""
+    """Executa jobs e mantém o Checkmk em observação; atuação NOC exige autorização runtime."""
     settings = get_settings()
     ensure_database_schema()
 
@@ -54,8 +58,15 @@ def run(
     fleet_resumed = False if once else resume_active_fleet_discovery(settings=settings)
 
     # Fonte primária do NOC: CMK05/master -> sites remotos -> estados Checkmk.
-    # O loop usa 120 segundos por padrão e funciona sem a interface aberta.
+    # Essa ronda permanece ativa para inventário e alertas. Ela não abre SSH
+    # enquanto o operador não ligar explicitamente a atuação dos agentes.
     master_started = False if once else start_checkmk_master_patrol_background(settings=settings)
+    autonomy = get_noc_autonomy_control(settings=settings)
+    autonomy_label = (
+        f"ATUANDO · {autonomy.get('mode', 'automatic')}"
+        if autonomy.get("enabled")
+        else "OBSERVAÇÃO · atuação desligada"
+    )
 
     console.print(Panel(
         f"Worker: {settings.agent_worker_name}\n"
@@ -63,8 +74,8 @@ def run(
         f"Redis: configurado\n"
         f"Segredos: {secret_backend_status(settings).get('backend')}\n"
         f"StrictHostKeyChecking: {settings.ssh_strict_host_key_checking}\n"
-        f"NOC autônomo: {'ativo' if settings.noc_incident_enabled else 'desativado'} · L{settings.noc_autonomy_level}\n"
-        f"Checkmk Master: {'ativo' if master_started else 'desativado'} · ronda automática a cada 2 min por padrão\n"
+        f"Agentes NOC: {autonomy_label}\n"
+        f"Checkmk Master: {'observando' if master_started else 'desativado'} · inventário/erros a cada 2 min por padrão\n"
         f"Fleet Discovery: {'retomada em segundo plano' if fleet_resumed else 'contingência/manual'}\n"
         f"Fleet Patrol legado: desativado (somente acionamento manual)",
         title="Agent IA Worker",
@@ -76,9 +87,11 @@ def run(
         result = run_worker_once(settings=settings, block_seconds=block_seconds)
         handle_worker_result_with_history(result, settings=settings)
         reconcile_noc_jobs(settings=settings)
+        selected_run = process_pending_selected_run(settings=settings)
         supervisor_tick(settings=settings)
         console.print(json.dumps({
             "job": result or {"status": "empty"},
+            "selected_run": selected_run,
             "checkmk_master": checkmk_master_patrol_status(settings=settings),
             "fleet": fleet_control_status(settings=settings),
             "fallback_patrol": fleet_patrol_status(),
@@ -90,6 +103,7 @@ def run(
             result = run_worker_once(settings=settings, block_seconds=block_seconds)
             handle_worker_result_with_history(result, settings=settings)
             reconcile_noc_jobs(settings=settings)
+            process_pending_selected_run(settings=settings)
             supervisor_tick(settings=settings)
         except KeyboardInterrupt:
             return
