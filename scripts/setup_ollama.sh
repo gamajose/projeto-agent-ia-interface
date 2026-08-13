@@ -92,6 +92,32 @@ ensure_disk_space() {
   fi
 }
 
+ensure_zstd() {
+  if command -v zstd >/dev/null 2>&1; then
+    info "zstd já instalado"
+    return
+  fi
+
+  info "Instalando dependência zstd necessária para o Ollama"
+  if command -v apt-get >/dev/null 2>&1; then
+    "${SUDO[@]}" apt-get update
+    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y zstd
+  elif command -v dnf >/dev/null 2>&1; then
+    "${SUDO[@]}" dnf install -y zstd
+  elif command -v yum >/dev/null 2>&1; then
+    "${SUDO[@]}" yum install -y zstd
+  elif command -v zypper >/dev/null 2>&1; then
+    "${SUDO[@]}" zypper --non-interactive install zstd
+  elif command -v pacman >/dev/null 2>&1; then
+    "${SUDO[@]}" pacman -Sy --noconfirm zstd
+  else
+    fail "zstd é obrigatório para instalar o Ollama e nenhum gerenciador de pacotes suportado foi encontrado"
+  fi
+
+  command -v zstd >/dev/null 2>&1 || fail "zstd não ficou disponível após a instalação"
+  ok "zstd instalado"
+}
+
 install_ollama() {
   local installer
   if command -v ollama >/dev/null 2>&1; then
@@ -248,6 +274,7 @@ PY
 
 SELECTED_MODEL="$(select_model)"
 ensure_disk_space "$SELECTED_MODEL"
+ensure_zstd
 install_ollama
 ensure_service
 wait_ollama
