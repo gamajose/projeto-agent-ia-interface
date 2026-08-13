@@ -20,10 +20,10 @@ from app.services.fleet_control import fleet_control_status
 from app.services.fleet_scope_control import resume_active_fleet_discovery
 from app.services.fleet_patrol import fleet_patrol_status
 from app.services.jobs import get_job, run_worker_once
-from app.services.noc_autonomy_control import get_noc_autonomy_control
 from app.services.noc_history_hooks import handle_worker_result_with_history
 from app.services.noc_job_guard import install_noc_job_guard
 from app.services.noc_policy_instrumentation import install_noc_policy_guard
+from app.services.noc_startup_safety import pause_noc_autonomy_on_startup
 from app.services.noc_supervisor import supervisor_tick
 from app.services.noc_worker_hooks import reconcile_noc_jobs
 from app.services.operational_tool_instrumentation import install_operational_tools
@@ -53,20 +53,19 @@ def run(
     settings = get_settings()
     ensure_database_schema()
 
+    # Todo início do processo exige nova autorização humana para a atuação.
+    # O escopo anterior continua salvo para facilitar o próximo acionamento.
+    autonomy = pause_noc_autonomy_on_startup(settings=settings)
+
     # A varredura por faixa virou contingência/manual. Se já existia uma
     # descoberta ativa, ela continua exatamente do cursor persistido.
     fleet_resumed = False if once else resume_active_fleet_discovery(settings=settings)
 
     # Fonte primária do NOC: CMK05/master -> sites remotos -> estados Checkmk.
-    # Essa ronda permanece ativa para inventário e alertas. Ela não abre SSH
-    # enquanto o operador não ligar explicitamente a atuação dos agentes.
+    # Essa ronda permanece ativa para inventário e alertas. Ela não inicia
+    # atuação até o operador ligar explicitamente os agentes na interface.
     master_started = False if once else start_checkmk_master_patrol_background(settings=settings)
-    autonomy = get_noc_autonomy_control(settings=settings)
-    autonomy_label = (
-        f"ATUANDO · {autonomy.get('mode', 'automatic')}"
-        if autonomy.get("enabled")
-        else "OBSERVAÇÃO · atuação desligada"
-    )
+    autonomy_label = "OBSERVAÇÃO · atuação desligada"
 
     console.print(Panel(
         f"Worker: {settings.agent_worker_name}\n"
@@ -75,6 +74,7 @@ def run(
         f"Segredos: {secret_backend_status(settings).get('backend')}\n"
         f"StrictHostKeyChecking: {settings.ssh_strict_host_key_checking}\n"
         f"Agentes NOC: {autonomy_label}\n"
+        f"Escopo preservado: {autonomy.get('mode', 'automatic')} · {len(autonomy.get('sites') or [])} cliente(s)\n"
         f"Checkmk Master: {'observando' if master_started else 'desativado'} · inventário/erros a cada 2 min por padrão\n"
         f"Fleet Discovery: {'retomada em segundo plano' if fleet_resumed else 'contingência/manual'}\n"
         f"Fleet Patrol legado: desativado (somente acionamento manual)",
