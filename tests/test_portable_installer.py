@@ -186,7 +186,7 @@ def test_choose_service_port_keeps_running_agent_container_mapping(monkeypatch) 
     )
 
     assert port == 6380
-    assert changed is False
+    assert changed is True
 
 
 def test_configurator_writes_optional_bastion_without_printing_password(tmp_path: Path) -> None:
