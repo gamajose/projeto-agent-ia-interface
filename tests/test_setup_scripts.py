@@ -64,8 +64,11 @@ def test_bootstrap_uses_predictable_path_and_supports_remote_install() -> None:
     assert "scripts/install_all.sh" in content
     assert "não pode conter espaços" in content
     assert "runuser -u" in content
-    assert "sys.version_info >= (3, 11)" in content
-    assert "dnf install -y python3.11 python3.11-pip" in content
+    assert "sys.version_info[:2] == (3, 11)" in content
+    assert "python3.12" not in content
+    assert "python3.11 /usr/bin/python3.11 /usr/local/bin/python3.11" in content
+    assert "python install 3.11" in content
+    assert "Python 3.11.x não encontrado" in content
     assert "restore_mode_only_changes" in content
     assert "hash-object" in content
     assert "ls-files -s" in content
