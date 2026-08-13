@@ -5,10 +5,12 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Callable
 from urllib.parse import quote, unquote as url_unquote, urlsplit
 
 
@@ -139,22 +141,192 @@ def validated_port(value: str | None, default: int, label: str = "serviço") -> 
     return str(port)
 
 
-def docker_command(*arguments: str, timeout: int = 12) -> subprocess.CompletedProcess[str] | None:
+def _docker_access_denied(result: subprocess.CompletedProcess[str] | None) -> bool:
+    if result is None:
+        return True
+    if result.returncode == 0:
+        return False
+    text = f"{result.stdout}\n{result.stderr}".casefold()
+    markers = (
+        "permission denied",
+        "got permission denied",
+        "cannot connect to the docker daemon",
+        "docker daemon socket",
+        "permission while trying to connect",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _run_command(
+    command: list[str],
+    *,
+    timeout: int,
+    environment: dict[str, str],
+    stdin_text: str | None,
+) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(
-            ["docker", *arguments],
+            command,
+            input=stdin_text,
             capture_output=True,
             text=True,
             check=False,
             timeout=timeout,
+            env=environment,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
 
 
+def docker_command(
+    *arguments: str,
+    timeout: int = 12,
+    environment: dict[str, str] | None = None,
+    stdin_text: str | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    """Executa Docker e tenta sudo -n apenas quando o socket negar acesso."""
+
+    process_environment = os.environ.copy()
+    process_environment.update(environment or {})
+    plain = _run_command(
+        ["docker", *arguments],
+        timeout=timeout,
+        environment=process_environment,
+        stdin_text=stdin_text,
+    )
+    if not _docker_access_denied(plain):
+        return plain
+
+    if shutil.which("sudo"):
+        privileged = _run_command(
+            ["sudo", "-n", "docker", *arguments],
+            timeout=timeout,
+            environment=process_environment,
+            stdin_text=stdin_text,
+        )
+        if privileged is not None:
+            return privileged
+    return plain
+
+
+def container_exists(container: str) -> bool:
+    result = docker_command("inspect", container)
+    return bool(result and result.returncode == 0)
+
+
 def container_running(container: str) -> bool:
     result = docker_command("inspect", "--format", "{{.State.Running}}", container)
     return bool(result and result.returncode == 0 and result.stdout.strip() == "true")
+
+
+def container_environment_value(container: str, key: str) -> str:
+    result = docker_command("inspect", "--format", "{{json .Config.Env}}", container)
+    if not result or result.returncode != 0:
+        return ""
+    try:
+        values = json.loads(result.stdout.strip() or "[]")
+    except json.JSONDecodeError:
+        return ""
+    prefix = f"{key}="
+    for item in values if isinstance(values, list) else []:
+        text = str(item)
+        if text.startswith(prefix):
+            return text[len(prefix) :]
+    return ""
+
+
+def container_command(container: str) -> list[str]:
+    result = docker_command("inspect", "--format", "{{json .Config.Cmd}}", container)
+    if not result or result.returncode != 0:
+        return []
+    try:
+        value = json.loads(result.stdout.strip() or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def recover_postgres_password() -> str:
+    return container_environment_value("agent-ia-postgres", "POSTGRES_PASSWORD").strip()
+
+
+def recover_redis_password() -> str:
+    from_env = container_environment_value("agent-ia-redis", "REDIS_PASSWORD").strip()
+    if from_env:
+        return from_env
+    command = container_command("agent-ia-redis")
+    for index, item in enumerate(command[:-1]):
+        if item == "--requirepass":
+            return command[index + 1].strip()
+    return ""
+
+
+def validate_postgres_password(password: str) -> bool:
+    result = docker_command(
+        "exec",
+        "-i",
+        "agent-ia-postgres",
+        "sh",
+        "-c",
+        "IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -h 127.0.0.1 -U agent_ia -d agent_ia -tAc 'SELECT 1'",
+        stdin_text=f"{password}\n",
+    )
+    return bool(result and result.returncode == 0 and result.stdout.strip() == "1")
+
+
+def validate_redis_password(password: str) -> bool:
+    result = docker_command(
+        "exec",
+        "-i",
+        "agent-ia-redis",
+        "sh",
+        "-c",
+        "IFS= read -r REDISCLI_AUTH; export REDISCLI_AUTH; exec redis-cli ping",
+        stdin_text=f"{password}\n",
+    )
+    return bool(result and result.returncode == 0 and result.stdout.strip() == "PONG")
+
+
+def prompt_secret(prompt: str, environment_name: str) -> str:
+    """Compatibilidade de API: o instalador não solicita segredo interativamente."""
+    raise RuntimeError(
+        f"não foi possível recuperar a credencial automaticamente; informe {environment_name} no ambiente"
+    )
+
+
+def resolve_existing_password(
+    *,
+    container: str,
+    environment_name: str,
+    current_password: str,
+    prompt: str,
+    validator: Callable[[str], bool],
+    recoverer: Callable[[], str] | None = None,
+) -> tuple[str, bool]:
+    """Recupera uma credencial existente sem interromper a instalação com prompt."""
+
+    explicit = os.environ.get(environment_name, "").strip()
+    if explicit:
+        if container_running(container) and not validator(explicit):
+            raise RuntimeError(f"a senha informada em {environment_name} não foi aceita por {container}")
+        return explicit, False
+
+    if not container_exists(container):
+        return "", False
+
+    if current_password and container_running(container) and validator(current_password):
+        return current_password, False
+
+    recovered = str(recoverer() if recoverer else "").strip()
+    if recovered:
+        if not container_running(container) or validator(recovered):
+            return recovered, False
+
+    # O container pertence ao Agent IA, mas a credencial não pôde ser recuperada.
+    # Não bloqueamos a instalação com prompt. Para PostgreSQL, stack_control pode
+    # sincronizar o role local; para Redis, o container pode ser recriado com a
+    # credencial preservada/gerada e o volume de dados permanece intacto.
+    return "", False
 
 
 def container_published_port(container: str, internal_port: int) -> int | None:
@@ -196,7 +368,7 @@ def choose_service_port(
 ) -> tuple[int, bool]:
     published = container_published_port(container, internal_port)
     if published is not None:
-        return published, False
+        return published, published != default
 
     candidates: list[int] = []
     raw = current.get(key, "").strip()
@@ -236,18 +408,34 @@ def main() -> None:
         base_lines = []
 
     current = read_pairs(base_lines)
-
-    explicit_postgres_password = os.environ.get("INSTALL_EXISTING_POSTGRES_PASSWORD", "").strip()
-    explicit_redis_password = os.environ.get("INSTALL_EXISTING_REDIS_PASSWORD", "").strip()
-
-    postgres_password = explicit_postgres_password or (
+    current_postgres_password = (
         current.get("POSTGRES_PASSWORD", "").strip()
         or password_from_url(current.get("POSTGRES_DSN", ""))
     )
-    redis_password = explicit_redis_password or (
+    current_redis_password = (
         current.get("REDIS_PASSWORD", "").strip()
         or password_from_url(current.get("REDIS_URL", ""))
     )
+
+    confirmed_postgres_password, postgres_prompted = resolve_existing_password(
+        container="agent-ia-postgres",
+        environment_name="INSTALL_EXISTING_POSTGRES_PASSWORD",
+        current_password=current_postgres_password,
+        prompt="Senha atual do PostgreSQL (usuário agent_ia): ",
+        validator=validate_postgres_password,
+        recoverer=recover_postgres_password,
+    )
+    confirmed_redis_password, redis_prompted = resolve_existing_password(
+        container="agent-ia-redis",
+        environment_name="INSTALL_EXISTING_REDIS_PASSWORD",
+        current_password=current_redis_password,
+        prompt="Senha atual do Redis: ",
+        validator=validate_redis_password,
+        recoverer=recover_redis_password,
+    )
+
+    postgres_password = confirmed_postgres_password or current_postgres_password
+    redis_password = confirmed_redis_password or current_redis_password
     postgres_created = not bool(postgres_password and postgres_password != "CHANGE_ME")
     redis_created = not bool(redis_password and redis_password != "CHANGE_ME")
     if postgres_created:
@@ -299,6 +487,7 @@ def main() -> None:
         "AGENT_API_TOKEN": api_token,
         "AGENT_INSTALL_ROOT": str(install_root),
         "AGENT_VENV_DIR": str(venv_dir),
+        "AGENT_PYTHON_BIN": str(venv_dir / "bin" / "python"),
         "AGENT_PLAYBOOK_DIR": str(app_dir / "config" / "playbooks"),
         "AGENT_UI_OPERATOR_NAME": args.operator,
         "AGENT_UI_HOST": "0.0.0.0",
@@ -364,8 +553,8 @@ def main() -> None:
             {
                 "postgres_password_created": postgres_created,
                 "redis_password_created": redis_created,
-                "postgres_password_prompted": False,
-                "redis_password_prompted": False,
+                "postgres_password_prompted": postgres_prompted,
+                "redis_password_prompted": redis_prompted,
                 "approval_secret_created": approval_created,
                 "api_token_created": api_created,
                 "omniroute_password_created": initial_created,
