@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.services.n2_workspace import N2_TEMPLATE_SECTIONS
+from app.web_ui_cache import _inject_n2_shell
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,17 +39,28 @@ def test_n2_template_does_not_request_password_or_secret_fields() -> None:
             assert "sem senha" in field or "não registrar senha" in field, field
 
 
-def test_n2_has_own_main_navigation_and_is_not_inside_projects() -> None:
-    source = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.js").read_text(encoding="utf-8")
-    assert 'button.dataset.view = "n2"' in source
-    assert 'view.id = "view-n2"' in source
-    assert ">N2</span>" in source
+def test_n2_is_injected_as_a_real_main_navigation_shell() -> None:
+    html = '<nav class="nav"><button class="nav-item" data-view="projects"><span>Projetos</span></button></nav><main class="main"><section class="view" id="view-opencode"></section></main>'
+    rendered = _inject_n2_shell(html)
+    assert 'data-view="n2"' in rendered
+    assert '<span>N2</span>' in rendered
+    assert 'id="view-n2"' in rendered
+    assert rendered.index('data-view="projects"') < rendered.index('data-view="n2"')
+
+
+def test_n2_runtime_uses_dedicated_module_not_project_workspace() -> None:
+    cache = (PROJECT_ROOT / "app" / "web_ui_cache.py").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "app" / "ui" / "n2-documentation.js").read_text(encoding="utf-8")
+    assert 'n2-documentation.js' in cache
+    assert 'n2-workspace.js", marker="n2-workspace"' not in cache
+    assert 'id="n2-client-search" role="combobox"' in source
+    assert 'id="n2-host-list"' in source
+    assert 'id="n2-playbook"' in source
     assert "#view-projects .project-builder-head" not in source
-    assert "n2-workspace-modal" not in source
 
 
-def test_n2_client_selector_is_searchable_custom_combobox() -> None:
-    source = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.js").read_text(encoding="utf-8")
+def test_n2_client_selector_is_searchable_and_legible() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "n2-documentation.js").read_text(encoding="utf-8")
     css = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.css").read_text(encoding="utf-8")
     assert 'id="n2-client-search" role="combobox"' in source
     assert 'id="n2-client-options" role="listbox"' in source
@@ -58,18 +70,19 @@ def test_n2_client_selector_is_searchable_custom_combobox() -> None:
     assert ".n2-client-option:hover" in css
 
 
-def test_n2_ui_requires_explicit_host_selection_and_supports_optional_playbook() -> None:
-    source = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.js").read_text(encoding="utf-8")
+def test_n2_requires_explicit_hosts_and_supports_optional_playbook() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "n2-documentation.js").read_text(encoding="utf-8")
     assert "data-n2-host-select" in source
     assert "n2-select-all-hosts" in source
     assert "n2-clear-hosts" in source
     assert 'id="n2-playbook"' in source
     assert "Automático — a IA decide o roteiro de validação" in source
     assert '/ui/api/playbooks' in source
+    assert "Selecione pelo menos um host para a documentação" in source
 
 
-def test_n2_ui_runs_selected_hosts_then_builds_editable_review() -> None:
-    source = (PROJECT_ROOT / "app" / "ui" / "n2-workspace.js").read_text(encoding="utf-8")
+def test_n2_runs_selected_hosts_then_builds_editable_review() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "n2-documentation.js").read_text(encoding="utf-8")
     for endpoint in (
         "/ui/api/n2/plan",
         "/ui/api/executions",
@@ -82,6 +95,31 @@ def test_n2_ui_runs_selected_hosts_then_builds_editable_review() -> None:
     assert "data-review-field" in source
     assert "Exportar Word" in source
     assert "Exportar PDF" in source
+
+
+def test_n2_persists_documents_and_can_reopen_them() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "n2-documentation.js").read_text(encoding="utf-8")
+    web = (PROJECT_ROOT / "app" / "web_n2.py").read_text(encoding="utf-8")
+    model = (PROJECT_ROOT / "app" / "db" / "n2_models.py").read_text(encoding="utf-8")
+    store = (PROJECT_ROOT / "app" / "services" / "n2_document_store.py").read_text(encoding="utf-8")
+    assert "Documentos salvos" in source
+    assert "/ui/api/n2/documents" in source
+    assert "saveReview" in source
+    assert "openDocument" in source
+    assert '@router.get("/ui/api/n2/documents")' in web
+    assert '@router.post("/ui/api/n2/documents")' in web
+    assert 'review["document_id"] = saved["id"]' in web
+    assert '__tablename__ = "n2_documents"' in model
+    assert "review_payload" in model
+    assert "sanitize_n2_review" in store
+
+
+def test_customers_empty_navigation_is_removed_in_favor_of_n2_client_search() -> None:
+    policy = (PROJECT_ROOT / "app" / "ui" / "navigation-policy.js").read_text(encoding="utf-8")
+    assert '.nav-item[data-view="customers"]' in policy
+    assert "item.remove()" in policy
+    assert '#view-customers' in policy
+    assert '.nav-item[data-view="n2"]' in policy
 
 
 def test_n2_collection_backend_is_strictly_read_only_and_never_collects_secrets() -> None:
