@@ -1,0 +1,104 @@
+/* Camada compacta para N2, NOC e Inventário. Mantém o fluxo funcional e reduz blocos estáticos. */
+.compact-hidden{display:none!important}
+.compact-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.compact-toolbar .secondary-button,.compact-toolbar .ghost-button{min-height:34px;padding:7px 12px}
+.compact-toolbar-spacer{flex:1}
+
+/* Modais operacionais */
+.compact-modal{position:fixed;inset:0;z-index:10050;display:none;align-items:center;justify-content:center;padding:24px}
+.compact-modal.open{display:flex}
+.compact-modal-backdrop{position:absolute;inset:0;background:rgba(2,8,18,.76);backdrop-filter:blur(4px)}
+.compact-modal-panel{position:relative;width:min(1180px,96vw);max-height:90vh;display:flex;flex-direction:column;background:var(--surface,#0d1d31);border:1px solid var(--border,#263b56);border-radius:18px;box-shadow:0 28px 80px rgba(0,0,0,.45);overflow:hidden}
+.compact-modal-panel.compact-modal-wide{width:min(1460px,97vw)}
+.compact-modal-head{display:flex;align-items:center;gap:16px;padding:16px 18px;border-bottom:1px solid var(--border,#263b56)}
+.compact-modal-head h3{margin:0;font-size:18px}.compact-modal-head p{margin:3px 0 0;color:var(--muted,#8fa6bf);font-size:12px}
+.compact-modal-close{margin-left:auto;width:34px;height:34px;border-radius:9px;border:1px solid var(--border,#263b56);background:transparent;color:inherit;font-size:22px;cursor:pointer}
+.compact-modal-body{padding:16px 18px;overflow:auto;min-height:0}
+.compact-modal-body>.panel{border:0!important;box-shadow:none!important;margin:0!important;padding:0!important;background:transparent!important}
+
+/* N2 */
+#view-n2.n2-page{padding-top:10px!important}
+#view-n2 .n2-workflow-grid{grid-template-columns:minmax(320px,.72fr) minmax(520px,1.28fr)!important;gap:14px!important;align-items:start}
+#view-n2 .n2-setup-card,#view-n2 .n2-host-card,#view-n2 .n2-review-card{padding:14px!important;min-height:0!important}
+#view-n2 .n2-responsibles{gap:8px!important}
+#view-n2 .n2-field{gap:4px!important}.n2-field small{font-size:11px!important}
+#view-n2 .n2-host-list{max-height:430px!important;min-height:180px!important;overflow:auto!important}
+#view-n2 .n2-host-card .n2-run-actions{margin-top:12px;padding-top:12px;border-top:1px solid var(--border,#263b56);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#view-n2 .n2-progress{margin-top:10px}
+#view-n2 .n2-review-card{margin-top:14px!important}
+.n2-compact-head{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:0 0 10px}
+#compact-n2-history .n2-saved-head>div:first-child{display:none}
+#compact-n2-history .n2-saved-actions{width:100%;display:flex;gap:8px}
+#compact-n2-history #n2-document-search{flex:1}
+#compact-n2-history #n2-new-document{display:none!important}
+#compact-n2-history .n2-document-list{max-height:62vh;overflow:auto}
+
+/* NOC */
+#noc-autonomy-strip{display:none!important}
+#view-noc>.noc-summary-grid{margin-bottom:12px!important}
+#view-noc .noc-metric{cursor:pointer;transition:border-color .15s ease,transform .15s ease}
+#view-noc .noc-metric:hover{border-color:var(--accent,#54d8ff);transform:translateY(-1px)}
+#noc-fleet-panel{margin-top:0!important}
+#noc-fleet-panel .cmk-master-head{padding-top:4px!important;align-items:center!important}
+#noc-fleet-panel .cmk-master-actions{display:flex!important;gap:7px!important;flex-wrap:wrap!important;justify-content:flex-end}
+#noc-fleet-panel #cmk-sync,#noc-fleet-panel #cmk-poll,#noc-fleet-panel #fleet-refresh{display:none!important}
+#noc-agent-control{border:0!important;padding:0!important;margin:0!important;background:transparent!important}
+#noc-agent-control .noc-skill-zone{display:none!important}
+#compact-agent-modal #noc-agent-control .noc-skill-zone{display:none!important}
+#compact-agent-modal .noc-agent-head{padding-top:0}
+#compact-agent-modal .noc-selected-scope{max-height:67vh;overflow:auto}
+#compact-agent-modal .noc-scope-grid{grid-template-columns:repeat(3,minmax(260px,1fr))!important}
+#compact-skill-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:10px;margin-top:12px}
+.compact-skill-card{border:1px solid var(--border,#263b56);border-radius:12px;padding:12px;background:rgba(255,255,255,.018);min-width:0}
+.compact-skill-card header{display:flex;gap:8px;align-items:flex-start}.compact-skill-card header div{min-width:0;flex:1}
+.compact-skill-card h4{margin:2px 0 4px;overflow-wrap:anywhere}.compact-skill-card p{margin:0;color:var(--muted,#8fa6bf);font-size:12px;overflow-wrap:anywhere}
+.compact-skill-card footer{display:flex;gap:6px;margin-top:10px}
+.compact-skill-card code{font-size:10px;color:var(--accent,#54d8ff)}
+.compact-skill-editor{display:grid;grid-template-columns:1fr 1fr;gap:10px}.compact-skill-editor label{display:flex;flex-direction:column;gap:5px}.compact-skill-editor .full{grid-column:1/-1}
+.compact-skill-editor input,.compact-skill-editor textarea,.compact-skill-editor select{width:100%}
+
+#cmk-master-status{display:grid;grid-template-columns:1fr;gap:8px}
+#cmk-master-status .cmk-master-line{min-height:54px!important}
+#cmk-action-result:not([hidden]){display:block!important;margin:8px 0 0!important;min-height:54px!important}
+.cmk-status-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:stretch}
+#cmk-operational-body{min-height:0!important}
+.cmk-table-wrap{max-height:560px!important;overflow:auto!important}
+.cmk-table td,.cmk-table th{vertical-align:top;overflow-wrap:anywhere}
+#compact-cmk-filter .cmk-filter,#compact-cmk-filter .cmk-history-filters{display:grid!important;grid-template-columns:minmax(260px,1fr) minmax(180px,.35fr) minmax(180px,.35fr);gap:8px;margin:0!important}
+#compact-cmk-filter .cmk-filter input{grid-column:1/-1}
+#compact-cmk-policies .cmk-policy-panel,#compact-network-discovery .fleet-contingency{display:block!important;border:0!important;background:transparent!important}
+#compact-cmk-policies summary,#compact-network-discovery summary{display:none!important}
+
+/* Fila NOC */
+#view-noc .noc-toolbar #noc-tick,#view-noc .noc-toolbar #noc-refresh{display:none!important}
+.compact-queue-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-left:auto}
+.compact-queue-tools input{min-width:220px}.compact-queue-tools select{min-width:130px}
+.compact-pager{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:10px 4px 0;color:var(--muted,#8fa6bf);font-size:12px}
+.compact-pager button{min-height:30px;padding:5px 10px}
+#view-noc .noc-grid{grid-template-columns:minmax(0,1.25fr) minmax(400px,.75fr)!important;align-items:start}
+#view-noc .noc-detail{min-width:0!important;max-width:100%!important;overflow:hidden!important}
+#view-noc .noc-detail *{overflow-wrap:anywhere;word-break:break-word}
+#view-noc .noc-analysis pre{white-space:pre-wrap;max-width:100%;overflow:auto}
+#view-noc .noc-events{max-height:620px;overflow:auto;padding-right:4px}
+#view-noc .noc-table td:nth-child(2) small{white-space:normal!important;max-width:520px!important;display:block!important}
+.compact-summary-table{width:100%;border-collapse:collapse}.compact-summary-table th,.compact-summary-table td{padding:9px;border-bottom:1px solid var(--border,#263b56);text-align:left;vertical-align:top}.compact-summary-table tbody tr{cursor:pointer}.compact-summary-table tbody tr:hover{background:rgba(84,216,255,.05)}
+
+/* Inventário */
+.compact-inventory-controls{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+#view-inventory .panel-header{gap:12px}
+#view-inventory .filters{flex:1;justify-content:flex-end;flex-wrap:wrap}
+#view-inventory .inventory-grid{min-height:0!important}
+#compact-inventory-pager{margin-top:10px}
+
+@media(max-width:1500px){
+  #view-noc .noc-grid{grid-template-columns:1fr!important}
+  #view-noc .noc-detail{max-height:none!important}
+  #view-n2 .n2-workflow-grid{grid-template-columns:1fr!important}
+}
+@media(max-width:900px){
+  .compact-modal{padding:8px}.compact-modal-panel{width:99vw;max-height:96vh;border-radius:12px}
+  .compact-skill-editor{grid-template-columns:1fr}.compact-skill-editor .full{grid-column:auto}
+  #compact-agent-modal .noc-scope-grid{grid-template-columns:1fr!important}
+  #compact-cmk-filter .cmk-filter,#compact-cmk-filter .cmk-history-filters{grid-template-columns:1fr}
+  .compact-queue-tools input{min-width:140px;width:100%}
+}
