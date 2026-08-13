@@ -24,7 +24,10 @@
         return;
       }
       const holder = button.querySelector('.nav-icon');
-      if (holder && iconPaths[view]) holder.innerHTML = icon(view);
+      if (holder && iconPaths[view] && (holder.dataset.navIconView !== view || !holder.querySelector('svg'))) {
+        holder.dataset.navIconView = view;
+        holder.innerHTML = icon(view);
+      }
       button.classList.add('top-nav-item');
     });
     document.querySelector('#view-replay')?.remove();
@@ -149,6 +152,11 @@
     });
   }
 
+  function nodeAddsNavigationItem(node) {
+    if (!(node instanceof Element)) return false;
+    return node.matches('.nav-item') || Boolean(node.querySelector('.nav-item'));
+  }
+
   function setup() {
     document.body.classList.add('top-navigation-layout');
     decorateNav();
@@ -159,7 +167,11 @@
 
     const nav = document.querySelector('.nav');
     if (nav) {
-      new MutationObserver(() => {
+      new MutationObserver((mutations) => {
+        const navigationChanged = mutations.some((mutation) =>
+          [...mutation.addedNodes].some(nodeAddsNavigationItem)
+        );
+        if (!navigationChanged) return;
         decorateNav();
         promoteGlobalHeaderActions();
       }).observe(nav, { childList: true, subtree: true });
