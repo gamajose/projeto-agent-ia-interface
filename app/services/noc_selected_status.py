@@ -73,22 +73,44 @@ def _job_view(item: dict[str, Any], settings: Settings) -> dict[str, Any]:
     incident_id = str(item.get("incident_id") or "")
     incident = _incident(incident_id, settings)
     incident_status = str(incident.get("status") or "")
+    resolution_status: str | None = None
+
+    # A fonte de verdade para "Resolvido" é o incidente após a leitura do
+    # Checkmk/Livestatus. Um job técnico completed significa somente que o worker
+    # terminou aquela etapa; nunca é suficiente para declarar o sensor corrigido.
     if incident_status == "resolved":
         status = "completed"
         percent = 100
         detail = "Problema corrigido e Checkmk confirmou o sensor em OK."
+        resolution_status = "resolved"
     elif incident_status == "correcting":
         status = "running"
         percent = max(percent, 88)
-        detail = "Diagnóstico concluído. A IA está aplicando a correção segura aprovada."
+        detail = "Skill em execução. Aplicando a correção segura no ambiente."
+        resolution_status = "correcting"
     elif incident_status == "watching":
         status = "running"
         percent = max(percent, 96)
-        detail = "Correção aplicada. Aguardando o Checkmk confirmar o estado OK."
+        detail = "Correção aplicada. Aguardando o Checkmk confirmar o sensor em OK."
+        resolution_status = "watching"
+    elif incident_status in {"queued", "investigating"}:
+        status = "running" if incident_status == "investigating" else "queued"
+        resolution_status = incident_status
     elif incident_status in {"needs_attention", "awaiting_approval"} and incident.get("manual_correction_requested"):
         status = "failed"
         percent = 100
         detail = str(incident.get("attention_reason") or "Não foi possível concluir a correção automaticamente.")
+        resolution_status = incident_status
+    elif status == "completed":
+        # Sem incidente confirmado não há como provar recuperação. Tratar como
+        # falha observável é preferível a exibir um falso positivo verde.
+        status = "failed"
+        percent = 100
+        resolution_status = "unverified"
+        detail = (
+            "O worker concluiu a etapa técnica, mas a aplicação não recebeu confirmação de OK do Checkmk. "
+            "O problema permanece não resolvido até a revalidação do sensor."
+        )
 
     return {
         **item,
@@ -101,7 +123,7 @@ def _job_view(item: dict[str, Any], settings: Settings) -> dict[str, Any]:
         "updated_at": current.get("updated_at") or current.get("started_at") or item.get("created_at"),
         "investigation_id": current.get("investigation_id") or incident.get("investigation_id"),
         "incident_status": incident_status or None,
-        "resolution_status": current.get("resolution_status") or ("resolved" if incident_status == "resolved" else incident_status or None),
+        "resolution_status": resolution_status,
         "error": current.get("error"),
     }
 
