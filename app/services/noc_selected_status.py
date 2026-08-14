@@ -50,22 +50,58 @@ def _job_queue_position(job_id: str, settings: Settings) -> int | None:
     return None
 
 
+def _incident(incident_id: str, settings: Settings) -> dict[str, Any]:
+    if not incident_id:
+        return {}
+    try:
+        raw = _redis(settings).get(f"{_prefix(settings)}:incident:{incident_id}")
+        payload = json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _job_view(item: dict[str, Any], settings: Settings) -> dict[str, Any]:
     job_id = str(item.get("job_id") or "").strip()
     current = get_job(job_id, settings=settings) if job_id else None
     current = current or {}
     phase = dict(current.get("current_phase") or {})
     status = str(current.get("status") or "queued")
+    percent = max(0, min(100, int(current.get("percent") or 0)))
+    detail = str(phase.get("detail") or ("Aguardando worker operacional disponível." if status == "queued" else ""))
+
+    incident_id = str(item.get("incident_id") or "")
+    incident = _incident(incident_id, settings)
+    incident_status = str(incident.get("status") or "")
+    if incident_status == "resolved":
+        status = "completed"
+        percent = 100
+        detail = "Problema corrigido e Checkmk confirmou o sensor em OK."
+    elif incident_status == "correcting":
+        status = "running"
+        percent = max(percent, 88)
+        detail = "Diagnóstico concluído. A IA está aplicando a correção segura aprovada."
+    elif incident_status == "watching":
+        status = "running"
+        percent = max(percent, 96)
+        detail = "Correção aplicada. Aguardando o Checkmk confirmar o estado OK."
+    elif incident_status in {"needs_attention", "awaiting_approval"} and incident.get("manual_correction_requested"):
+        status = "failed"
+        percent = 100
+        detail = str(incident.get("attention_reason") or "Não foi possível concluir a correção automaticamente.")
+
     return {
         **item,
         "job_id": job_id,
         "status": status,
-        "percent": max(0, min(100, int(current.get("percent") or 0))),
+        "percent": percent,
         "queue_position": _job_queue_position(job_id, settings) if status == "queued" else None,
         "phase": str(phase.get("stage") or "worker_wait"),
-        "detail": str(phase.get("detail") or ("Aguardando worker operacional disponível." if status == "queued" else "")),
+        "detail": detail,
         "updated_at": current.get("updated_at") or current.get("started_at") or item.get("created_at"),
-        "investigation_id": current.get("investigation_id"),
+        "investigation_id": current.get("investigation_id") or incident.get("investigation_id"),
+        "incident_status": incident_status or None,
+        "resolution_status": current.get("resolution_status") or ("resolved" if incident_status == "resolved" else incident_status or None),
         "error": current.get("error"),
     }
 
