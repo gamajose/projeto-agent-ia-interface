@@ -1,6 +1,21 @@
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
 
+  async function request(path, options = {}) {
+    const method = String(options.method || 'GET').toUpperCase();
+    const headers = { ...(options.headers || {}) };
+    let body = options.body;
+    if (method !== 'GET') headers['X-Agent-UI'] = '1';
+    if (body && typeof body === 'object') {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify(body);
+    }
+    const response = await fetch(path, { ...options, method, headers, body });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `Falha HTTP ${response.status}`);
+    return data;
+  }
+
   function bindFilterButton(id, loaderName) {
     const button = document.getElementById(id);
     if (!button || button.dataset.refinedFilter === '1') return;
@@ -63,7 +78,7 @@
       }
       submit.disabled = true;
       try {
-        const item = await window.api('/ui/api/access-monitors', { method: 'POST', body: { label, host } });
+        const item = await request('/ui/api/access-monitors', { method: 'POST', body: { label, host } });
         if (typeof window.loadAccessMonitors === 'function') await window.loadAccessMonitors(item.id);
         if (typeof window.toast === 'function') window.toast(`${item.label} cadastrado.`);
         ui.close(modal);
