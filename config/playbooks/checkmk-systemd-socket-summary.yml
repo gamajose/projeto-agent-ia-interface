@@ -8,25 +8,71 @@ match:
     - "failed\\s+socket"
     - "socket.*failed"
     - "check_mk.*failed"
+summary: >-
+  Identificar e corrigir conflito entre xinetd e check_mk.socket no TARGET_HOST e, depois da
+  validação funcional do agente na TCP/6556, continuar obrigatoriamente no MONITORING_HOST do
+  mesmo cliente para localizar o Checkmk correto, confirmar container/site, limpar o cache do
+  TARGET_HOST, executar nova coleta e somente considerar a ocorrência resolvida após a validação
+  do Checkmk. TARGET_HOST e MONITORING_HOST são contextos distintos e nunca devem ser assumidos
+  como o mesmo servidor.
+required_inputs:
+  - CLIENTE
+  - TARGET_HOST
+  - TARGET_IP
+  - MONITORING_HOST ou relacionamento equivalente no inventário
+  - CHECKMK_CONTAINER quando o ambiente utilizar Docker
+  - CHECKMK_SITE responsável pelo TARGET_HOST
+safety_rules:
+  - Nunca assumir TARGET_HOST == MONITORING_HOST.
+  - Nunca executar omd ou cmk no TARGET_HOST sem confirmar que ele também é o servidor de monitoramento.
+  - Antes de desabilitar check_mk.socket, confirmar xinetd ativo, dono da TCP/6556 e agente Checkmk respondendo localmente.
+  - Se a TCP/6556 pertencer a processo desconhecido ou o mecanismo do agente não puder ser determinado, interromper a correção.
+  - O MONITORING_HOST e o CHECKMK_SITE precisam pertencer ao mesmo cliente/site do alerta original.
+  - A nova coleta deve localizar exatamente um site contendo o TARGET_HOST; zero ou múltiplas correspondências exigem análise humana.
+  - Não executar discovery quando a coleta estiver falhando.
+  - cmk -II só pode ser utilizado quando a coleta estiver funcional e houver evidência real de serviços novos/vanished ou necessidade de redescoberta.
+  - Reboot, shutdown, banco de dados do cliente e lifecycle de containers permanecem proibidos.
+validation_notes:
+  - No TARGET_HOST, xinetd deve permanecer funcional, a TCP/6556 deve ter um único responsável e o agente deve responder.
+  - check_mk.socket inativo/disabled é esperado quando xinetd é o mecanismo válido e não deve ser tratado como falha.
+  - Depois da correção do agente, localizar o TARGET_HOST no Checkmk do mesmo cliente e executar cmk -D, cmk --flush e cmk --debug -vvn.
+  - A coleta é válida somente sem connection refused, timeout, host unreachable, erro crítico do agente/TLS ou parsing.
+  - O alerta Systemd Socket Summary só pode ser encerrado quando a nova coleta e a revalidação do Checkmk confirmarem recuperação.
+import_notes:
+  - Fluxo baseado no documento "Playbook de Correção Checkmk.pdf" fornecido pelo operador.
+  - A automação separa CORREÇÃO DO AGENTE no TARGET_HOST de NOVA COLETA/DISCOVERY no MONITORING_HOST/CHECKMK_SITE.
+source:
+  filename: Playbook de Correção Checkmk.pdf
 steps:
+  - tool: system.basics
+    purpose: Registrar identidade, hostname, kernel, uptime e horário do TARGET_HOST
+  - tool: network.interfaces
+    purpose: Registrar endereços e rotas do TARGET_HOST antes da correção
   - tool: systemd.list_failed
-    purpose: Listar sockets e unidades em falha
+    purpose: Listar sockets e unidades em falha no TARGET_HOST
   - tool: systemd.inspect_unit
-    arguments: {unit: check-mk-agent.socket}
-    purpose: Verificar a unidade atual do agente Checkmk
+    arguments:
+      unit: xinetd.service
+    purpose: Confirmar estado do xinetd antes de decidir o mecanismo válido do agente
   - tool: systemd.inspect_unit
-    arguments: {unit: check_mk.socket}
-    purpose: Verificar a unidade legada do agente
+    arguments:
+      unit: check_mk.socket
+    purpose: Verificar a unidade legada check_mk.socket e seu estado failed/enabled
   - tool: systemd.inspect_unit
-    arguments: {unit: xinetd.service}
-    purpose: Confirmar se o xinetd está ativo antes de decidir pela limpeza da unidade legada
+    arguments:
+      unit: check-mk-agent.socket
+    purpose: Verificar se o socket systemd moderno é o mecanismo válido do agente
   - tool: checkmk.inspect_agent_socket
-    purpose: Identificar o dono da porta 6556 e validar a resposta funcional do agente
+    purpose: Identificar o dono da TCP/6556 e validar a resposta funcional local do Checkmk Agent
   - tool: journal.read_unit
-    arguments: {unit: check_mk.socket, lines: 120}
+    arguments:
+      unit: check_mk.socket
+      lines: 120
     purpose: Confirmar por que a unidade legada entrou em FAILED
   - tool: journal.read_unit
-    arguments: {unit: check-mk-agent.socket, lines: 120}
+    arguments:
+      unit: check-mk-agent.socket
+      lines: 120
     purpose: Consultar o socket moderno quando ele existir
 allowed_corrections:
   - checkmk.resolve_legacy_socket_conflict
