@@ -9,11 +9,7 @@ from rich.panel import Panel
 from app.core.settings import get_settings
 from app.db.base import ensure_database_schema
 from app.services.checkmk_job_instrumentation import install_checkmk_site_job_routing
-from app.services.checkmk_master_patrol import (
-    checkmk_master_patrol_status,
-    process_pending_selected_run,
-    start_checkmk_master_patrol_background,
-)
+from app.services.checkmk_master_patrol import checkmk_master_patrol_status, start_checkmk_master_patrol_background
 from app.services.codex_provider_instrumentation import install_codex_provider_preflight
 from app.services.ensemble_instrumentation import install_ensemble_reasoning
 from app.services.fleet_control import fleet_control_status
@@ -23,6 +19,7 @@ from app.services.jobs import get_job, run_worker_once
 from app.services.noc_history_hooks import handle_worker_result_with_history
 from app.services.noc_job_guard import install_noc_job_guard
 from app.services.noc_policy_instrumentation import install_noc_policy_guard
+from app.services.noc_selected_runner import process_selected_run_once, start_selected_run_processor_background
 from app.services.noc_startup_safety import pause_noc_autonomy_on_startup
 from app.services.noc_supervisor import supervisor_tick
 from app.services.noc_worker_hooks import reconcile_noc_jobs
@@ -62,9 +59,10 @@ def run(
     fleet_resumed = False if once else resume_active_fleet_discovery(settings=settings)
 
     # Fonte primária do NOC: CMK05/master -> sites remotos -> estados Checkmk.
-    # Essa ronda permanece ativa para inventário e alertas. Ela não inicia
-    # atuação até o operador ligar explicitamente os agentes na interface.
+    # A execução manual selecionada possui um processador leve próprio para não
+    # ficar esperando o loop da fila automática terminar uma volta completa.
     master_started = False if once else start_checkmk_master_patrol_background(settings=settings)
+    selected_started = False if once else start_selected_run_processor_background(settings=settings)
     autonomy_label = "OBSERVAÇÃO · atuação desligada"
 
     console.print(Panel(
@@ -76,6 +74,7 @@ def run(
         f"Agentes NOC: {autonomy_label}\n"
         f"Escopo preservado: {autonomy.get('mode', 'automatic')} · {len(autonomy.get('sites') or [])} cliente(s)\n"
         f"Checkmk Master: {'observando' if master_started else 'desativado'} · inventário/erros a cada 2 min por padrão\n"
+        f"Execução manual: {'prioridade ativa' if selected_started else 'modo pontual'}\n"
         f"Fleet Discovery: {'retomada em segundo plano' if fleet_resumed else 'contingência/manual'}\n"
         f"Fleet Patrol legado: desativado (somente acionamento manual)",
         title="Agent IA Worker",
@@ -84,10 +83,10 @@ def run(
     reconcile_noc_jobs(settings=settings)
 
     if once:
+        selected_run = process_selected_run_once(settings=settings)
         result = run_worker_once(settings=settings, block_seconds=block_seconds)
         handle_worker_result_with_history(result, settings=settings)
         reconcile_noc_jobs(settings=settings)
-        selected_run = process_pending_selected_run(settings=settings)
         supervisor_tick(settings=settings)
         console.print(json.dumps({
             "job": result or {"status": "empty"},
@@ -103,7 +102,6 @@ def run(
             result = run_worker_once(settings=settings, block_seconds=block_seconds)
             handle_worker_result_with_history(result, settings=settings)
             reconcile_noc_jobs(settings=settings)
-            process_pending_selected_run(settings=settings)
             supervisor_tick(settings=settings)
         except KeyboardInterrupt:
             return

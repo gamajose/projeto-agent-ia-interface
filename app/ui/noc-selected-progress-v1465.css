@@ -1,0 +1,174 @@
+.noc-manual-progress {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border, #28405a);
+  border-radius: 14px;
+  background: rgba(10, 25, 42, .72);
+}
+
+.noc-manual-progress-head,
+.noc-manual-progress-meta,
+.noc-manual-job,
+.noc-manual-job-state {
+  display: flex;
+  align-items: center;
+}
+
+.noc-manual-progress-head,
+.noc-manual-progress-meta {
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.noc-manual-progress-head > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.noc-manual-progress-head span {
+  font-size: 10px;
+  letter-spacing: .08em;
+  color: var(--muted, #8da5bd);
+}
+
+.noc-manual-progress-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.noc-manual-progress-head em,
+.noc-manual-job-state em {
+  font-style: normal;
+  font-weight: 800;
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(122, 150, 177, .14);
+  color: #b8c8d9;
+  white-space: nowrap;
+}
+
+.noc-manual-progress-head em.running,
+.noc-manual-job.running .noc-manual-job-state em {
+  background: rgba(61, 215, 177, .14);
+  color: #69e5c5;
+}
+
+.noc-manual-progress-head em.ok,
+.noc-manual-job.ok .noc-manual-job-state em {
+  background: rgba(72, 203, 139, .14);
+  color: #69e5aa;
+}
+
+.noc-manual-progress-head em.error,
+.noc-manual-job.error .noc-manual-job-state em {
+  background: rgba(238, 94, 112, .14);
+  color: #ff8b99;
+}
+
+.noc-manual-progress-meta {
+  font-size: 11px;
+  color: var(--muted, #8da5bd);
+}
+
+.noc-manual-progress p,
+.noc-manual-progress small {
+  margin: 0;
+  color: var(--muted, #9bb0c5);
+  font-size: 11px;
+}
+
+.noc-manual-progress-bar {
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(126, 151, 176, .14);
+}
+
+.noc-manual-progress-bar > i {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+  background: currentColor;
+  color: #55d9f4;
+  transition: width .28s ease;
+}
+
+.noc-manual-job-list {
+  display: grid;
+  gap: 8px;
+}
+
+.noc-manual-job {
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(92, 123, 151, .28);
+  border-radius: 11px;
+  background: rgba(18, 38, 59, .7);
+}
+
+.noc-manual-job > b {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  border-radius: 8px;
+  background: rgba(58, 201, 235, .12);
+  color: #62dcf4;
+  font-size: 11px;
+}
+
+.noc-manual-job-main {
+  display: grid;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.noc-manual-job-main > strong,
+.noc-manual-job-main > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.noc-manual-job-main > strong {
+  font-size: 12px;
+}
+
+.noc-manual-job-state {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.noc-manual-job-state span {
+  min-width: 38px;
+  text-align: right;
+  font-size: 10px;
+  color: var(--muted, #8da5bd);
+}
+
+@media (max-width: 760px) {
+  .noc-manual-job {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .noc-manual-job-main {
+    min-width: calc(100% - 40px);
+  }
+
+  .noc-manual-job-state {
+    width: 100%;
+    padding-left: 35px;
+    justify-content: flex-start;
+  }
+}
