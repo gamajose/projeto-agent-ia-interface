@@ -1,4 +1,5 @@
 from app.core.policies import ActionType, EnvironmentType, classify_command
+from app.core.settings import Settings
 from app.services.correction_policy import validate_correction
 from app.services.noc_skills import reload_noc_skills, select_noc_skill
 from app.services.ssh import CommandResult
@@ -39,6 +40,11 @@ def test_systemd_socket_summary_selects_known_skill() -> None:
     assert skill["id"] == "checkmk-systemd-socket-summary"
     assert skill["playbook_id"] == "checkmk-systemd-socket-summary"
     assert any("xinetd" in item.casefold() and "6556" in item for item in skill["knowledge"])
+
+
+def test_legacy_socket_cleanup_is_in_default_self_heal_allowlist() -> None:
+    default = str(Settings.model_fields["noc_self_heal_tools"].default or "")
+    assert "checkmk.resolve_legacy_socket_conflict" in default.split(",")
 
 
 def test_legacy_socket_cleanup_is_narrowly_allowed_service_adjustment() -> None:
