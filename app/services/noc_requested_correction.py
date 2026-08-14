@@ -10,6 +10,10 @@ from app.services.jobs import get_job
 from app.services.noc_action_policy import policy_allows_autonomous_correction
 from app.services.noc_autonomy_control import get_noc_autonomy_control, scope_matches_problem
 from app.services.noc_checkmk_runtime import is_green, query_incident_service
+from app.services.noc_deterministic_skill import (
+    is_ai_dependency_failure,
+    run_deterministic_skill_correction,
+)
 from app.services import noc_incidents as incident_store
 
 
@@ -230,9 +234,12 @@ def attempt_requested_correction(
 ) -> dict[str, Any] | None:
     """Executa o ciclo corrigir -> revalidar quando o NOC recebeu intenção de correção.
 
-    A investigação continua necessária para determinar a causa e produzir ações
-    estruturadas. Ela deixa de ser o estado final: quando há uma ação segura,
-    revisada e autorizada, o Agent a executa e força uma nova leitura no Checkmk.
+    A investigação por IA continua sendo o caminho preferencial. Quando o
+    bloqueio é exclusivamente a indisponibilidade/baixa confiança da IA e o
+    incidente corresponde a uma Skill determinística já validada em campo, o
+    NOC pode executar a ferramenta estruturada dessa Skill sem depender do
+    Ensemble. Políticas, allowlist, rota do cliente e pré-condições funcionais
+    continuam obrigatórias.
     """
 
     settings = settings or get_settings()
@@ -256,6 +263,62 @@ def attempt_requested_correction(
         source=source,
         settings=settings,
     )
+
+    deterministic_execution: dict[str, Any] | None = None
+    if not eligible and is_ai_dependency_failure(reason):
+        _store_job_phase(
+            job_id,
+            status="running",
+            percent=88,
+            stage="deterministic_skill",
+            detail="IA indisponível ou inconclusiva. Validando a Skill conhecida diretamente no ambiente.",
+            settings=settings,
+            extra={"resolution_status": "correcting"},
+        )
+        incident = _incident_update(
+            incident_id,
+            {
+                "status": "correcting",
+                "attention_reason": None,
+                "correction_intent_source": source,
+                "correction_fallback": "deterministic_skill",
+            },
+            settings,
+        ) or incident
+        _event(incident, "deterministic_skill_started", {"source": source, "ai_blocker": reason}, settings)
+        deterministic_execution = run_deterministic_skill_correction(
+            incident,
+            result,
+            settings=settings,
+        )
+        if deterministic_execution and str(deterministic_execution.get("status") or "") == "validated":
+            eligible = True
+            reason = (
+                "Skill determinística validou a correção sem depender do provedor de IA: "
+                f"{deterministic_execution.get('deterministic_skill') or 'skill conhecida'}"
+            )
+            allowed_tools = {
+                str(item.get("tool") or "").strip()
+                for item in deterministic_execution.get("results") or []
+                if isinstance(item, dict) and str(item.get("tool") or "").strip()
+            }
+            _event(
+                incident,
+                "deterministic_skill_validated",
+                {
+                    "source": source,
+                    "skill": deterministic_execution.get("deterministic_skill"),
+                    "ai_blocker": reason,
+                },
+                settings,
+            )
+        elif deterministic_execution:
+            fallback_reason = str(
+                deterministic_execution.get("reason")
+                or "pré-condições da Skill determinística não foram confirmadas"
+            )
+            reason = f"{reason}. Skill determinística não executada/validada: {fallback_reason}"
+
     if not eligible:
         updated = _incident_update(
             incident_id,
@@ -264,6 +327,11 @@ def attempt_requested_correction(
                 "attention_reason": f"Correção solicitada, mas não pôde ser executada automaticamente: {reason}",
                 "correction_intent_source": source,
                 "correction_eligibility": {"eligible": False, "reason": reason},
+                **(
+                    {"deterministic_execution": deterministic_execution}
+                    if deterministic_execution is not None
+                    else {}
+                ),
             },
             settings,
         ) or incident
@@ -279,56 +347,70 @@ def attempt_requested_correction(
         _event(updated, "correction_blocked", {"source": source, "reason": reason}, settings)
         return updated
 
-    _store_job_phase(
-        job_id,
-        status="running",
-        percent=88,
-        stage="correction",
-        detail="Diagnóstico concluído. Executando a correção segura aprovada.",
-        settings=settings,
-        extra={"resolution_status": "correcting"},
-    )
-    incident = _incident_update(
-        incident_id,
-        {
-            "status": "correcting",
-            "attention_reason": None,
-            "correction_intent_source": source,
-            "correction_eligibility": {"eligible": True, "reason": reason},
-        },
-        settings,
-    ) or incident
-    _event(incident, "correction_started", {"source": source}, settings)
+    if deterministic_execution is None:
+        _store_job_phase(
+            job_id,
+            status="running",
+            percent=88,
+            stage="correction",
+            detail="Diagnóstico concluído. Executando a correção segura aprovada.",
+            settings=settings,
+            extra={"resolution_status": "correcting"},
+        )
+        incident = _incident_update(
+            incident_id,
+            {
+                "status": "correcting",
+                "attention_reason": None,
+                "correction_intent_source": source,
+                "correction_eligibility": {"eligible": True, "reason": reason},
+            },
+            settings,
+        ) or incident
+        _event(incident, "correction_started", {"source": source}, settings)
+    else:
+        incident = _incident_update(
+            incident_id,
+            {
+                "status": "correcting",
+                "attention_reason": None,
+                "correction_intent_source": source,
+                "correction_eligibility": {"eligible": True, "reason": reason},
+                "deterministic_execution": deterministic_execution,
+            },
+            settings,
+        ) or incident
 
     try:
-        current_token = str(result.get("approval_token") or "")
-        investigation_id = str(result.get("investigation_id") or "")
-        execution: dict[str, Any] | None = None
-        max_rounds = max(1, int(settings.noc_autonomy_max_approval_rounds))
-        for _round in range(1, max_rounds + 1):
-            execution = execute_approved_investigation(
-                investigation_id,
-                current_token,
-                requested_by=(
-                    "Operador NOC - Arrumar selecionados"
-                    if source == "manual_selected"
-                    else "NOC Autônomo - categoria autorizada"
-                ),
-                settings=settings,
-            )
-            if not execution.get("new_approval_required"):
-                break
-            pending = [item for item in execution.get("pending_actions") or [] if isinstance(item, dict)]
-            pending_tools = {
-                str(item.get("tool") or "").strip()
-                for item in pending
-                if str(item.get("tool") or "").strip()
-            }
-            review = dict(execution.get("pending_review") or {})
-            next_token = str(execution.get("next_approval_token") or "")
-            if not pending_tools or not pending_tools.issubset(allowed_tools) or not review.get("approved") or not next_token:
-                break
-            current_token = next_token
+        execution: dict[str, Any] | None = deterministic_execution
+        if execution is None:
+            current_token = str(result.get("approval_token") or "")
+            investigation_id = str(result.get("investigation_id") or "")
+            max_rounds = max(1, int(settings.noc_autonomy_max_approval_rounds))
+            for _round in range(1, max_rounds + 1):
+                execution = execute_approved_investigation(
+                    investigation_id,
+                    current_token,
+                    requested_by=(
+                        "Operador NOC - Arrumar selecionados"
+                        if source == "manual_selected"
+                        else "NOC Autônomo - categoria autorizada"
+                    ),
+                    settings=settings,
+                )
+                if not execution.get("new_approval_required"):
+                    break
+                pending = [item for item in execution.get("pending_actions") or [] if isinstance(item, dict)]
+                pending_tools = {
+                    str(item.get("tool") or "").strip()
+                    for item in pending
+                    if str(item.get("tool") or "").strip()
+                }
+                review = dict(execution.get("pending_review") or {})
+                next_token = str(execution.get("next_approval_token") or "")
+                if not pending_tools or not pending_tools.issubset(allowed_tools) or not review.get("approved") or not next_token:
+                    break
+                current_token = next_token
 
         execution = execution or {"status": "failed", "state": "no_execution"}
         if str(execution.get("status") or "") != "validated":
