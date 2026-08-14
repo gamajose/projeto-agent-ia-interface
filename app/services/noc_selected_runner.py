@@ -7,15 +7,20 @@ from typing import Any
 
 from redis import Redis
 
+from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
 from app.services import checkmk_master_patrol as patrol
 from app.services.checkmk_operational import collect_checkmk_operational_snapshot
+from app.services.jobs import cancel_job, enqueue_investigation, get_job
+from app.services.noc_action_policy import classify_problem_category
 from app.services.noc_autonomy_control import (
     complete_selected_run,
     next_selected_run,
     requeue_selected_run,
     scope_matches_problem,
 )
+from app.services.noc_incidents import attach_job, incident_objective
+from app.services.noc_skills import build_skill_objective
 from app.services.redaction import redact_text
 
 
@@ -65,6 +70,110 @@ def _prioritize_jobs(job_ids: list[str], *, settings: Settings) -> None:
         client.lpush(queue, raw)
 
 
+def _environment(value: Any) -> EnvironmentType:
+    try:
+        return EnvironmentType(str(value or EnvironmentType.UNKNOWN.value))
+    except ValueError:
+        return EnvironmentType.UNKNOWN
+
+
+def _ensure_manual_job(
+    item: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    run_id: str,
+    scope: dict[str, Any],
+    settings: Settings,
+) -> dict[str, Any]:
+    """Garante que um clique manual possa reabrir uma investigação antiga.
+
+    Se já existe um job realmente executando, acompanha o mesmo job para não
+    duplicar SSH. Job antigo em fila é substituído por uma autorização pontual
+    nova, porque a autorização original pode ter ficado obsoleta.
+    """
+
+    if result.get("queued"):
+        return result
+    authorization = dict(result.get("authorization") or {})
+    route = dict(result.get("route") or {})
+    event = dict(result.get("event") or {})
+    incident = dict(event.get("incident") or {})
+    if not authorization.get("allowed") or not route.get("valid") or not route.get("auto_investigate") or not incident:
+        return result
+
+    previous_job_id = str(incident.get("job_id") or "").strip()
+    if previous_job_id:
+        current = get_job(previous_job_id, settings=settings) or {}
+        current_status = str(current.get("status") or "")
+        if current_status in {"running", "cancelling"}:
+            return {
+                **result,
+                "queued": True,
+                "job": {
+                    "job_id": previous_job_id,
+                    "created_at": current.get("created_at") or current.get("started_at"),
+                },
+                "manual_reused_running_job": True,
+            }
+        if current_status == "queued":
+            cancel_job(previous_job_id, settings=settings)
+
+    item = dict(item)
+    item["policy_category"] = classify_problem_category(item)
+    skill = dict(route.get("skill") or {})
+    objective = incident_objective(incident) + "\n\n" + build_skill_objective(
+        item,
+        skill,
+        site_id=str(route.get("site_id") or item.get("site_id") or ""),
+        client_alias=str(route.get("client_alias") or item.get("alias") or ""),
+    )
+    playbook_id = str(skill.get("playbook_id") or "").strip() or None
+    queued = enqueue_investigation(
+        str(route.get("entry_address") or ""),
+        objective,
+        environment=_environment(route.get("environment")),
+        mode="propose",
+        approve=False,
+        ssh_port=22,
+        playbook_mode="manual" if playbook_id else "auto",
+        playbook_id=playbook_id,
+        metadata={
+            "source": "checkmk_master",
+            "site_scope": True,
+            "noc_incident_id": incident.get("id"),
+            "noc_control_revision": scope.get("revision"),
+            "noc_run_id": run_id,
+            "noc_scope_mode": "selected",
+            "checkmk_problem_key": item.get("problem_key"),
+            "policy_category": item.get("policy_category"),
+            "site_id": route.get("site_id"),
+            "client_alias": route.get("client_alias"),
+            "entry_address": route.get("entry_address"),
+            "livestatus_port": route.get("livestatus_port"),
+            "status_host": route.get("status_host"),
+            "internal_target": route.get("internal_address"),
+            "checkmk_host": item.get("host"),
+            "checkmk_address": item.get("host_address"),
+            "service": item.get("service"),
+            "state": item.get("state_name"),
+            "target_strategy": route.get("strategy"),
+            "host_kind": route.get("host_kind"),
+            "scope_key": route.get("scope_key"),
+            "skill": skill,
+            "manual_selected": True,
+            "isolation": {
+                "site_id": route.get("site_id"),
+                "cross_site_internal_ip_lookup": False,
+                "reuse_other_customer_session": False,
+            },
+        },
+        settings=settings,
+    )
+    if incident.get("id"):
+        attach_job(str(incident["id"]), str(queued["job_id"]), settings=settings)
+    return {**result, "queued": True, "job": queued, "manual_forced": True}
+
+
 def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, Any] | None:
     settings = settings or get_settings()
     run = next_selected_run(settings=settings)
@@ -104,6 +213,7 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
                     run_id=run_id,
                     passive=False,
                 )
+                result = _ensure_manual_job(item, result, run_id=run_id, scope=scope, settings=settings)
                 patrol._persist_automation_result(item, result)  # noqa: SLF001
                 job = dict(result.get("job") or {})
                 if result.get("queued") and job.get("job_id"):
