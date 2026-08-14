@@ -205,9 +205,18 @@ def request_selected_run(
     return run
 
 
+def _get_selected_run_raw(run_id: str, *, settings: Settings) -> dict[str, Any] | None:
+    return _decode(_redis(settings).get(_run_key(settings, run_id)))
+
+
 def get_selected_run(run_id: str, *, settings: Settings | None = None) -> dict[str, Any] | None:
     settings = settings or get_settings()
-    return _decode(_redis(settings).get(_run_key(settings, run_id)))
+    run = _get_selected_run_raw(run_id, settings=settings)
+    if not run:
+        return None
+    from app.services.noc_selected_status import enrich_selected_run
+
+    return enrich_selected_run(run, settings=settings)
 
 
 def next_selected_run(*, settings: Settings | None = None) -> dict[str, Any] | None:
@@ -216,7 +225,7 @@ def next_selected_run(*, settings: Settings | None = None) -> dict[str, Any] | N
     run_id = client.lpop(_pending_runs_key(settings))
     if not run_id:
         return None
-    run = get_selected_run(str(run_id), settings=settings)
+    run = _get_selected_run_raw(str(run_id), settings=settings)
     if not run:
         return None
     run["status"] = "running"
@@ -269,7 +278,7 @@ def authorize_noc_job(metadata: dict[str, Any], *, settings: Settings | None = N
     }
     run_id = str(metadata.get("noc_run_id") or "").strip()
     if run_id:
-        run = get_selected_run(run_id, settings=settings)
+        run = _get_selected_run_raw(run_id, settings=settings)
         if not run:
             return False, "autorização pontual do NOC expirou"
         scope = dict(run.get("scope") or {})
