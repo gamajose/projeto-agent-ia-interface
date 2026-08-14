@@ -10,28 +10,29 @@
 #view-noc .noc-live::before{margin:0!important}
 .compact-queue-tools{display:grid!important;grid-template-columns:minmax(180px,240px) 138px 112px!important;gap:7px!important;align-items:center!important;flex:0 1 auto!important;margin-left:0!important}
 .compact-queue-tools input,.compact-queue-tools select{height:36px!important;min-height:36px!important;margin:0!important;padding:7px 10px!important;font-size:12px!important;border-radius:10px!important}
-.compact-queue-tools input{min-width:0!important;width:100%!important}
-.compact-queue-tools select{min-width:0!important;width:100%!important}
+.compact-queue-tools input{min-width:0!important;width:100%!important}.compact-queue-tools select{min-width:0!important;width:100%!important}
 
 /* Checkmk Central */
 #noc-fleet-panel .cmk-master-head>div:first-child>.eyebrow{display:none!important}
 #noc-fleet-panel .cmk-master-head h3{margin-top:0!important}
 
-/* Agentes e políticas */
-#compact-agent-modal .agent-modal-tools{padding:0 0 12px!important;margin:0 0 12px!important;border-bottom:1px solid var(--border,#263b56);justify-content:flex-start!important}
-#compact-agent-modal .agent-modal-tools .secondary-button{min-height:34px!important}
+/* Agentes e skills */
+#compact-agent-modal .compact-modal-head>div>p{display:none!important}
+#compact-agent-modal .noc-agent-power{display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:8px!important;flex-wrap:wrap!important}
+#compact-agent-modal .agent-skill-shortcut{min-height:30px!important;height:30px!important;padding:4px 10px!important;font-size:11px!important;border-radius:9px!important;order:-2}
+#compact-agent-modal .noc-agent-state{order:-1}
 #noc-fleet-panel .cmk-master-actions>#compact-policy-button{display:none!important}
 
 /* Descoberta de rede */
 #compact-discovery-modal .compact-modal-head>div{display:none!important}
 #compact-discovery-modal .compact-modal-head{justify-content:flex-end!important;padding-block:10px!important}
-#compact-discovery-modal .fleet-contingency>.fleet-head.compact{display:flex!important;align-items:flex-start!important;justify-content:flex-start!important;gap:10px!important;margin:0!important;padding:0 0 10px!important}
+#compact-discovery-modal .fleet-contingency>.fleet-head.compact{display:flex!important;align-items:flex-end!important;justify-content:flex-start!important;gap:10px!important;margin:0!important;padding:0 0 12px!important}
 #compact-discovery-modal .fleet-contingency>.fleet-head.compact>div:first-child{display:none!important}
-#compact-discovery-modal .fleet-actions{display:flex!important;justify-content:flex-start!important;align-items:center!important;width:100%!important;gap:8px!important}
-#compact-discovery-modal #fleet-start{margin:0!important;align-self:flex-start!important}
-#compact-discovery-modal .fleet-scope-field{display:grid!important;grid-template-columns:minmax(220px,420px)!important;gap:5px!important;width:min(520px,100%)!important;margin:0 0 14px!important;padding:10px 12px!important;border:1px solid var(--border,#263b56)!important;border-radius:12px!important;background:rgba(255,255,255,.018)!important}
-#compact-discovery-modal .fleet-scope-field input{width:100%!important}
-#compact-discovery-modal .fleet-scope-field small{line-height:1.35!important}
+#compact-discovery-modal .fleet-actions{display:flex!important;justify-content:flex-start!important;align-items:flex-end!important;width:100%!important;gap:8px!important;flex-wrap:wrap!important}
+#compact-discovery-modal #fleet-start{margin:0!important;align-self:flex-end!important;white-space:nowrap}
+#compact-discovery-modal .fleet-scope-field{display:grid!important;grid-template-columns:minmax(220px,400px)!important;gap:5px!important;width:min(430px,100%)!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;flex:0 1 430px!important}
+#compact-discovery-modal .fleet-scope-field input{width:100%!important;height:36px!important;min-height:36px!important}
+#compact-discovery-modal .fleet-scope-field small{display:none!important}
 #compact-discovery-modal .fleet-columns{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:12px!important;align-items:start!important}
 #compact-discovery-modal .fleet-columns>div{min-width:0!important;display:flex!important;flex-direction:column!important}
 #compact-discovery-modal .fleet-section-title{min-height:34px!important;align-items:center!important}
@@ -39,8 +40,8 @@
 
 /* Visão geral */
 #view-dashboard .dashboard-grid{display:none!important}
-.database-overview-panel{margin-top:14px!important}
-.database-overview-panel .panel-header{align-items:center!important}
+.database-overview-panel{margin-top:14px!important;padding:14px!important}
+.database-overview-panel>.panel-header{display:none!important}
 .database-overview-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(320px,.75fr);gap:12px}
 .database-resource-card{border:1px solid var(--border,#263b56);border-radius:14px;background:rgba(255,255,255,.018);padding:14px;min-width:0}
 .database-resource-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
@@ -60,22 +61,39 @@
 /* Playbooks em modal */
 #compact-playbooks-modal .compact-modal-panel{width:min(1440px,97vw)!important;max-height:94vh!important}
 #compact-playbooks-modal .compact-modal-head{padding-block:10px!important}
+#compact-playbooks-modal .compact-modal-head>div>p{display:none!important}
 #compact-playbooks-modal .playbook-modal-head-actions{display:flex;align-items:center;gap:7px;margin-left:auto}
 #compact-playbooks-modal .compact-modal-close{margin-left:0!important}
 #compact-playbooks-modal #view-playbooks>.panel>.panel-header{display:none!important}
 #compact-playbooks-modal #view-playbooks{display:block!important;padding:0!important;margin:0!important}
-#compact-playbooks-modal .playbook-manager-toolbar{display:grid;grid-template-columns:minmax(220px,1fr) auto 120px;gap:8px;align-items:center;margin:0 0 12px}
-#compact-playbooks-modal .playbook-manager-toolbar input,#compact-playbooks-modal .playbook-manager-toolbar select{height:36px!important;min-height:36px!important}
+#compact-playbooks-modal .playbook-manager-toolbar{display:flex;align-items:center;gap:7px;margin:0 0 12px;min-height:38px;flex-wrap:wrap}
+#compact-playbooks-modal .playbook-manager-toolbar .toolbar-spacer{flex:1}
+#compact-playbooks-modal .playbook-manager-toolbar select{height:36px!important;min-height:36px!important;width:118px!important}
+#compact-playbooks-modal .playbook-search-shell{display:flex;align-items:center;gap:5px}
+#compact-playbooks-modal .playbook-search-shell[hidden]{display:none!important}
+#compact-playbooks-modal .playbook-search-shell input{height:36px!important;min-height:36px!important;width:min(330px,42vw)!important;min-width:210px!important}
 #compact-playbooks-modal .playbook-grid{grid-template-columns:repeat(auto-fill,minmax(270px,1fr))!important;gap:10px!important}
-#compact-playbooks-modal .playbook-card{cursor:pointer;display:flex;flex-direction:column;min-height:220px}
+#compact-playbooks-modal .playbook-card{cursor:pointer;display:flex;flex-direction:column;min-height:220px;outline:none}
+#compact-playbooks-modal .playbook-card:focus-visible{border-color:var(--accent,#54d8ff)!important;box-shadow:0 0 0 2px rgba(84,216,255,.12)}
 #compact-playbooks-modal .playbook-card .card-meta{flex:1}
-.playbook-card-actions{display:flex;gap:6px;margin-top:10px;padding-top:9px;border-top:1px solid var(--border,#263b56)}
-.playbook-card-actions button{min-height:30px!important;padding:5px 9px!important;font-size:11px!important}
+.playbook-card-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:10px;padding-top:9px;border-top:1px solid var(--border,#263b56)}
 #playbook-manager-pager{margin-top:10px}
 #playbook-import-log{margin-top:14px!important}
 
+/* Skills */
+#skills-manager-modal .compact-skill-card[data-skill-card]{cursor:pointer;outline:none;display:flex;flex-direction:column}
+#skills-manager-modal .compact-skill-card[data-skill-card]:focus-visible{border-color:var(--accent,#54d8ff);box-shadow:0 0 0 2px rgba(84,216,255,.12)}
+#skills-manager-modal .compact-skill-card footer{justify-content:flex-end;margin-top:auto}
+#skills-manager-modal #skill-new{width:36px!important;min-width:36px!important;height:36px!important;min-height:36px!important;padding:0!important}
+#skills-manager-modal #skill-new svg{width:18px;height:18px}
+
 /* Skills extraídas de playbooks */
-.skill-import-layout{display:grid;gap:14px}.skill-import-controls{display:grid;grid-template-columns:minmax(260px,1fr) auto;gap:9px;align-items:end}.skill-import-controls label{display:grid;gap:5px}.skill-import-controls select{width:100%;min-height:38px}.skill-import-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border:1px solid var(--border,#263b56);border-radius:11px;background:rgba(255,255,255,.018);font-size:12px}.skill-import-summary span{color:var(--muted,#8fa6bf)}.skill-import-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:9px;margin-top:9px}.skill-import-card{cursor:pointer;display:block}.skill-import-card header{display:flex!important;gap:9px!important}.skill-import-card header>input{width:16px;height:16px;flex:0 0 auto;margin-top:3px}.skill-import-card p{margin-top:8px!important}.skill-import-actions{padding-top:10px;border-top:1px solid var(--border,#263b56)}
+.skill-import-layout{display:grid;gap:12px}
+.skill-import-controls{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap}.skill-import-controls label{display:grid;gap:5px;flex:1 1 320px}.skill-import-controls input{width:100%;min-height:38px}.skill-import-controls #skill-import-generate{white-space:nowrap}
+.skill-import-message{min-height:18px;font-size:12px}.skill-import-message[data-tone="error"]{color:var(--bad,#ff6577)}.skill-import-message[data-tone="ok"]{color:var(--good,#45d483)}
+.skill-playbook-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:9px}.skill-playbook-card{padding:11px;border:1px solid var(--border,#263b56);border-radius:12px;background:rgba(255,255,255,.016);cursor:pointer;outline:none;min-width:0}.skill-playbook-card:hover,.skill-playbook-card.selected{border-color:rgba(84,216,255,.55);background:rgba(84,216,255,.055)}.skill-playbook-card:focus-visible{box-shadow:0 0 0 2px rgba(84,216,255,.12)}.skill-playbook-card h4{margin:0 0 4px;font-size:13px}.skill-playbook-card p{margin:0;color:var(--muted,#8fa6bf);font-size:11px;overflow-wrap:anywhere}.skill-playbook-card small{display:block;margin-top:7px;color:var(--accent,#54d8ff);font-size:10px}
+.skill-import-summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;border:1px solid var(--border,#263b56);border-radius:11px;background:rgba(255,255,255,.018);font-size:12px}.skill-import-summary span{color:var(--muted,#8fa6bf)}.skill-import-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:9px;margin-top:9px}.skill-import-card{cursor:pointer;display:block}.skill-import-card header{display:flex!important;gap:9px!important}.skill-import-card header>input{width:16px;height:16px;flex:0 0 auto;margin-top:3px}.skill-import-card p{margin-top:8px!important}.skill-import-actions{padding-top:10px;border-top:1px solid var(--border,#263b56)}
+.skill-playbook-pager{padding-top:2px!important}
 
 /* N2 */
 #view-n2 .n2-compact-head:empty{display:none!important}
@@ -99,8 +117,12 @@
 @media(max-width:760px){
   .compact-queue-tools{grid-template-columns:1fr!important;width:100%!important}
   #compact-discovery-modal .fleet-columns{grid-template-columns:1fr!important}
-  #compact-playbooks-modal .playbook-manager-toolbar{grid-template-columns:1fr!important}
+  #compact-discovery-modal .fleet-actions{align-items:stretch!important}
+  #compact-discovery-modal .fleet-scope-field{flex:1 1 100%!important;width:100%!important}
+  #compact-discovery-modal #fleet-start{align-self:auto!important}
+  #compact-playbooks-modal .playbook-search-shell{width:100%}
+  #compact-playbooks-modal .playbook-search-shell input{width:100%!important;min-width:0!important;flex:1}
   .database-resource-metrics{grid-template-columns:1fr 1fr}
-  .skill-import-controls{grid-template-columns:1fr}.skill-import-summary{align-items:flex-start;flex-direction:column}.skill-import-grid{grid-template-columns:1fr}
+  .skill-import-controls{align-items:stretch}.skill-import-controls label{flex-basis:100%}.skill-import-summary{align-items:flex-start;flex-direction:column}.skill-import-grid,.skill-playbook-grid{grid-template-columns:1fr}
   .analysis-modal-panel{top:4px!important;width:calc(100vw - 8px)!important;max-height:calc(100dvh - 8px)!important;border-radius:12px!important}
 }
