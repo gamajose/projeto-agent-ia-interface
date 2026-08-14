@@ -151,6 +151,7 @@ def _inject_noc_extension_assets(content: str) -> str:
         ("n2-persistence.css", "n2-persistence"),
         ("compact-operations.css", "compact-operations"),
         ("operational-refinement.css", "operational-refinement"),
+        ("icon-actions.css", "icon-actions"),
     ):
         content = _inject_style(content, asset, marker=marker)
 
@@ -169,6 +170,7 @@ def _inject_noc_extension_assets(content: str) -> str:
         ("inventory-pagination.js", "inventory-pagination"),
         ("operational-refinement.js", "operational-refinement"),
         ("playbook-manager-v2.js", "playbook-manager-v2"),
+        ("icon-actions.js", "icon-actions"),
     ):
         content = _inject_script(content, asset, marker=marker, defer=True)
     return content
