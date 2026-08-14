@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.services import noc_job_guard
 from app.services.noc_autonomy_control import scope_matches_problem
 
 
@@ -53,6 +54,103 @@ def test_selected_sensor_restricts_exact_problem_inside_client_and_host() -> Non
     }
     assert scope_matches_problem(_problem(site="abc", host="srv01", key="filesystem"), scope) is True
     assert scope_matches_problem(_problem(site="abc", host="srv01", key="memory"), scope) is False
+
+
+def test_stale_queued_job_is_revalidated_when_current_mode_is_automatic(monkeypatch) -> None:
+    metadata = {
+        "source": "checkmk_master",
+        "site_id": "pdl",
+        "checkmk_host": "pdl-monitor-matriz",
+        "checkmk_problem_key": "pdl|pdl-monitor-matriz|OMD pdl status",
+        "noc_control_revision": "old-revision",
+    }
+    monkeypatch.setattr(
+        noc_job_guard,
+        "authorize_noc_job",
+        lambda _metadata, *, settings: (False, "escopo autônomo mudou depois que o job entrou na fila"),
+    )
+    monkeypatch.setattr(
+        noc_job_guard,
+        "get_noc_autonomy_control",
+        lambda *, settings: {
+            "enabled": True,
+            "mode": "automatic",
+            "sites": [],
+            "hosts": [],
+            "problem_keys": [],
+            "revision": "new-revision",
+        },
+    )
+
+    allowed, reason = noc_job_guard.job_runtime_authorization(metadata, settings=object())
+
+    assert allowed is True
+    assert "revalidado" in reason
+    assert "automático" in reason
+
+
+def test_stale_queued_job_remains_blocked_if_current_selected_scope_excludes_it(monkeypatch) -> None:
+    metadata = {
+        "source": "checkmk_master",
+        "site_id": "pdl",
+        "checkmk_host": "pdl-monitor-matriz",
+        "checkmk_problem_key": "pdl|pdl-monitor-matriz|OMD pdl status",
+        "noc_control_revision": "old-revision",
+    }
+    monkeypatch.setattr(
+        noc_job_guard,
+        "authorize_noc_job",
+        lambda _metadata, *, settings: (False, "escopo autônomo mudou depois que o job entrou na fila"),
+    )
+    monkeypatch.setattr(
+        noc_job_guard,
+        "get_noc_autonomy_control",
+        lambda *, settings: {
+            "enabled": True,
+            "mode": "selected",
+            "sites": ["outro-site"],
+            "hosts": [],
+            "problem_keys": [],
+            "revision": "new-revision",
+        },
+    )
+
+    allowed, reason = noc_job_guard.job_runtime_authorization(metadata, settings=object())
+
+    assert allowed is False
+    assert "não pertence mais" in reason
+
+
+def test_stale_queued_job_remains_blocked_when_agents_are_disabled(monkeypatch) -> None:
+    metadata = {
+        "source": "checkmk_master",
+        "site_id": "pdl",
+        "checkmk_host": "pdl-monitor-matriz",
+        "checkmk_problem_key": "pdl|pdl-monitor-matriz|OMD pdl status",
+        "noc_control_revision": "old-revision",
+    }
+    monkeypatch.setattr(
+        noc_job_guard,
+        "authorize_noc_job",
+        lambda _metadata, *, settings: (False, "escopo autônomo mudou depois que o job entrou na fila"),
+    )
+    monkeypatch.setattr(
+        noc_job_guard,
+        "get_noc_autonomy_control",
+        lambda *, settings: {
+            "enabled": False,
+            "mode": "automatic",
+            "sites": [],
+            "hosts": [],
+            "problem_keys": [],
+            "revision": "new-revision",
+        },
+    )
+
+    allowed, reason = noc_job_guard.job_runtime_authorization(metadata, settings=object())
+
+    assert allowed is False
+    assert "desligada" in reason
 
 
 def test_worker_has_second_runtime_guard_before_ssh() -> None:
