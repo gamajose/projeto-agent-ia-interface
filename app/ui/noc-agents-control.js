@@ -5,6 +5,8 @@
     control: { enabled: false, mode: "automatic", sites: [], hosts: [], problem_keys: [] },
     overview: { sites: [], problems: [], summary: {} },
     skills: [],
+    siteDetails: {},
+    siteDetailLoading: new Set(),
     selectedSites: new Set(),
     selectedHosts: new Set(),
     selectedProblems: new Set(),
@@ -87,7 +89,7 @@
           </section>
           <section class="noc-scope-column">
             <header><b>2</b><div><strong>Hosts</strong><small>Sem host marcado = todos do cliente.</small></div></header>
-            <input class="noc-scope-search" id="noc-host-search" type="search" placeholder="Pesquisar host">
+            <input class="noc-scope-search" id="noc-host-search" type="search" placeholder="Buscar por IP ou nome" aria-label="Buscar host por IP ou nome">
             <div class="noc-scope-list" id="noc-scope-hosts"></div>
           </section>
           <section class="noc-scope-column">
@@ -177,25 +179,74 @@
     return Array.isArray(state.overview.problems) ? state.overview.problems : [];
   }
 
+  async function loadSiteDetail(siteId) {
+    const normalized = String(siteId || "").trim();
+    if (!normalized || state.siteDetails[normalized] || state.siteDetailLoading.has(normalized)) return;
+    state.siteDetailLoading.add(normalized);
+    try {
+      state.siteDetails[normalized] = await request(`/ui/api/noc/checkmk-master/sites/${encodeURIComponent(normalized)}`);
+    } catch (error) {
+      state.siteDetails[normalized] = { hosts: [], problems: [], error: error.message };
+    } finally {
+      state.siteDetailLoading.delete(normalized);
+      renderScope();
+    }
+  }
+
+  function ensureSelectedSiteDetails() {
+    state.selectedSites.forEach((siteId) => {
+      if (!state.siteDetails[siteId] && !state.siteDetailLoading.has(siteId)) void loadSiteDetail(siteId);
+    });
+  }
+
   function hostItems() {
     if (!state.selectedSites.size) return [];
     const query = normalizedQuery("#noc-host-search");
     const map = new Map();
+
+    state.selectedSites.forEach((siteId) => {
+      const detail = state.siteDetails[siteId];
+      const hosts = Array.isArray(detail?.hosts) ? detail.hosts : [];
+      hosts.forEach((item) => {
+        const host = String(item.host_name || item.host || "").trim();
+        if (!host) return;
+        const key = `${siteId}|${host}`;
+        map.set(key, {
+          site_id: String(siteId),
+          host,
+          address: String(item.internal_address || item.host_address || ""),
+          count: Number(item.problem_count || 0),
+          state: Number(item.state || 0),
+          environment: String(item.environment || ""),
+          host_kind: String(item.host_kind || ""),
+        });
+      });
+    });
+
     problemItems()
       .filter((item) => state.selectedSites.has(String(item.site_id || "")))
       .forEach((item) => {
+        const siteId = String(item.site_id || "");
         const host = String(item.host || "").trim();
         if (!host) return;
-        const key = `${item.site_id}|${host}`;
-        if (!map.has(key)) map.set(key, {
-          site_id: String(item.site_id || ""),
-          host,
-          address: String(item.host_address || ""),
-          count: 0,
-        });
-        map.get(key).count += 1;
+        const key = `${siteId}|${host}`;
+        if (!map.has(key)) {
+          map.set(key, {
+            site_id: siteId,
+            host,
+            address: String(item.host_address || ""),
+            count: 0,
+            state: 0,
+            environment: "",
+            host_kind: "",
+          });
+        }
+        if (!state.siteDetails[siteId]) map.get(key).count += 1;
       });
-    return [...map.values()].filter((item) => !query || `${item.host} ${item.address} ${item.site_id}`.toLocaleLowerCase("pt-BR").includes(query));
+
+    return [...map.values()]
+      .sort((a, b) => a.host.localeCompare(b.host, "pt-BR"))
+      .filter((item) => !query || `${item.host} ${item.address} ${item.site_id} ${item.environment} ${item.host_kind}`.toLocaleLowerCase("pt-BR").includes(query));
   }
 
   function scopedProblems() {
@@ -209,10 +260,17 @@
     });
   }
 
+  function selectedSiteDetailsReady() {
+    if (!state.selectedSites.size) return false;
+    return [...state.selectedSites].every((siteId) => Boolean(state.siteDetails[siteId]));
+  }
+
   function pruneSelection() {
-    const allowedHosts = new Set(hostItems().map((item) => item.host));
-    if (state.selectedSites.size) {
+    if (selectedSiteDetailsReady()) {
+      const allowedHosts = new Set(hostItems().map((item) => item.host));
       [...state.selectedHosts].forEach((host) => { if (!allowedHosts.has(host)) state.selectedHosts.delete(host); });
+    }
+    if (state.selectedSites.size) {
       const allowedProblems = new Set(scopedProblems().map((item) => String(item.problem_key || "")));
       [...state.selectedProblems].forEach((key) => { if (!allowedProblems.has(key)) state.selectedProblems.delete(key); });
     } else {
@@ -223,6 +281,7 @@
 
   function renderScope() {
     if (!$("#noc-selected-scope") || state.control.mode !== "selected") return;
+    ensureSelectedSiteDetails();
     pruneSelection();
     const sitesRoot = $("#noc-scope-sites");
     const hostsRoot = $("#noc-scope-hosts");
@@ -233,10 +292,16 @@
       sitesRoot.innerHTML = items.length ? items.map((site) => `
         <label class="noc-scope-option">
           <input type="checkbox" data-noc-site="${esc(site.site_id)}" ${state.selectedSites.has(String(site.site_id)) ? "checked" : ""}>
-          <span><strong>${esc(site.alias || site.site_id)}</strong><small>${esc(site.site_id)} · ${esc(site.problem_count || 0)} erro(s)</small></span>
+          <span><strong>${esc(site.alias || site.site_id)}</strong><small>${esc(site.site_id)} · ${esc(site.host_count || 0)} host(s) · ${esc(site.problem_count || 0)} erro(s)</small></span>
         </label>`).join("") : '<div class="noc-scope-empty">Nenhum cliente encontrado.</div>';
       $$('[data-noc-site]', sitesRoot).forEach((input) => input.addEventListener("change", () => {
-        if (input.checked) state.selectedSites.add(input.dataset.nocSite); else state.selectedSites.delete(input.dataset.nocSite);
+        const siteId = String(input.dataset.nocSite || "");
+        if (input.checked) {
+          state.selectedSites.add(siteId);
+          void loadSiteDetail(siteId);
+        } else {
+          state.selectedSites.delete(siteId);
+        }
         renderScope();
       }));
     }
@@ -246,15 +311,20 @@
         hostsRoot.innerHTML = '<div class="noc-scope-empty">Selecione primeiro o cliente.</div>';
       } else {
         const items = hostItems();
-        hostsRoot.innerHTML = items.length ? items.map((item) => `
-          <label class="noc-scope-option">
-            <input type="checkbox" data-noc-host="${esc(item.host)}" ${state.selectedHosts.has(item.host) ? "checked" : ""}>
-            <span><strong>${esc(item.host)}</strong><small>${esc(item.address || "sem IP")} · ${esc(item.count)} erro(s)</small></span>
-          </label>`).join("") : '<div class="noc-scope-empty">Nenhum host com erro ativo.</div>';
-        $$('[data-noc-host]', hostsRoot).forEach((input) => input.addEventListener("change", () => {
-          if (input.checked) state.selectedHosts.add(input.dataset.nocHost); else state.selectedHosts.delete(input.dataset.nocHost);
-          renderScope();
-        }));
+        const loading = [...state.selectedSites].some((siteId) => state.siteDetailLoading.has(siteId));
+        if (!items.length && loading) {
+          hostsRoot.innerHTML = '<div class="noc-scope-empty">Carregando inventário de hosts...</div>';
+        } else {
+          hostsRoot.innerHTML = items.length ? items.map((item) => `
+            <label class="noc-scope-option">
+              <input type="checkbox" data-noc-host="${esc(item.host)}" ${state.selectedHosts.has(item.host) ? "checked" : ""}>
+              <span><strong>${esc(item.host)}</strong><small>${esc(item.address || "sem IP")} · ${item.count ? `${esc(item.count)} erro(s)` : "sem erro ativo"}</small></span>
+            </label>`).join("") : '<div class="noc-scope-empty">Nenhum host encontrado no inventário do cliente.</div>';
+          $$('[data-noc-host]', hostsRoot).forEach((input) => input.addEventListener("change", () => {
+            if (input.checked) state.selectedHosts.add(input.dataset.nocHost); else state.selectedHosts.delete(input.dataset.nocHost);
+            renderScope();
+          }));
+        }
       }
     }
 
@@ -264,7 +334,7 @@
         <label class="noc-scope-option noc-problem-option">
           <input type="checkbox" data-noc-problem="${esc(item.problem_key)}" ${state.selectedProblems.has(String(item.problem_key || "")) ? "checked" : ""}>
           <span><strong>${esc(item.service || "Sensor")}</strong><small>${esc(item.host || "")} · ${esc(String(item.output || "").slice(0, 80))}</small></span>
-        </label>`).join("") : '<div class="noc-scope-empty">Selecione um cliente para listar os erros.</div>';
+        </label>`).join("") : '<div class="noc-scope-empty">Nenhum erro ativo para o escopo selecionado.</div>';
       $$('[data-noc-problem]', problemsRoot).forEach((input) => input.addEventListener("change", () => {
         if (input.checked) state.selectedProblems.add(input.dataset.nocProblem); else state.selectedProblems.delete(input.dataset.nocProblem);
         renderCounts();
@@ -321,17 +391,19 @@
   }
 
   async function changeMode(mode) {
-    if (!['automatic', 'selected'].includes(mode)) return;
+    if (!["automatic", "selected"].includes(mode)) return;
+    const previousMode = state.control.mode;
     state.control = { ...state.control, mode };
     renderControl();
-    if (state.control.enabled) {
-      try {
-        await saveControl({ enabled: true });
-      } catch (error) {
-        state.control = { ...state.control, mode: mode === 'automatic' ? 'selected' : 'automatic' };
-        renderControl();
-        flash(error.message, true);
+    try {
+      await saveControl({ enabled: Boolean(state.control.enabled) });
+      if (mode === "selected" && !state.control.enabled) {
+        flash("Modo selecionado salvo. Escolha o cliente, host ou sensor e depois ligue os agentes quando quiser.");
       }
+    } catch (error) {
+      state.control = { ...state.control, mode: previousMode };
+      renderControl();
+      flash(error.message, true);
     }
   }
 
