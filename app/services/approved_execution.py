@@ -10,6 +10,7 @@ from app.services.approvals import (
     token_digest,
     verify_approval_token,
 )
+from app.services.checkmk_post_correction import collect_target_from_monitor
 from app.services.correction_comparison import build_before_after_comparison
 from app.services.persistence import (
     complete_approval_execution,
@@ -165,6 +166,20 @@ def _pending_tools_belong_to_playbook(
     return bool(requested) and requested.issubset(approved_scope)
 
 
+def _requires_checkmk_post_collection(actions: list[dict[str, Any]]) -> bool:
+    """Correções do agente Checkmk só terminam depois de nova coleta no monitor."""
+    for item in actions:
+        tool = str(item.get("tool") or "").strip()
+        arguments = dict(item.get("arguments") or {})
+        if tool == "checkmk.resolve_legacy_socket_conflict":
+            return True
+        if tool == "systemd.recover_unit":
+            unit = str(arguments.get("unit") or "").casefold()
+            if any(token in unit for token in ("check-mk-agent", "check_mk", "xinetd")):
+                return True
+    return False
+
+
 def execute_approved_investigation(
     investigation_id: str,
     token: str,
@@ -241,6 +256,7 @@ def execute_approved_investigation(
     results: list[dict[str, Any]] = []
     comparison: dict[str, Any] = {}
     recovery: dict[str, Any] = {}
+    post_correction_collection: dict[str, Any] | None = None
     playbook_draft: dict[str, Any] | None = None
     playbook_draft_error: str | None = None
     next_approval_token: str | None = None
@@ -263,6 +279,28 @@ def execute_approved_investigation(
             )
         results = list(recovery.get("results") or [])
         status = str(recovery.get("status") or "failed")
+
+        if status == "validated" and route.site_scoped and _requires_checkmk_post_collection(actions):
+            site_scope = dict(analysis.get("site_scope") or {})
+            target_host = str(site_scope.get("host_name") or "").strip()
+            if not target_host:
+                post_correction_collection = {
+                    "stage": "checkmk_post_correction_collection",
+                    "status": "failed",
+                    "reason": "TARGET_HOST não foi preservado no envelope site-scoped",
+                    "same_site_only": True,
+                }
+            else:
+                post_correction_collection = collect_target_from_monitor(executor, target_host)
+            recovery["post_correction_collection"] = post_correction_collection
+            if post_correction_collection.get("status") != "validated":
+                status = "failed"
+                recovery["status"] = "failed"
+                recovery["state"] = "post_correction_collection_failed"
+                recovery["summary"] = (
+                    "A correção no TARGET_HOST foi validada, mas a nova coleta no MONITORING_HOST não foi confirmada."
+                )
+
         comparison = build_before_after_comparison(results)
         updated_analysis = dict(analysis)
         updated_analysis["correction_validation"] = comparison
@@ -271,6 +309,8 @@ def execute_approved_investigation(
         updated_analysis["recovery_loop"] = recovery
         updated_analysis["recovery_state"] = recovery.get("state")
         updated_analysis["recovery_blockers"] = recovery.get("blockers") or []
+        if post_correction_collection is not None:
+            updated_analysis["checkmk_post_correction_collection"] = post_correction_collection
         updated_analysis["approved_execution_route"] = {
             **dict(route.metadata),
             "site_scoped": route.site_scoped,
@@ -361,6 +401,7 @@ def execute_approved_investigation(
             "results": results,
             "before_after": comparison,
             "recovery": recovery,
+            "post_correction_collection": post_correction_collection,
             "execution_route": {
                 **dict(route.metadata),
                 "site_scoped": route.site_scoped,
@@ -386,6 +427,8 @@ def execute_approved_investigation(
             "site_scoped": route.site_scoped,
             "context": route.context,
         }
+        if post_correction_collection is not None:
+            updated_analysis["checkmk_post_correction_collection"] = post_correction_collection
         if recovery:
             updated_analysis["recovery_loop"] = recovery
             updated_analysis["recovery_state"] = recovery.get("state")
