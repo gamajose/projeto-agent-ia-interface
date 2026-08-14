@@ -5,6 +5,7 @@ from typing import Any
 from app.core.policies import EnvironmentType, environment_allows_correction
 from app.core.settings import Settings
 from app.services.checkmk_post_correction import collect_target_from_monitor
+from app.services import noc_incidents as incident_store
 from app.services.noc_skills import select_noc_skill
 from app.services.site_scoped_execution import build_approved_execution_route
 from app.services.tool_registry import execute_tool
@@ -41,6 +42,40 @@ def _environment(incident: dict[str, Any], result: dict[str, Any]) -> Environmen
         if environment != EnvironmentType.UNKNOWN:
             return environment
     return EnvironmentType.UNKNOWN
+
+
+def _persist_known_cause(
+    incident: dict[str, Any],
+    *,
+    skill_id: str,
+    conclusion: str,
+    settings: Settings,
+) -> None:
+    incident_id = str(incident.get("id") or "").strip()
+    if not incident_id:
+        return
+    try:
+        client = incident_store._redis(settings)
+        current = incident_store._load(client, settings, incident_id)
+        if not current:
+            return
+        current.update(
+            {
+                "analysis_status": "attention",
+                "confidence": 100,
+                "probable_cause": (
+                    "Conflito legado do agente Checkmk confirmado: check_mk.socket em falha enquanto "
+                    "xinetd permanece funcional e atende a porta TCP/6556."
+                ),
+                "conclusion": conclusion,
+                "deterministic_skill": skill_id,
+            }
+        )
+        incident_store._store(client, settings, current)
+    except Exception:
+        # Falha ao enriquecer o histórico nunca deve transformar uma correção
+        # tecnicamente validada em falha operacional.
+        return
 
 
 def deterministic_skill_for_incident(incident: dict[str, Any]) -> dict[str, Any] | None:
@@ -92,6 +127,7 @@ def run_deterministic_skill_correction(
     skill = deterministic_skill_for_incident(incident)
     if not skill:
         return None
+    skill_id = str(skill.get("id") or "")
     specification = dict(skill.get("deterministic") or {})
     actions = [item for item in specification.get("tools") or [] if isinstance(item, dict)]
     if not actions:
@@ -103,7 +139,7 @@ def run_deterministic_skill_correction(
             "status": "blocked",
             "state": "environment_not_allowed",
             "reason": f"ambiente {environment.value} não permite correção determinística",
-            "deterministic_skill": skill.get("id"),
+            "deterministic_skill": skill_id,
             "results": [],
         }
 
@@ -122,7 +158,7 @@ def run_deterministic_skill_correction(
             "status": "blocked",
             "state": "tool_not_allowed",
             "reason": "a Skill determinística exige ferramenta fora da allowlist NOC",
-            "deterministic_skill": skill.get("id"),
+            "deterministic_skill": skill_id,
             "results": [],
         }
 
@@ -133,7 +169,7 @@ def run_deterministic_skill_correction(
             "status": "blocked",
             "state": "site_scope_missing",
             "reason": "a investigação não preservou uma rota isolada cliente/site para a correção",
-            "deterministic_skill": skill.get("id"),
+            "deterministic_skill": skill_id,
             "results": [],
         }
 
@@ -150,7 +186,7 @@ def run_deterministic_skill_correction(
             "status": "failed",
             "state": "route_error",
             "reason": f"não foi possível reconstruir a rota segura da Skill: {type(exc).__name__}: {exc}",
-            "deterministic_skill": skill.get("id"),
+            "deterministic_skill": skill_id,
             "results": [],
         }
 
@@ -163,7 +199,7 @@ def run_deterministic_skill_correction(
             "status": "blocked",
             "state": "route_not_site_scoped",
             "reason": "Skill determinística exige rota site-scoped; acesso direto foi recusado",
-            "deterministic_skill": skill.get("id"),
+            "deterministic_skill": skill_id,
             "results": [],
         }
 
@@ -195,30 +231,58 @@ def run_deterministic_skill_correction(
                     "status": "failed" if correction.get("status") == "failed" else "blocked",
                     "state": "deterministic_preconditions_not_met",
                     "reason": str(correction.get("reason") or "pré-condições da Skill não confirmaram que a correção é aplicável"),
-                    "deterministic_skill": skill.get("id"),
+                    "deterministic_skill": skill_id,
                     "results": results,
                     "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
                 }
+
+        _persist_known_cause(
+            incident,
+            skill_id=skill_id,
+            conclusion=(
+                "A Skill determinística confirmou as pré-condições e aplicou a limpeza segura de check_mk.socket, "
+                "preservando o xinetd funcional. Nova coleta no servidor de monitoramento em andamento."
+            ),
+            settings=settings,
+        )
 
         if specification.get("checkmk_post_collection"):
             target_host = str(scope.get("host_name") or incident.get("host") or "").strip()
             post_collection = collect_target_from_monitor(executor, target_host)
             results.append(post_collection)
             if str(post_collection.get("status") or "") != "validated":
+                _persist_known_cause(
+                    incident,
+                    skill_id=skill_id,
+                    conclusion=(
+                        "O conflito local foi corrigido pela Skill determinística, porém a nova coleta no Checkmk "
+                        "não foi validada; o incidente permanece aberto para continuidade."
+                    ),
+                    settings=settings,
+                )
                 return {
                     "status": "failed",
                     "state": "checkmk_post_collection_failed",
                     "reason": "correção local aplicada, mas a nova coleta no Checkmk não foi validada",
-                    "deterministic_skill": skill.get("id"),
+                    "deterministic_skill": skill_id,
                     "results": results,
                     "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
                 }
 
+        _persist_known_cause(
+            incident,
+            skill_id=skill_id,
+            conclusion=(
+                "Conflito legado corrigido no TARGET_HOST e nova coleta validada no MONITORING_HOST/CHECKMK_SITE "
+                "do mesmo cliente. Aguardando apenas a confirmação final do estado do sensor no Livestatus."
+            ),
+            settings=settings,
+        )
         return {
             "status": "validated",
             "state": "deterministic_skill_validated",
             "summary": "Skill conhecida executada e validada sem depender do provedor de IA.",
-            "deterministic_skill": skill.get("id"),
+            "deterministic_skill": skill_id,
             "results": results,
             "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
             "new_approval_required": False,
@@ -229,7 +293,7 @@ def run_deterministic_skill_correction(
             "status": "failed",
             "state": "deterministic_execution_error",
             "reason": f"{type(exc).__name__}: {exc}",
-            "deterministic_skill": skill.get("id"),
+            "deterministic_skill": skill_id,
             "results": results,
             "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
         }
