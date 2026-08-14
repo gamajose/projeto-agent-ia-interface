@@ -66,6 +66,12 @@ OMD_DOCKER = re.compile(
     r"^docker\s+exec\s+[A-Za-z0-9_.-]+\s+su\s+-\s+[A-Za-z0-9_-]+\s+-c\s+['\"]omd\s+(start|restart)\s+([A-Za-z0-9_.@:-]+)['\"]$",
     re.IGNORECASE,
 )
+LEGACY_CHECKMK_SOCKET_CLEANUP = re.compile(
+    r"^systemctl\s+disable\s+--now\s+check_mk\.socket\s*&&\s*"
+    r"systemctl\s+reset-failed\s+check_mk\.socket\s*&&\s*"
+    r"systemctl\s+daemon-reload$",
+    re.IGNORECASE,
+)
 
 
 def _contains_forbidden(command: str) -> str | None:
@@ -90,10 +96,20 @@ def validate_correction(command: str) -> CorrectionDecision:
 
     A IA nunca pode parar, remover, apagar, editar, instalar, reiniciar host,
     manipular banco de dados ou controlar o ciclo de vida de containers.
+    A única desativação aceita é a unit legada check_mk.socket, através do
+    comando exato usado pela ferramenta estruturada e protegido por
+    pré-condições funcionais do xinetd/porta 6556.
     """
     stripped = command.strip()
     if not stripped:
         return CorrectionDecision(False, "comando vazio")
+
+    if LEGACY_CHECKMK_SOCKET_CLEANUP.fullmatch(stripped):
+        return CorrectionDecision(
+            True,
+            "limpeza controlada da unit legada check_mk.socket com xinetd previamente validado",
+            "checkmk_legacy_socket_cleanup",
+        )
 
     forbidden = _contains_forbidden(stripped)
     if forbidden:
