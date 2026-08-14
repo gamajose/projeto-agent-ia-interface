@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from redis import Redis
@@ -10,6 +11,7 @@ from redis import Redis
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings, get_settings
 from app.services import checkmk_master_patrol as patrol
+from app.services import noc_incidents as incident_store
 from app.services.checkmk_operational import collect_checkmk_operational_snapshot
 from app.services.jobs import cancel_job, enqueue_investigation, get_job
 from app.services.noc_action_policy import classify_problem_category
@@ -77,23 +79,47 @@ def _environment(value: Any) -> EnvironmentType:
         return EnvironmentType.UNKNOWN
 
 
+def _mark_manual_correction_intent(
+    incident_id: str,
+    *,
+    run_id: str,
+    operator: str,
+    settings: Settings,
+) -> None:
+    if not incident_id:
+        return
+    client = incident_store._redis(settings)
+    incident = incident_store._load(client, settings, incident_id)
+    if not incident:
+        return
+    incident.update(
+        {
+            "manual_correction_requested": True,
+            "manual_correction_run_id": run_id,
+            "manual_correction_requested_by": operator,
+            "manual_correction_requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    incident_store._store(client, settings, incident)
+
+
 def _ensure_manual_job(
     item: dict[str, Any],
     result: dict[str, Any],
     *,
     run_id: str,
     scope: dict[str, Any],
+    operator: str,
     settings: Settings,
 ) -> dict[str, Any]:
-    """Garante que um clique manual possa reabrir uma investigação antiga.
+    """Transforma o clique em Arrumar em uma intenção real de correção.
 
-    Se já existe um job realmente executando, acompanha o mesmo job para não
-    duplicar SSH. Job antigo em fila é substituído por uma autorização pontual
-    nova, porque a autorização original pode ter ficado obsoleta.
+    A coleta continua em modo de proposta para que a IA produza ações
+    estruturadas, a segunda IA revise e o token fique ligado exatamente às
+    ações. O pós-processamento consome essa autorização e executa a correção
+    segura automaticamente, sem parar no diagnóstico.
     """
 
-    if result.get("queued"):
-        return result
     authorization = dict(result.get("authorization") or {})
     route = dict(result.get("route") or {})
     event = dict(result.get("event") or {})
@@ -101,7 +127,19 @@ def _ensure_manual_job(
     if not authorization.get("allowed") or not route.get("valid") or not route.get("auto_investigate") or not incident:
         return result
 
-    previous_job_id = str(incident.get("job_id") or "").strip()
+    incident_id = str(incident.get("id") or "")
+    _mark_manual_correction_intent(
+        incident_id,
+        run_id=run_id,
+        operator=operator,
+        settings=settings,
+    )
+
+    # A ronda pode ter acabado de criar um job genérico de investigação. Para
+    # execução manual, substituímos o job ainda enfileirado por outro que carrega
+    # explicitamente a intenção de corrigir. Se ele já começou, apenas o
+    # acompanhamos para evitar SSH duplicado; o incidente já guarda a intenção.
+    previous_job_id = str((result.get("job") or {}).get("job_id") or incident.get("job_id") or "").strip()
     if previous_job_id:
         current = get_job(previous_job_id, settings=settings) or {}
         current_status = str(current.get("status") or "")
@@ -127,6 +165,12 @@ def _ensure_manual_job(
         site_id=str(route.get("site_id") or item.get("site_id") or ""),
         client_alias=str(route.get("client_alias") or item.get("alias") or ""),
     )
+    objective += (
+        "\n\nINTENÇÃO DO OPERADOR: ARRUMAR ESTE PROBLEMA. "
+        "Não encerre o trabalho somente com diagnóstico. Identifique a causa, produza a ação corretiva estruturada "
+        "permitida pelo playbook/Skill, submeta-a à revisão da segunda IA e prepare a pós-validação. "
+        "Reboot/shutdown do servidor, acesso a banco, ações destrutivas e lifecycle de containers permanecem proibidos."
+    )
     playbook_id = str(skill.get("playbook_id") or "").strip() or None
     queued = enqueue_investigation(
         str(route.get("entry_address") or ""),
@@ -140,7 +184,7 @@ def _ensure_manual_job(
         metadata={
             "source": "checkmk_master",
             "site_scope": True,
-            "noc_incident_id": incident.get("id"),
+            "noc_incident_id": incident_id,
             "noc_control_revision": scope.get("revision"),
             "noc_run_id": run_id,
             "noc_scope_mode": "selected",
@@ -161,6 +205,8 @@ def _ensure_manual_job(
             "scope_key": route.get("scope_key"),
             "skill": skill,
             "manual_selected": True,
+            "manual_correction_requested": True,
+            "manual_correction_requested_by": operator,
             "isolation": {
                 "site_id": route.get("site_id"),
                 "cross_site_internal_ip_lookup": False,
@@ -169,8 +215,8 @@ def _ensure_manual_job(
         },
         settings=settings,
     )
-    if incident.get("id"):
-        attach_job(str(incident["id"]), str(queued["job_id"]), settings=settings)
+    if incident_id:
+        attach_job(incident_id, str(queued["job_id"]), settings=settings)
     return {**result, "queued": True, "job": queued, "manual_forced": True}
 
 
@@ -196,6 +242,7 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
 
         scope = dict(run.get("scope") or {})
         run_id = str(run.get("id") or "")
+        operator = str(run.get("requested_by") or "operator")
         selected_problems = [
             dict(item)
             for item in snapshot.get("problems") or []
@@ -213,13 +260,23 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
                     run_id=run_id,
                     passive=False,
                 )
-                result = _ensure_manual_job(item, result, run_id=run_id, scope=scope, settings=settings)
+                result = _ensure_manual_job(
+                    item,
+                    result,
+                    run_id=run_id,
+                    scope=scope,
+                    operator=operator,
+                    settings=settings,
+                )
                 patrol._persist_automation_result(item, result)  # noqa: SLF001
                 job = dict(result.get("job") or {})
+                event = dict(result.get("event") or {})
+                incident = dict(event.get("incident") or {})
                 if result.get("queued") and job.get("job_id"):
                     jobs.append(
                         {
                             "job_id": str(job.get("job_id")),
+                            "incident_id": str(incident.get("id") or ""),
                             "site_id": str(item.get("site_id") or ""),
                             "client_alias": str(item.get("alias") or item.get("client_alias") or ""),
                             "host": str(item.get("host") or ""),
@@ -237,6 +294,7 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
         result = {
             "status": "completed",
             "mode": "manual_selected",
+            "intent": "correct_and_validate",
             "problems_seen": len(selected_problems),
             "jobs_queued": len(jobs),
             "jobs": jobs,

@@ -13,18 +13,27 @@
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
 
-  function statusLabel(status) {
+  function statusLabel(status, resolutionStatus = '') {
     const value = String(status || '').toLowerCase();
+    const resolution = String(resolutionStatus || '').toLowerCase();
+    if (resolution === 'resolved') return 'Resolvido';
+    if (resolution === 'correcting') return 'Corrigindo';
+    if (resolution === 'watching' || resolution === 'validating') return 'Validando Checkmk';
+    if (resolution === 'needs_attention') return 'Não corrigido';
     if (value === 'queued') return 'Aguardando worker';
     if (value === 'running' || value === 'cancelling') return 'IA trabalhando';
-    if (value === 'completed') return 'Concluído';
-    if (value === 'failed') return 'Falhou';
+    if (value === 'completed') return 'Análise concluída';
+    if (value === 'failed') return 'Não corrigido';
     if (value === 'cancelled') return 'Cancelado';
     return value || 'Preparando';
   }
 
-  function statusClass(status) {
+  function statusClass(status, resolutionStatus = '') {
     const value = String(status || '').toLowerCase();
+    const resolution = String(resolutionStatus || '').toLowerCase();
+    if (resolution === 'resolved') return 'ok';
+    if (resolution === 'needs_attention') return 'error';
+    if (resolution === 'correcting' || resolution === 'watching' || resolution === 'validating') return 'running';
     if (value === 'completed') return 'ok';
     if (value === 'failed' || value === 'cancelled') return 'error';
     if (value === 'running' || value === 'cancelling') return 'running';
@@ -44,24 +53,25 @@
     const position = Number(run.queue_position || 0);
     target.innerHTML = `<section class="noc-manual-progress single" aria-live="polite">
       <div class="noc-manual-progress-head">
-        <div><span>EXECUÇÃO MANUAL</span><strong>Preparando ajuste</strong></div>
+        <div><span>EXECUÇÃO MANUAL</span><strong>Preparando correção</strong></div>
         <em class="queued">${position > 1 ? `posição ${position}` : 'iniciando'}</em>
       </div>
       ${progressBar(0)}
-      <p>${position > 1 ? `Existe outra execução manual antes desta. Posição atual: ${position}.` : 'O escopo foi recebido. O processador manual está preparando a investigação agora.'}</p>
+      <p>${position > 1 ? `Existe outra execução manual antes desta. Posição atual: ${position}.` : 'O escopo foi recebido. O processador manual está preparando a correção agora.'}</p>
     </section>`;
   }
 
   function renderSingle(run, job, target) {
     const status = String(job.status || run.status || 'queued');
+    const resolution = String(job.resolution_status || job.incident_status || '');
     const position = Number(job.queue_position || 0);
     const detail = job.error || job.detail || (status === 'queued'
       ? (position ? `Aguardando o worker. Posição ${position}.` : 'Aguardando o worker ficar livre.')
-      : 'Processando investigação.');
+      : 'Investigando, corrigindo e revalidando o problema.');
     target.innerHTML = `<section class="noc-manual-progress single" aria-live="polite">
       <div class="noc-manual-progress-head">
         <div><span>AJUSTE MANUAL</span><strong>${esc(job.host || 'Host')} · ${esc(job.service || 'Sensor')}</strong></div>
-        <em class="${statusClass(status)}">${esc(statusLabel(status))}</em>
+        <em class="${statusClass(status, resolution)}">${esc(statusLabel(status, resolution))}</em>
       </div>
       <div class="noc-manual-progress-meta">
         <span>${esc(job.host_address || job.site_id || '')}</span>
@@ -85,9 +95,10 @@
       <div class="noc-manual-job-list">
         ${jobs.map((job, index) => {
           const status = String(job.status || 'queued');
+          const resolution = String(job.resolution_status || job.incident_status || '');
           const position = Number(job.queue_position || 0);
-          const detail = job.error || job.detail || (status === 'queued' ? 'Aguardando worker.' : 'Processando.');
-          return `<article class="noc-manual-job ${statusClass(status)}">
+          const detail = job.error || job.detail || (status === 'queued' ? 'Aguardando worker.' : 'Investigando, corrigindo e validando.');
+          return `<article class="noc-manual-job ${statusClass(status, resolution)}">
             <b>${index + 1}</b>
             <div class="noc-manual-job-main">
               <strong>${esc(job.host || 'Host')} · ${esc(job.service || 'Sensor')}</strong>
@@ -95,7 +106,7 @@
               ${progressBar(job.percent)}
             </div>
             <div class="noc-manual-job-state">
-              <em>${esc(statusLabel(status))}</em>
+              <em>${esc(statusLabel(status, resolution))}</em>
               <span>${position && status === 'queued' ? `fila ${position}` : `${esc(job.percent || 0)}%`}</span>
             </div>
           </article>`;
@@ -114,7 +125,7 @@
     if (!jobs.length) {
       const result = run.result || {};
       if (String(run.status || '') === 'completed' && Number(result.jobs_queued || 0) === 0) {
-        target.innerHTML = `<section class="noc-manual-progress single"><div class="noc-manual-progress-head"><div><span>EXECUÇÃO MANUAL</span><strong>Nenhum ajuste necessário</strong></div><em class="ok">Concluído</em></div><p>Não há problema ativo correspondente ao escopo selecionado neste momento.</p></section>`;
+        target.innerHTML = `<section class="noc-manual-progress single"><div class="noc-manual-progress-head"><div><span>EXECUÇÃO MANUAL</span><strong>Nenhum ajuste necessário</strong></div><em class="ok">Sem problema ativo</em></div><p>Não há problema ativo correspondente ao escopo selecionado neste momento.</p></section>`;
       } else {
         renderPending(run, target);
       }

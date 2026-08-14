@@ -8,6 +8,7 @@ from app.services.jobs import get_job
 from app.services import noc_incidents as incident_store
 from app.services.noc_incidents import list_noc_incidents
 from app.services.noc_job_guard import job_runtime_authorization
+from app.services.noc_requested_correction import attempt_requested_correction
 from app.services.noc_supervisor import mark_job_failure, postprocess_investigation_result
 
 
@@ -74,7 +75,7 @@ def _safe_postprocess_result(
     # A investigação pode terminar depois que o operador desliga a chave ou
     # depois que o próprio Checkmk já confirmou recuperação. Em ambos os casos
     # preservamos a análise/evidências, porém removemos a capacidade de executar
-    # uma correção tardia. Sem approval_token, _auto_execute não inicia ações.
+    # uma correção tardia. Sem approval_token, nenhuma correção é iniciada.
     if recovered:
         reason = "O Checkmk normalizou antes do término da investigação; causa e evidências foram preservadas sem executar correção tardia."
     safe = dict(result)
@@ -83,6 +84,26 @@ def _safe_postprocess_result(
     if recovered:
         safe["recovered_before_investigation_completed"] = True
     return safe
+
+
+def _postprocess_and_correct(
+    incident_id: str,
+    safe_result: dict[str, Any],
+    *,
+    settings: Settings,
+) -> dict[str, Any] | None:
+    """Diagnóstico é etapa; o objetivo do NOC autorizado é resolver.
+
+    O supervisor tradicional continua responsável por aplicar a análise e pelo
+    self-healing já existente. Se ele não executou uma correção, a camada de
+    intenção verifica o clique "Arrumar" ou o modo autônomo atual e continua o
+    fluxo com correção segura + revalidação do Checkmk.
+    """
+    incident = postprocess_investigation_result(incident_id, safe_result, settings=settings)
+    if not incident or str(incident.get("status") or "") == "resolved":
+        return incident
+    corrected = attempt_requested_correction(incident_id, safe_result, settings=settings)
+    return corrected or incident
 
 
 def handle_worker_result(
@@ -108,7 +129,7 @@ def handle_worker_result(
             settings=settings,
             incident=incident,
         )
-        return postprocess_investigation_result(incident_id, safe_result, settings=settings)
+        return _postprocess_and_correct(incident_id, safe_result, settings=settings)
     if status == "cancelled" and job_result.get("blocked_by_autonomy"):
         reason = str(job_result.get("autonomy_reason") or "Atuação autônoma pausada pelo operador.")
         return _mark_job_paused(incident, reason, settings=settings)
@@ -132,8 +153,10 @@ def reconcile_noc_jobs(*, settings: Settings | None = None) -> dict[str, Any]:
         job_id = str(incident.get("job_id") or "")
         if not job_id:
             continue
-        # A presença de autonomy indica que o supervisor já pós-processou o job.
-        if "autonomy" in incident:
+        # autopilot_execution significa que a correção já passou pelo
+        # pós-processamento. autonomy sozinho não basta: uma execução manual pode
+        # precisar continuar do diagnóstico para a correção.
+        if incident.get("autopilot_execution") or str(incident.get("status") or "") == "resolved":
             continue
         try:
             job = get_job(job_id, settings=settings)
@@ -147,7 +170,7 @@ def reconcile_noc_jobs(*, settings: Settings | None = None) -> dict[str, Any]:
                     settings=settings,
                     incident=incident,
                 )
-                postprocess_investigation_result(
+                _postprocess_and_correct(
                     str(incident.get("id") or ""),
                     safe_result,
                     settings=settings,
