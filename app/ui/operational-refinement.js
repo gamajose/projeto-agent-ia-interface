@@ -1,5 +1,6 @@
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
+  const STORAGE_REFRESH_MS = 5000;
   let storageLoadedAt = 0;
   let storageLoading = false;
 
@@ -59,18 +60,25 @@
   }
 
   function setupAgentPolicies() {
-    const ui = window.AgentCompactUI;
     const agentModal = $('#compact-agent-modal');
+    if (!agentModal) return;
+
+    const subtitle = $('.compact-modal-head>div>p', agentModal);
+    if (subtitle) subtitle.remove();
+
     const policyButton = $('#compact-policy-button');
-    if (!ui || !agentModal || !policyButton) return;
-    let tools = $('.agent-modal-tools', agentModal);
-    if (!tools) {
-      tools = document.createElement('div');
-      tools.className = 'compact-toolbar agent-modal-tools';
-      const body = $('.compact-modal-body', agentModal);
-      body?.prepend(tools);
+    if (policyButton) {
+      policyButton.hidden = true;
+      policyButton.classList.add('compact-hidden');
     }
-    if (tools && policyButton.parentElement !== tools) tools.appendChild(policyButton);
+
+    const skillsButton = $('#skills-manager-button');
+    const powerRow = $('.noc-agent-power', agentModal);
+    if (skillsButton && powerRow && skillsButton.parentElement !== powerRow) {
+      skillsButton.classList.add('agent-skill-shortcut');
+      skillsButton.textContent = 'Skills';
+      powerRow.prepend(skillsButton);
+    }
   }
 
   function setupDiscoveryLayout() {
@@ -78,8 +86,10 @@
     if (!modal) return;
     const discovery = $('.fleet-contingency', modal);
     const head = $('.fleet-head.compact', discovery || modal);
+    const actions = $('.fleet-actions', head || discovery || modal);
     const scope = $('.fleet-scope-field', discovery || modal);
-    if (head && scope && scope.previousElementSibling !== head) head.insertAdjacentElement('afterend', scope);
+    const start = $('#fleet-start', discovery || modal);
+    if (scope && actions && start && scope.parentElement !== actions) actions.insertBefore(scope, start);
   }
 
   function setupGuardrails() {
@@ -143,11 +153,11 @@
 
   async function loadStorage(force = false) {
     if (storageLoading) return;
-    if (!force && Date.now() - storageLoadedAt < 30000) return;
+    if (!force && Date.now() - storageLoadedAt < STORAGE_REFRESH_MS) return;
     const root = $('#database-overview-grid');
     if (!root) return;
     storageLoading = true;
-    root.innerHTML = '<div class="empty-state">Atualizando métricas dos bancos...</div>';
+    if (!storageLoadedAt) root.innerHTML = '<div class="empty-state">Carregando métricas...</div>';
     try {
       renderStorage(await request('/ui/api/observability/storage'));
       storageLoadedAt = Date.now();
@@ -162,13 +172,16 @@
     const view = $('#view-dashboard');
     const metrics = $('#metrics-grid', view || document);
     if (!view || !metrics) return;
-    if (!$('#database-overview-panel')) {
-      const panel = document.createElement('article');
+    let panel = $('#database-overview-panel');
+    if (!panel) {
+      panel = document.createElement('article');
       panel.id = 'database-overview-panel';
       panel.className = 'panel database-overview-panel';
-      panel.innerHTML = `<div class="panel-header"><div><h3>Bancos e armazenamento</h3></div><button type="button" class="secondary-button" id="database-overview-refresh">Atualizar</button></div><div class="database-overview-grid" id="database-overview-grid"><div class="empty-state">Carregando métricas...</div></div>`;
+      panel.innerHTML = '<div class="database-overview-grid" id="database-overview-grid"><div class="empty-state">Carregando métricas...</div></div>';
       metrics.insertAdjacentElement('afterend', panel);
-      $('#database-overview-refresh')?.addEventListener('click', () => void loadStorage(true));
+    } else {
+      $('.panel-header', panel)?.remove();
+      $('#database-overview-refresh', panel)?.remove();
     }
     if (view.classList.contains('active')) void loadStorage(false);
   }
@@ -188,6 +201,7 @@
     const view = $('#view-playbooks');
     if (!ui || !modal || !view) return;
     view.classList.add('active');
+    view.removeAttribute('hidden');
     if (typeof loadPlaybookOptions === 'function') void loadPlaybookOptions().then(() => { if (typeof loadPlaybooks === 'function') void loadPlaybooks(); });
     else if (typeof loadPlaybooks === 'function') void loadPlaybooks();
     ui.open(modal);
@@ -199,9 +213,18 @@
     const inventory = $('#view-inventory');
     const view = $('#view-playbooks');
     if (!ui || !inventory || !view) return;
+
+    const legacyModal = $('#playbooks-utility-modal');
+    const legacyPanel = $('.utility-modal-content>.panel', legacyModal || document.createElement('div'));
+    if (legacyPanel && legacyPanel.parentElement !== view) view.appendChild(legacyPanel);
+    legacyModal?.remove();
+    $('#inventory-open-playbooks')?.remove();
+    view.removeAttribute('hidden');
+
     const nav = $('.nav-item[data-view="playbooks"]');
     if (nav) nav.hidden = true;
     const modal = ui.modal('compact-playbooks-modal', 'Playbooks', '');
+    $('.compact-modal-head>div>p', modal)?.remove();
     const body = $('.compact-modal-body', modal);
     if (body && view.parentElement !== body) body.appendChild(view);
 
@@ -216,6 +239,10 @@
     const addButton = $('#add-playbook');
     if (importButton && importButton.parentElement !== headActions) headActions.appendChild(importButton);
     if (addButton && addButton.parentElement !== headActions) headActions.appendChild(addButton);
+
+    inventory.querySelectorAll('button').forEach((button) => {
+      if (button.id !== 'inventory-playbooks' && String(button.textContent || '').trim().toLocaleLowerCase('pt-BR') === 'playbooks') button.remove();
+    });
 
     if (!$('#inventory-playbooks')) {
       const filters = $('.filters', inventory) || $('.panel-header', inventory);
@@ -267,7 +294,7 @@
   }
 
   document.addEventListener('click', (event) => {
-    if (event.target.closest('.nav-item[data-view="dashboard"]')) window.setTimeout(() => void loadStorage(false), 80);
+    if (event.target.closest('.nav-item[data-view="dashboard"]')) window.setTimeout(() => void loadStorage(true), 80);
   });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setup); else setup();
