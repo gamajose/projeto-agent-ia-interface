@@ -15,10 +15,19 @@ from app.services.runtime_env import runtime_value
 
 
 _SKILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
+_MASTER_SKILL_FILENAME = "noc-master.yml"
+_MASTER_SKILL_ID = "noc-master"
 
 
 @dataclass(frozen=True)
 class NOCSkill:
+    """Procedure interno da NOC Master Skill.
+
+    O nome da classe é mantido por compatibilidade com o restante da aplicação,
+    porém o catálogo físico agora possui uma única Skill mestre. Cada instância
+    representa apenas um procedure selecionável internamente pelo tipo do alerta.
+    """
+
     id: str
     title: str
     priority: int
@@ -71,6 +80,8 @@ class NOCSkill:
             "knowledge": list(self.knowledge),
             "constraints": list(self.constraints),
             "source": self.source,
+            "master_skill_id": _MASTER_SKILL_ID,
+            "procedure_id": self.id,
             "editable": True,
         }
 
@@ -79,6 +90,10 @@ def _skill_dir() -> Path:
     settings = get_settings()
     configured = str(runtime_value("NOC_SKILL_DIR", "", settings=settings) or "").strip()
     return Path(configured).expanduser() if configured else PROJECT_ROOT / "config" / "skills"
+
+
+def _master_skill_path() -> Path:
+    return _skill_dir() / _MASTER_SKILL_FILENAME
 
 
 def _runtime_catalog_path() -> Path:
@@ -155,16 +170,51 @@ def _write_runtime_catalog(payload: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
-@lru_cache(maxsize=1)
-def load_noc_skills() -> tuple[NOCSkill, ...]:
-    result: dict[str, NOCSkill] = {}
+def _builtin_procedures() -> dict[str, NOCSkill]:
+    """Lê uma única Skill física e expõe seus procedures internamente.
+
+    Durante upgrades antigos sem ``noc-master.yml`` ainda aceitamos o formato
+    legado de vários arquivos para não quebrar uma instalação no meio do deploy.
+    Assim que a Skill mestre existe, nenhum outro YAML do diretório participa do
+    ranking e não há conhecimento concorrente.
+    """
+
     directory = _skill_dir()
+    master = directory / _MASTER_SKILL_FILENAME
+    result: dict[str, NOCSkill] = {}
+    if master.exists():
+        payload = yaml.safe_load(master.read_text(encoding="utf-8")) or {}
+        if str(payload.get("id") or "").strip() != _MASTER_SKILL_ID:
+            raise ValueError(f"{master}: id deve ser {_MASTER_SKILL_ID}")
+        procedures = payload.get("procedures") or []
+        if not isinstance(procedures, list) or not procedures:
+            raise ValueError(f"{master}: procedures deve conter ao menos um procedimento")
+        for index, raw in enumerate(procedures):
+            if not isinstance(raw, dict):
+                raise ValueError(f"{master}: procedure {index + 1} inválido")
+            skill = _skill_from_payload(
+                dict(raw),
+                source=f"{master}#procedures[{index}]",
+            )
+            if skill.id in result:
+                raise ValueError(f"{master}: procedure duplicado: {skill.id}")
+            result[skill.id] = skill
+        return result
+
     if directory.exists():
         for path in sorted(directory.glob("*.yml")):
             payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             skill = _skill_from_payload(payload, source=str(path), fallback_id=path.stem)
             result[skill.id] = skill
+    return result
 
+
+@lru_cache(maxsize=1)
+def load_noc_skills() -> tuple[NOCSkill, ...]:
+    result = _builtin_procedures()
+
+    # Overrides runtime continuam sendo armazenados em um único catálogo de
+    # dados. Eles substituem procedures por ID, sem criar novas Skills físicas.
     runtime = _read_runtime_catalog()
     disabled = {str(item).strip().lower() for item in runtime.get("disabled") or []}
     for skill_id in disabled:
@@ -182,7 +232,35 @@ def reload_noc_skills() -> tuple[NOCSkill, ...]:
     return load_noc_skills()
 
 
+def noc_master_skill() -> dict[str, Any]:
+    """Retorna a única Skill apresentada à interface e seus procedures."""
+
+    path = _master_skill_path()
+    if path.exists():
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        title = str(payload.get("title") or "NOC Master Skill")
+        objective = str(payload.get("objective") or "")
+        principles = [str(item) for item in payload.get("principles") or []]
+    else:
+        title = "NOC Master Skill"
+        objective = "Catálogo operacional central do NOC."
+        principles = []
+    procedures = [skill.as_dict() for skill in load_noc_skills()]
+    return {
+        "id": _MASTER_SKILL_ID,
+        "title": title,
+        "objective": objective,
+        "principles": principles,
+        "procedures": procedures,
+        "procedure_count": len(procedures),
+        "source": str(path),
+        "editable": False,
+    }
+
+
 def save_noc_skill(payload: dict[str, Any]) -> dict[str, Any]:
+    """Salva override de um procedure interno no catálogo runtime único."""
+
     skill = _skill_from_payload(payload, source=str(_runtime_catalog_path()))
     catalog = _read_runtime_catalog()
     items = dict(catalog.get("items") or {})
@@ -241,6 +319,8 @@ def select_noc_skill(event: dict[str, Any], *, host_kind: str | None = None) -> 
             ],
             "constraints": ["Somente leitura até a política de correção autorizar uma ação."],
             "source": "builtin",
+            "master_skill_id": _MASTER_SKILL_ID,
+            "procedure_id": "generic-checkmk-alert",
         }
 
     kind = str(host_kind or event.get("host_kind") or "server").casefold()
@@ -261,7 +341,8 @@ def build_skill_objective(
 ) -> str:
     state = str(event.get("state_name") or event.get("state") or "ALERT")
     lines = [
-        f"Skill operacional: {skill.get('title') or skill.get('id')}",
+        "Skill operacional: NOC Master Skill",
+        f"Procedure selecionado: {skill.get('title') or skill.get('id')}",
         f"Cliente/site isolado: {client_alias} ({site_id})",
         f"Host Checkmk: {event.get('host') or '-'}",
         f"IP interno: {event.get('host_address') or '-'}",
@@ -273,7 +354,7 @@ def build_skill_objective(
     knowledge = [str(item) for item in skill.get("knowledge") or []]
     constraints = [str(item) for item in skill.get("constraints") or []]
     if knowledge:
-        lines.append("Conhecimento da skill: " + " | ".join(knowledge))
+        lines.append("Conhecimento do procedure: " + " | ".join(knowledge))
     if constraints:
         lines.append("Restricoes: " + " | ".join(constraints))
     lines.append(
