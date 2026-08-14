@@ -20,7 +20,7 @@ from app.services.persistence import (
 from app.services.playbook_drafts import generate_playbook_draft
 from app.services.recovery_loop import recovery_scope_from_investigation, run_adaptive_recovery
 from app.services.reviewer import review_corrections
-from app.services.runner import build_executor, resolve_target
+from app.services.site_scoped_execution import build_approved_execution_route
 from app.services.symptom_intake import use_reported_symptom
 from app.services.tool_registry import execute_tool
 
@@ -199,14 +199,17 @@ def execute_approved_investigation(
     target_reference = str(investigation.get("target") or "")
     approved_ssh_port = payload.get("ssh_port")
     try:
-        target = resolve_target(
-            target_reference,
-            environment,
-            int(approved_ssh_port) if approved_ssh_port is not None else None,
+        route = build_approved_execution_route(
+            investigation,
+            analysis,
+            environment=environment,
+            approved_ssh_port=int(approved_ssh_port) if approved_ssh_port is not None else None,
             settings=settings,
         )
-    except LookupError as exc:
-        raise ApprovedExecutionError("alvo não está mais disponível no inventário") from exc
+    except (LookupError, RuntimeError, ValueError) as exc:
+        raise ApprovedExecutionError(
+            f"não foi possível reconstruir a rota segura usada na investigação: {exc}"
+        ) from exc
 
     persisted_scope = dict(analysis.get("recovery_scope") or {})
     scope = recovery_scope_from_investigation(investigation, actions, settings)
@@ -234,7 +237,7 @@ def execute_approved_investigation(
         requested_by=requested_by,
         actions=actions,
     )
-    executor = build_executor(target, settings=settings)
+    executor = route.executor
     results: list[dict[str, Any]] = []
     comparison: dict[str, Any] = {}
     recovery: dict[str, Any] = {}
@@ -268,6 +271,11 @@ def execute_approved_investigation(
         updated_analysis["recovery_loop"] = recovery
         updated_analysis["recovery_state"] = recovery.get("state")
         updated_analysis["recovery_blockers"] = recovery.get("blockers") or []
+        updated_analysis["approved_execution_route"] = {
+            **dict(route.metadata),
+            "site_scoped": route.site_scoped,
+            "context": route.context,
+        }
 
         pending_actions = [
             {**item, "status": "proposed"}
@@ -288,7 +296,7 @@ def execute_approved_investigation(
                         investigation_id,
                         target_reference,
                         pending_actions,
-                        ssh_port=target.port,
+                        ssh_port=route.ssh_port,
                         settings=settings,
                     )
             else:
@@ -353,6 +361,11 @@ def execute_approved_investigation(
             "results": results,
             "before_after": comparison,
             "recovery": recovery,
+            "execution_route": {
+                **dict(route.metadata),
+                "site_scoped": route.site_scoped,
+                "context": route.context,
+            },
             "new_approval_required": bool(next_approval_token),
             "next_approval_token": next_approval_token,
             "pending_actions": pending_actions,
@@ -368,6 +381,11 @@ def execute_approved_investigation(
             updated_analysis["correction_validation"] = comparison
         updated_analysis["correction_status"] = "failed"
         updated_analysis["recovery_scope"] = scope
+        updated_analysis["approved_execution_route"] = {
+            **dict(route.metadata),
+            "site_scoped": route.site_scoped,
+            "context": route.context,
+        }
         if recovery:
             updated_analysis["recovery_loop"] = recovery
             updated_analysis["recovery_state"] = recovery.get("state")
