@@ -15,6 +15,11 @@ def _access_failure(text: str) -> bool:
     ))
 
 
+def _cause_prefix(incident: dict[str, Any]) -> str:
+    cause = str(incident.get("probable_cause") or "").strip()
+    return f"Causa provável: {cause}. " if cause else ""
+
+
 def handle_worker_result_with_history(
     job_result: dict[str, Any] | None,
     *,
@@ -46,24 +51,31 @@ def handle_worker_result_with_history(
 
     autonomy = dict(incident.get("autonomy") or {})
     autopilot = dict(incident.get("autopilot_execution") or {})
+    cause_prefix = _cause_prefix(incident)
     if incident_status == "resolved":
         status = "adjusted" if autopilot else "resolved"
-        reason = "Correção validada e Checkmk voltou ao estado OK." if autopilot else "Alerta normalizado e confirmado pelo Checkmk."
+        reason = (
+            f"{cause_prefix}Correção validada e Checkmk voltou ao estado OK."
+            if autopilot
+            else f"{cause_prefix}Alerta normalizado e confirmado pelo Checkmk."
+        )
     elif incident_status == "watching":
         status = "adjusted_validating"
-        reason = "Correção executada; aguardando revalidação do Checkmk."
+        reason = f"{cause_prefix}Correção executada; aguardando revalidação do Checkmk."
     elif incident_status in {"needs_attention", "awaiting_approval"}:
         reason = str(incident.get("attention_reason") or autonomy.get("reason") or "Intervenção manual necessária.")
+        if cause_prefix and cause_prefix.casefold() not in reason.casefold():
+            reason = f"{cause_prefix}{reason}"
         status = "access_failed" if _access_failure(reason) else "manual_required"
     elif autonomy.get("paused"):
         status = "paused"
         reason = str(autonomy.get("reason") or "Atuação autônoma pausada pelo operador.")
     elif autonomy and not autonomy.get("eligible", False):
         status = "manual_required"
-        reason = str(autonomy.get("reason") or "Categoria fora da política de correção autônoma.")
+        reason = f"{cause_prefix}{str(autonomy.get('reason') or 'Categoria fora da política de correção autônoma.')}"
     else:
         status = "investigated"
-        reason = "Investigação concluída; nenhuma correção autônoma confirmada neste momento."
+        reason = f"{cause_prefix}Investigação concluída; nenhuma correção autônoma confirmada neste momento."
 
     record_incident_history(
         incident,
@@ -74,6 +86,11 @@ def handle_worker_result_with_history(
             "incident_status": incident_status,
             "autonomy": autonomy,
             "autopilot_status": autopilot.get("status"),
+            "investigation_id": incident.get("investigation_id"),
+            "probable_cause": incident.get("probable_cause"),
+            "conclusion": incident.get("conclusion"),
+            "confidence": incident.get("confidence"),
+            "resolution_source": incident.get("resolution_source"),
         },
     )
     return incident
