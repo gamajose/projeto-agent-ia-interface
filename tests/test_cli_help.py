@@ -83,7 +83,7 @@ def test_entrypoint_routes_ai_doctor_help(monkeypatch) -> None:
     assert calls == ["doctor-help"]
 
 
-@pytest.mark.parametrize(("argument", "expected"), [("--version", "Agent IA Infra 1.46.7"), ("--help", "AGENT IA INFRA")])
+@pytest.mark.parametrize(("argument", "expected"), [("--version", "Agent IA Infra 1.46.8"), ("--help", "AGENT IA INFRA")])
 def test_help_and_version_do_not_require_database_configuration(argument: str, expected: str) -> None:
     environment = os.environ.copy()
     environment.pop("POSTGRES_DSN", None)

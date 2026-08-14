@@ -55,6 +55,8 @@ class NocSelectedRunPayload(BaseModel):
     sites: list[str] = Field(default_factory=list, max_length=1000)
     hosts: list[str] = Field(default_factory=list, max_length=2000)
     problem_keys: list[str] = Field(default_factory=list, max_length=5000)
+    playbook_id: str | None = Field(default=None, max_length=120)
+    skill_id: str | None = Field(default=None, max_length=64)
 
 
 @router.get("/ui/api/noc/fleet")
@@ -142,6 +144,8 @@ def noc_autonomy_run_selected(payload: NocSelectedRunPayload, request: Request) 
             sites=payload.sites,
             hosts=payload.hosts,
             problem_keys=payload.problem_keys,
+            playbook_id=payload.playbook_id,
+            skill_id=payload.skill_id,
             operator=_operator_name(),
         )
     except ValueError as exc:

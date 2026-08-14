@@ -154,6 +154,7 @@ def _inject_noc_extension_assets(content: str) -> str:
         ("icon-actions.css", "icon-actions"),
         ("noc-memory-ui-v146.css", "noc-memory-ui-v146"),
         ("noc-selected-progress-v1465.css", "noc-selected-progress-v1465"),
+        ("noc-manual-modal-v1468.css", "noc-manual-modal-v1468"),
     ):
         content = _inject_style(content, asset, marker=marker)
 
@@ -175,6 +176,7 @@ def _inject_noc_extension_assets(content: str) -> str:
         ("icon-actions.js", "icon-actions"),
         ("noc-memory-ui-v146.js", "noc-memory-ui-v146"),
         ("noc-selected-progress-v1465.js", "noc-selected-progress-v1465"),
+        ("noc-manual-modal-v1468.js", "noc-manual-modal-v1468"),
     ):
         content = _inject_script(content, asset, marker=marker, defer=True)
     return content

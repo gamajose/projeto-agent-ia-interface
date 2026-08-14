@@ -22,7 +22,7 @@ from app.services.noc_autonomy_control import (
     scope_matches_problem,
 )
 from app.services.noc_incidents import attach_job, incident_objective
-from app.services.noc_skills import build_skill_objective
+from app.services.noc_skills import build_skill_objective, load_noc_skills
 from app.services.redaction import redact_text
 
 
@@ -67,7 +67,6 @@ def _prioritize_jobs(job_ids: list[str], *, settings: Settings) -> None:
         if removed:
             selected.append(raw)
 
-    # LPUSH em ordem reversa preserva a ordem original dos itens selecionados.
     for raw in reversed(selected):
         client.lpush(queue, raw)
 
@@ -103,6 +102,16 @@ def _mark_manual_correction_intent(
     incident_store._store(client, settings, incident)
 
 
+def _manual_skill(scope: dict[str, Any], route: dict[str, Any]) -> dict[str, Any]:
+    requested = str(scope.get("skill_id") or "").strip()
+    if not requested:
+        return dict(route.get("skill") or {})
+    for skill in load_noc_skills():
+        if skill.id == requested:
+            return skill.as_dict()
+    raise ValueError(f"Skill manual não encontrada: {requested}")
+
+
 def _ensure_manual_job(
     item: dict[str, Any],
     result: dict[str, Any],
@@ -112,13 +121,7 @@ def _ensure_manual_job(
     operator: str,
     settings: Settings,
 ) -> dict[str, Any]:
-    """Transforma o clique em Arrumar em uma intenção real de correção.
-
-    A coleta continua em modo de proposta para que a IA produza ações
-    estruturadas, a segunda IA revise e o token fique ligado exatamente às
-    ações. O pós-processamento consome essa autorização e executa a correção
-    segura automaticamente, sem parar no diagnóstico.
-    """
+    """Transforma o clique em Arrumar em uma intenção real de correção."""
 
     authorization = dict(result.get("authorization") or {})
     route = dict(result.get("route") or {})
@@ -135,10 +138,6 @@ def _ensure_manual_job(
         settings=settings,
     )
 
-    # A ronda pode ter acabado de criar um job genérico de investigação. Para
-    # execução manual, substituímos o job ainda enfileirado por outro que carrega
-    # explicitamente a intenção de corrigir. Se ele já começou, apenas o
-    # acompanhamos para evitar SSH duplicado; o incidente já guarda a intenção.
     previous_job_id = str((result.get("job") or {}).get("job_id") or incident.get("job_id") or "").strip()
     if previous_job_id:
         current = get_job(previous_job_id, settings=settings) or {}
@@ -158,7 +157,12 @@ def _ensure_manual_job(
 
     item = dict(item)
     item["policy_category"] = classify_problem_category(item)
-    skill = dict(route.get("skill") or {})
+    skill = _manual_skill(scope, route)
+    manual_skill_id = str(scope.get("skill_id") or "").strip() or None
+    manual_playbook_id = str(scope.get("playbook_id") or "").strip() or None
+    playbook_id = manual_playbook_id or str(skill.get("playbook_id") or "").strip() or None
+    target_strategy = str(skill.get("target_strategy") or route.get("strategy") or "internal_ssh")
+
     objective = incident_objective(incident) + "\n\n" + build_skill_objective(
         item,
         skill,
@@ -169,9 +173,15 @@ def _ensure_manual_job(
         "\n\nINTENÇÃO DO OPERADOR: ARRUMAR ESTE PROBLEMA. "
         "Não encerre o trabalho somente com diagnóstico. Identifique a causa, produza a ação corretiva estruturada "
         "permitida pelo playbook/Skill, submeta-a à revisão da segunda IA e prepare a pós-validação. "
-        "Reboot/shutdown do servidor, acesso a banco, ações destrutivas e lifecycle de containers permanecem proibidos."
+        "Se a evidência mostrar que o alerta está em um host mas a causa/correção pertence ao servidor de monitoramento "
+        "do mesmo cliente, preserve o isolamento do site, volte ao contexto do monitoramento, corrija ali e depois revalide "
+        "o sensor original no Checkmk. Reboot/shutdown, banco, ações destrutivas e lifecycle de containers permanecem proibidos."
     )
-    playbook_id = str(skill.get("playbook_id") or "").strip() or None
+    if manual_skill_id:
+        objective += f"\nSkill escolhida manualmente pelo operador: {manual_skill_id}."
+    if manual_playbook_id:
+        objective += f"\nPlaybook escolhido manualmente pelo operador: {manual_playbook_id}."
+
     queued = enqueue_investigation(
         str(route.get("entry_address") or ""),
         objective,
@@ -200,13 +210,16 @@ def _ensure_manual_job(
             "checkmk_address": item.get("host_address"),
             "service": item.get("service"),
             "state": item.get("state_name"),
-            "target_strategy": route.get("strategy"),
+            "target_strategy": target_strategy,
             "host_kind": route.get("host_kind"),
             "scope_key": route.get("scope_key"),
             "skill": skill,
+            "manual_skill_id": manual_skill_id,
+            "manual_playbook_id": manual_playbook_id,
             "manual_selected": True,
             "manual_correction_requested": True,
             "manual_correction_requested_by": operator,
+            "allow_monitoring_context_fallback": True,
             "isolation": {
                 "site_id": route.get("site_id"),
                 "cross_site_internal_ip_lookup": False,
@@ -226,8 +239,7 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
     if not run:
         return None
 
-    # Coordena com a ronda automática do master dentro do mesmo processo.
-    if not patrol._THREAD_LOCK.acquire(blocking=False):  # noqa: SLF001 - lock compartilhado intencionalmente
+    if not patrol._THREAD_LOCK.acquire(blocking=False):  # noqa: SLF001
         requeue_selected_run(run, settings=settings)
         return {"status": "busy", "run_id": run.get("id")}
 
@@ -253,7 +265,7 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
 
         for item in selected_problems:
             try:
-                result = patrol._register_problem(  # noqa: SLF001 - reutiliza o pipeline oficial do NOC
+                result = patrol._register_problem(  # noqa: SLF001
                     item,
                     settings=settings,
                     scope_override=scope,
@@ -285,6 +297,8 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
                             "state": str(item.get("state_name") or item.get("state") or ""),
                             "problem_key": str(item.get("problem_key") or ""),
                             "created_at": job.get("created_at"),
+                            "manual_skill_id": scope.get("skill_id"),
+                            "manual_playbook_id": scope.get("playbook_id"),
                         }
                     )
             except Exception as exc:
@@ -295,6 +309,10 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
             "status": "completed",
             "mode": "manual_selected",
             "intent": "correct_and_validate",
+            "manual_options": {
+                "skill_id": scope.get("skill_id"),
+                "playbook_id": scope.get("playbook_id"),
+            },
             "problems_seen": len(selected_problems),
             "jobs_queued": len(jobs),
             "jobs": jobs,
