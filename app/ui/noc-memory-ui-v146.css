@@ -1,0 +1,95 @@
+/* Refinamentos v1.46: controles alinhados, modais em camadas e formulários compactos. */
+
+/* Filtros: o ícone tem a mesma altura dos campos ao lado. */
+#view-investigations .filters,#view-inventory .filters{align-items:stretch!important}
+#view-investigations .filters input,#view-investigations .filters select,#view-investigations .filters .icon-action-button,
+#view-inventory .filters input,#view-inventory .filters select,#view-inventory .filters .icon-action-button{height:42px!important;min-height:42px!important}
+#view-investigations .filters .icon-action-button,#view-inventory .filters .icon-action-button{width:42px!important;min-width:42px!important;border-radius:10px!important;align-self:stretch!important}
+
+/* Playbooks: busca e paginação ficam no cabeçalho único do modal. */
+#compact-playbooks-modal .compact-modal-panel{overflow:visible!important}
+#compact-playbooks-modal .compact-modal-head{gap:10px!important;overflow:visible!important}
+#compact-playbooks-modal .playbook-modal-head-actions{display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:7px!important;flex:1 1 auto!important;min-width:0!important;flex-wrap:wrap!important}
+#compact-playbooks-modal #playbook-manager-toolbar{display:flex!important;align-items:center!important;gap:6px!important;margin:0!important;padding:0!important;order:20!important;min-width:0!important}
+#compact-playbooks-modal #playbook-manager-toolbar .toolbar-spacer{display:none!important}
+#compact-playbooks-modal #playbook-manager-size{height:36px!important;min-height:36px!important;width:104px!important;min-width:104px!important}
+#compact-playbooks-modal .playbook-search-shell{display:flex!important;align-items:center!important;gap:5px!important;min-width:0!important}
+#compact-playbooks-modal .playbook-search-shell[hidden]{display:none!important}
+#compact-playbooks-modal #playbook-manager-search{width:250px!important;min-width:150px!important;height:36px!important}
+#compact-playbooks-modal #playbook-manager-pager{display:flex!important;align-items:center!important;gap:5px!important;margin:0!important;order:21!important;white-space:nowrap!important;min-width:0!important}
+#compact-playbooks-modal #playbook-manager-pager>span{font-size:11px!important;color:var(--muted,#8fa6bf)!important;max-width:180px!important;overflow:hidden!important;text-overflow:ellipsis!important}
+#compact-playbooks-modal #playbook-manager-pager button{width:32px!important;min-width:32px!important;height:32px!important;min-height:32px!important;padding:0 6px!important;font-size:0!important}
+#compact-playbooks-modal #playbook-manager-pager button[data-prev]::before{content:'‹';font-size:20px;line-height:1}
+#compact-playbooks-modal #playbook-manager-pager button[data-next]::before{content:'›';font-size:20px;line-height:1}
+#compact-playbooks-modal .compact-modal-body{overflow:auto!important;max-height:calc(94vh - 68px)!important}
+
+/* Editor de playbook precisa ficar acima do catálogo. */
+#playbook-editor-modal.playbook-modal{z-index:14050!important}
+#playbook-editor-modal .playbook-modal-backdrop{z-index:14051!important}
+#playbook-editor-modal .playbook-modal-panel{z-index:14052!important}
+
+/* Nova investigação sem cabeçalho textual redundante. */
+#analysis-modal .analysis-modal-header{min-height:46px!important;justify-content:flex-end!important;padding:8px 12px!important}
+#analysis-modal .analysis-modal-header>div:first-child,#analysis-modal #execution-mode-badge{display:none!important}
+#analysis-modal .analysis-modal-header-actions{margin-left:auto!important}
+
+/* Cadastro de servidor em modal real. */
+#access-monitor-register-modal{z-index:14100!important}
+#access-monitor-register-modal .compact-modal-panel{width:min(520px,calc(100vw - 24px))!important}
+.access-monitor-register-form{display:grid;gap:12px}.access-monitor-register-form label{display:grid;gap:6px}.access-monitor-register-form label>span{font-size:12px;color:var(--muted,#8fa6bf);font-weight:700}.access-monitor-register-form input{width:100%}
+.inline-form-message{min-height:18px;color:var(--bad,#ff6577);font-size:12px}
+.access-monitor-register{align-self:end!important}.access-monitor-register>button{min-height:38px!important;padding:7px 12px!important;white-space:nowrap!important}
+
+/* Multi-host: fechado realmente ocupa só a linha do switch. */
+.multi-host-scope{padding:11px 12px!important;margin:4px 0 10px!important}
+.multi-host-switch-row{display:flex!important;align-items:center!important;gap:10px!important;justify-content:space-between!important}
+.multi-host-switch{width:auto!important;flex:1 1 auto!important;min-width:0!important}
+.multi-host-switch div{display:block!important}.multi-host-switch small{display:none!important}
+.multi-host-switch-row #multi-host-add{margin-left:auto!important;min-height:34px!important;padding:6px 10px!important;white-space:nowrap!important}
+.multi-host-config[hidden]{display:none!important}
+.multi-host-config{gap:9px!important;margin-top:10px!important;padding-top:10px!important}
+.multi-host-head{min-height:0!important;margin:0!important;align-items:center!important}.multi-host-head p{font-size:12px!important;max-width:none!important}
+.multi-host-head button{display:none!important}
+.multi-host-options{grid-template-columns:minmax(180px,1fr) minmax(260px,1.4fr)!important;gap:8px!important}
+.multi-host-auto{padding:8px 10px!important;min-height:40px!important}
+.multi-host-note,.multi-host-safety{padding:7px 9px!important;font-size:11px!important}
+.multi-host-route-preview{padding:7px 9px!important;font-size:11px!important}
+.multi-host-target-list{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:9px!important}
+.multi-host-target{padding:10px!important;min-width:0!important}
+.multi-host-target-title{margin-bottom:8px!important}
+.multi-host-target-grid{grid-template-columns:minmax(135px,1.55fr) 76px minmax(104px,.85fr) minmax(110px,.9fr)!important;gap:7px!important;align-items:end!important}
+.multi-host-target-grid .wide{grid-column:span 2!important}
+.multi-host-target label{gap:4px!important}.multi-host-target label>span{font-size:9px!important}.multi-host-target input,.multi-host-target select{min-height:35px!important;height:35px!important;padding:6px 8px!important;font-size:12px!important}
+
+/* Projetos: fica só o formulário operacional, sem textos repetidos. */
+#view-projects .project-builder-head,#view-projects .project-help{display:none!important}
+#view-projects .project-layout{grid-template-columns:minmax(520px,760px) minmax(0,1fr)!important;align-items:start!important}
+#view-projects .project-builder{padding:18px!important;min-width:0!important}
+#view-projects .project-form{margin-top:0!important}
+#view-projects .project-form-grid{gap:10px!important}
+#view-projects #project-generate{width:auto!important;min-width:96px!important;min-height:38px!important;padding:7px 16px!important}
+#view-projects .project-form-actions{justify-content:flex-end!important}
+
+/* Agentes: políticas ficam dentro do próprio modal e continuam visíveis no automático. */
+#compact-agent-modal .agent-policy-scope{display:block!important;margin:10px 0!important;border:1px solid var(--border,#263b56)!important;border-radius:12px!important;background:rgba(255,255,255,.015)!important}
+#compact-agent-modal .agent-policy-scope>summary{display:flex!important;align-items:center!important;gap:8px!important;padding:10px 12px!important;cursor:default!important;list-style:none!important}
+#compact-agent-modal .agent-policy-scope>summary::-webkit-details-marker{display:none!important}
+#compact-agent-modal .agent-policy-scope>summary strong{font-size:12px!important}#compact-agent-modal .agent-policy-scope>summary small{font-size:10px!important;color:var(--muted,#8fa6bf)!important}
+#compact-agent-modal .agent-policy-scope .cmk-policy-warning{padding:7px 10px!important;margin:0 10px 8px!important;font-size:10px!important}
+#compact-agent-modal .agent-policy-scope .cmk-policy-grid{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:7px!important;padding:0 10px 10px!important}
+#compact-agent-modal .agent-policy-scope .cmk-policy-item{padding:8px!important;min-height:0!important}
+#compact-agent-modal .agent-policy-scope .cmk-policy-item small{font-size:9px!important;line-height:1.25!important}
+#compact-agent-modal .agent-skill-shortcut,#compact-agent-modal #skills-manager-button{min-height:34px!important;padding:6px 10px!important}
+
+@media(max-width:1100px){
+  .multi-host-target-list{grid-template-columns:1fr!important}
+  #view-projects .project-layout{grid-template-columns:1fr!important}
+  #compact-agent-modal .agent-policy-scope .cmk-policy-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+}
+@media(max-width:760px){
+  #compact-playbooks-modal .playbook-modal-head-actions{justify-content:flex-start!important}
+  #compact-playbooks-modal #playbook-manager-search{width:min(210px,55vw)!important}
+  .multi-host-options{grid-template-columns:1fr!important}
+  .multi-host-target-grid{grid-template-columns:1fr 90px!important}.multi-host-target-grid .wide{grid-column:span 2!important}
+  #compact-agent-modal .agent-policy-scope .cmk-policy-grid{grid-template-columns:1fr!important}
+}
