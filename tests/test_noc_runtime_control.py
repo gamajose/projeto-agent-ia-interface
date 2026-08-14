@@ -208,3 +208,13 @@ def test_inactive_agents_can_persist_selected_mode_and_search_host_by_ip_or_name
     assert "mode," in source
     assert "Buscar por IP ou nome" in source
     assert "data-noc-host" in source
+
+
+def test_selected_scope_loads_all_hosts_from_site_inventory_not_only_active_problems() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "noc-agents-control.js").read_text(encoding="utf-8")
+    assert "/ui/api/noc/checkmk-master/sites/" in source
+    assert "siteDetails" in source
+    assert "internal_address" in source
+    assert "host_name" in source
+    assert "sem erro ativo" in source
+    assert "Carregando inventário de hosts" in source
