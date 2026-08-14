@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections import Counter
 from typing import Any
 
+from redis import Redis
 from sqlalchemy import select
 
+from app.core.settings import get_settings
 from app.db.base import SessionLocal
 from app.db.models import InvestigationORM
 
@@ -15,6 +19,9 @@ STOP_WORDS = {
     "servidor", "server", "srv", "host", "validar", "verificar", "problema", "erro",
     "esta", "está", "esse", "essa", "isso", "aqui", "como", "mais", "entre", "sobre",
 }
+
+_MEMORY_CACHE_PREFIX = "agent-ia:operational-memory:search:v1"
+_MEMORY_CACHE_TTL_SECONDS = 45
 
 
 def _tokens(value: str) -> set[str]:
@@ -31,6 +38,49 @@ def _playbook_id(plans: list[dict[str, Any]] | None) -> str | None:
         if isinstance(playbook, dict) and playbook.get("id"):
             return str(playbook["id"])
     return None
+
+
+def _memory_cache_key(*, objective: str, profile: str | None, playbook_id: str | None, target: str | None, limit: int) -> str:
+    material = json.dumps(
+        {
+            "objective": str(objective or "").casefold().strip(),
+            "profile": profile,
+            "playbook_id": playbook_id,
+            "target": target,
+            "limit": int(limit),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return f"{_MEMORY_CACHE_PREFIX}:{digest}"
+
+
+def _cached_operational_cases(key: str) -> list[dict[str, Any]] | None:
+    """Redis é somente memória quente; PostgreSQL continua sendo a fonte durável."""
+    try:
+        settings = get_settings()
+        value = Redis.from_url(settings.redis_url, decode_responses=True).get(key)
+        if not value:
+            return None
+        payload = json.loads(value)
+        return payload if isinstance(payload, list) else None
+    except Exception:
+        return None
+
+
+def _cache_operational_cases(key: str, rows: list[dict[str, Any]]) -> None:
+    try:
+        settings = get_settings()
+        ttl = max(10, int(getattr(settings, "agent_operational_memory_cache_seconds", _MEMORY_CACHE_TTL_SECONDS) or _MEMORY_CACHE_TTL_SECONDS))
+        Redis.from_url(settings.redis_url, decode_responses=True).setex(
+            key,
+            ttl,
+            json.dumps(rows, ensure_ascii=False, default=str),
+        )
+    except Exception:
+        # Falha de cache nunca pode impedir investigação nem aprendizado no PostgreSQL.
+        return
 
 
 def _infer_category_component(text: str, profile: str | None) -> tuple[str, str]:
@@ -189,6 +239,17 @@ def search_operational_cases(
     target: str | None = None,
     limit: int = 5,
 ) -> list[dict[str, Any]]:
+    cache_key = _memory_cache_key(
+        objective=objective,
+        profile=profile,
+        playbook_id=playbook_id,
+        target=target,
+        limit=limit,
+    )
+    cached = _cached_operational_cases(cache_key)
+    if cached is not None:
+        return cached[:limit]
+
     try:
         with SessionLocal() as session:
             rows = session.scalars(
@@ -225,6 +286,7 @@ def search_operational_cases(
                 **memory,
             }
         )
+    _cache_operational_cases(cache_key, result)
     return result
 
 
