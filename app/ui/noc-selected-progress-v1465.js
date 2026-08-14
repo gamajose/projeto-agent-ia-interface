@@ -172,13 +172,17 @@
     timer = window.setInterval(poll, 900);
   }
 
+  window.AgentNocSelectedProgress = Object.freeze({ start });
+
   window.fetch = async (...args) => {
     const response = await originalFetch(...args);
     try {
       const input = args[0];
       const url = typeof input === 'string' ? input : String(input?.url || '');
       const method = String(args[1]?.method || input?.method || 'GET').toUpperCase();
-      if (url.includes('/ui/api/noc/autonomy/run-selected') && method === 'POST' && response.ok) {
+      const selectedRun = url.includes('/ui/api/noc/autonomy/run-selected');
+      const procedureBatchRun = /\/ui\/api\/noc\/problem-groups\/[^/]+\/run(?:[?#]|$)/.test(url);
+      if ((selectedRun || procedureBatchRun) && method === 'POST' && response.ok) {
         response.clone().json().then((run) => {
           if (run?.id) start(run.id);
         }).catch(() => {});
