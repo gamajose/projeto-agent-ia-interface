@@ -1,7 +1,13 @@
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
   const esc = (value) => String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
-  const state = { items: [], query: '', page: 1, size: 12, loading: false, rendering: false };
+  const ICONS = {
+    search: '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6"/><path d="m16 16 5 5"/></svg>',
+    filter: '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16l-6 7v5l-4 2v-7Z"/></svg>',
+    edit: '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>',
+    delete: '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7V4h6v3"/></svg>',
+  };
+  const state = { items: [], query: '', page: 1, size: 12, loading: false, rendering: false, searchOpen: false };
 
   async function request(path, options = {}) {
     const method = String(options.method || 'GET').toUpperCase();
@@ -27,14 +33,24 @@
     return query ? state.items.filter((item) => searchText(item).includes(query)) : [...state.items];
   }
 
+  function setSearchOpen(open) {
+    state.searchOpen = Boolean(open);
+    const shell = $('#playbook-search-shell');
+    const toggle = $('#playbook-search-toggle');
+    if (shell) shell.hidden = !state.searchOpen;
+    if (toggle) toggle.setAttribute('aria-expanded', state.searchOpen ? 'true' : 'false');
+    if (state.searchOpen) window.setTimeout(() => $('#playbook-manager-search')?.focus(), 30);
+  }
+
   function ensureToolbar() {
     const grid = $('#playbook-grid');
     if (!grid || $('#playbook-manager-toolbar')) return;
     const toolbar = document.createElement('div');
     toolbar.id = 'playbook-manager-toolbar';
     toolbar.className = 'playbook-manager-toolbar';
-    toolbar.innerHTML = '<input id="playbook-manager-search" type="search" placeholder="Pesquisar por nome, container, socket, ferramenta ou conteúdo"><button type="button" class="secondary-button" id="playbook-manager-filter">Filtrar</button><select id="playbook-manager-size"><option value="12">12/página</option><option value="24">24/página</option><option value="48">48/página</option></select>';
+    toolbar.innerHTML = `<button type="button" class="secondary-button icon-action-button" id="playbook-search-toggle" aria-label="Pesquisar playbooks" title="Pesquisar playbooks" aria-expanded="false">${ICONS.search}</button><div class="playbook-search-shell" id="playbook-search-shell" hidden><input id="playbook-manager-search" type="search" placeholder="Nome, container, socket, ferramenta ou conteúdo"><button type="button" class="secondary-button icon-action-button" id="playbook-manager-filter" aria-label="Filtrar" title="Filtrar">${ICONS.filter}</button></div><span class="toolbar-spacer"></span><select id="playbook-manager-size"><option value="12">12/página</option><option value="24">24/página</option><option value="48">48/página</option></select>`;
     grid.insertAdjacentElement('beforebegin', toolbar);
+    $('#playbook-search-toggle')?.addEventListener('click', () => setSearchOpen(!state.searchOpen));
     $('#playbook-manager-filter')?.addEventListener('click', () => {
       state.query = $('#playbook-manager-search')?.value || '';
       state.page = 1;
@@ -44,6 +60,13 @@
       state.query = event.target.value || '';
       state.page = 1;
       render();
+    });
+    $('#playbook-manager-search')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (!event.target.value) setSearchOpen(false);
+        else { event.target.value = ''; state.query = ''; state.page = 1; render(); }
+      }
     });
     $('#playbook-manager-size')?.addEventListener('change', (event) => {
       state.size = Number(event.target.value || 12);
@@ -62,7 +85,7 @@
       <div class="card-top"><div><h4>${esc(item.title || item.id)}</h4><p>${esc(item.id)}</p></div><span class="mode-badge">P${esc(item.priority ?? 0)}</span></div>
       <div class="card-meta"><div><span>Perfis</span><strong>${esc((item.profiles || []).join(', '))}</strong></div><div><span>Etapas</span><strong>${esc(String((item.steps_yaml || '').split('\n- ').length - 1 || '—'))}</strong></div><div><span>SSH</span><strong>${esc(item.ssh_port || 'Automática')}</strong></div><div><span>Arquivo</span><strong>${esc(item.file || `${item.id}.yml`)}</strong></div></div>
       <div class="correction-tags">${corrections.length ? corrections.map((value) => `<span>${esc(value)}</span>`).join('') : '<span>somente leitura / preservado</span>'}</div>
-      <div class="playbook-card-actions"><button type="button" class="secondary-button" data-edit-playbook="${esc(item.id)}">Editar</button><button type="button" class="ghost-button" data-delete-playbook="${esc(item.id)}">Remover</button></div>
+      <div class="playbook-card-actions"><button type="button" class="secondary-button icon-action-button" data-edit-playbook="${esc(item.id)}" aria-label="Editar" title="Editar">${ICONS.edit}</button><button type="button" class="ghost-button icon-action-button" data-delete-playbook="${esc(item.id)}" aria-label="Excluir" title="Excluir">${ICONS.delete}</button></div>
     </article>`;
   }
 
