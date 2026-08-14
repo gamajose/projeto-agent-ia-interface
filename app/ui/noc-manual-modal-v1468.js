@@ -147,6 +147,7 @@
     if (!ui || !modal) return;
     ui.open(modal);
     await loadCatalogs();
+    await Promise.all([...state.selectedSites].map((siteId) => loadSiteDetail(siteId, true)));
     renderScope();
     window.setTimeout(() => $('#noc-manual-site-search', modal)?.focus(), 30);
   }
@@ -190,12 +191,12 @@
 
   const query = (selector) => String($(selector, ensureModal())?.value || '').trim().toLocaleLowerCase('pt-BR');
 
-  async function loadSiteDetail(siteId) {
-    if (!siteId || state.siteDetails[siteId]) return;
+  async function loadSiteDetail(siteId, force = false) {
+    if (!siteId || (!force && state.siteDetails[siteId])) return;
     try {
       state.siteDetails[siteId] = await request(`/ui/api/noc/checkmk-master/sites/${encodeURIComponent(siteId)}`);
     } catch (error) {
-      state.siteDetails[siteId] = { hosts: [], error: error.message };
+      state.siteDetails[siteId] = { hosts: [], problems: [], error: error.message };
     }
     renderScope();
   }
@@ -225,11 +226,28 @@
 
   function problemItems() {
     const q = query('#noc-manual-problem-search');
-    return (state.overview.problems || []).filter((item) => {
-      if (!state.selectedSites.has(String(item.site_id || ''))) return false;
+    const map = new Map();
+    state.selectedSites.forEach((siteId) => {
+      const detail = state.siteDetails[siteId];
+      const items = Array.isArray(detail?.problems)
+        ? detail.problems
+        : (state.overview.problems || []).filter((item) => String(item.site_id || '') === String(siteId));
+      items.forEach((item) => {
+        const key = String(item.problem_key || `${siteId}|${item.host || ''}|${item.service || ''}`);
+        map.set(key, item);
+      });
+    });
+    return [...map.values()].filter((item) => {
       if (state.selectedHosts.size && !state.selectedHosts.has(String(item.host || ''))) return false;
       if (!q) return true;
-      return `${item.host || ''} ${item.service || ''} ${item.output || ''}`.toLocaleLowerCase('pt-BR').includes(q);
+      return `${item.host || ''} ${item.host_address || ''} ${item.service || ''} ${item.output || ''}`.toLocaleLowerCase('pt-BR').includes(q);
+    });
+  }
+
+  function pruneProblemSelection() {
+    const valid = new Set(problemItems().map((item) => String(item.problem_key || '')));
+    [...state.selectedProblems].forEach((problemKey) => {
+      if (!valid.has(problemKey)) state.selectedProblems.delete(problemKey);
     });
   }
 
@@ -246,9 +264,15 @@
         <label class="noc-manual-option"><input type="checkbox" data-manual-site="${esc(item.site_id)}" ${state.selectedSites.has(String(item.site_id)) ? 'checked' : ''}><span><strong>${esc(item.alias || item.site_id)}</strong><small>${esc(item.site_id)} · ${esc(item.host_count || 0)} host(s) · ${esc(item.problem_count || 0)} erro(s)</small></span></label>`).join('') : '<div class="noc-manual-empty">Nenhum cliente encontrado.</div>';
       $$('[data-manual-site]', sites).forEach((input) => input.addEventListener('change', () => {
         const id = String(input.dataset.manualSite || '');
-        if (input.checked) { state.selectedSites.add(id); void loadSiteDetail(id); } else state.selectedSites.delete(id);
+        if (input.checked) {
+          state.selectedSites.add(id);
+          void loadSiteDetail(id, true);
+        } else {
+          state.selectedSites.delete(id);
+        }
         const validHosts = new Set(hostItems().map((item) => item.host));
         [...state.selectedHosts].forEach((host) => { if (!validHosts.has(host)) state.selectedHosts.delete(host); });
+        pruneProblemSelection();
         renderScope();
       }));
     }
@@ -261,6 +285,7 @@
           <label class="noc-manual-option"><input type="checkbox" data-manual-host="${esc(item.host)}" ${state.selectedHosts.has(item.host) ? 'checked' : ''}><span><strong>${esc(item.host)}</strong><small>${esc(item.address || 'sem IP')} · ${item.count ? `${esc(item.count)} erro(s)` : 'sem erro ativo'}</small></span></label>`).join('') : '<div class="noc-manual-empty">Carregando ou nenhum host encontrado.</div>';
         $$('[data-manual-host]', hosts).forEach((input) => input.addEventListener('change', () => {
           if (input.checked) state.selectedHosts.add(String(input.dataset.manualHost || '')); else state.selectedHosts.delete(String(input.dataset.manualHost || ''));
+          pruneProblemSelection();
           renderScope();
         }));
       }
@@ -352,6 +377,7 @@
           window.clearInterval(state.pollTimer);
           state.pollTimer = null;
           await loadCatalogs();
+          await Promise.all([...state.selectedSites].map((siteId) => loadSiteDetail(siteId, true)));
         }
       } catch (error) {
         setMessage(error.message, true);
