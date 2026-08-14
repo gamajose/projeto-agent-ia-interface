@@ -63,7 +63,7 @@ def test_single_manual_job_exposes_live_progress(monkeypatch) -> None:
     assert enriched["jobs"][0]["detail"] == "Coletando evidências no host."
 
 
-def test_multiple_manual_jobs_expose_queue_and_completion(monkeypatch) -> None:
+def test_multiple_manual_jobs_expose_queue_and_checkmk_confirmed_completion(monkeypatch) -> None:
     queued_raw = '{"job_id":"job-2"}'
     monkeypatch.setattr(noc_selected_status, "_redis", lambda _settings: _RedisStub(jobs=[queued_raw]))
 
@@ -73,13 +73,30 @@ def test_multiple_manual_jobs_expose_queue_and_completion(monkeypatch) -> None:
         return {"status": "queued", "percent": 0, "current_phase": {"detail": "Aguardando worker."}}
 
     monkeypatch.setattr(noc_selected_status, "get_job", fake_job)
+    monkeypatch.setattr(
+        noc_selected_status,
+        "_incident",
+        lambda incident_id, settings: {"id": incident_id, "status": "resolved"}
+        if incident_id == "incident-1"
+        else {},
+    )
     run = {
         "id": "run-2",
         "status": "completed",
         "result": {
             "jobs": [
-                {"job_id": "job-1", "host": "srv01", "service": "CPU"},
-                {"job_id": "job-2", "host": "srv02", "service": "Memory"},
+                {
+                    "job_id": "job-1",
+                    "incident_id": "incident-1",
+                    "host": "srv01",
+                    "service": "CPU",
+                },
+                {
+                    "job_id": "job-2",
+                    "incident_id": "incident-2",
+                    "host": "srv02",
+                    "service": "Memory",
+                },
             ]
         },
     }
@@ -89,6 +106,7 @@ def test_multiple_manual_jobs_expose_queue_and_completion(monkeypatch) -> None:
     assert enriched["status"] == "queued"
     assert enriched["progress"]["total"] == 2
     assert enriched["progress"]["completed"] == 1
+    assert enriched["jobs"][0]["resolution_status"] == "resolved"
     assert enriched["jobs"][1]["queue_position"] == 1
 
 
