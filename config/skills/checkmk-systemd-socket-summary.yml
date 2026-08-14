@@ -19,6 +19,7 @@ knowledge:
   - O alerta pode ser causado por uma unit legada check_mk.socket em FAILED enquanto o xinetd já possui a porta TCP 6556 e entrega o agente normalmente.
   - Em ocorrências já resolvidas, o conflito apareceu com xinetd ouvindo em 6556 e a unit legada falhando por porta ocupada e/ou configuração antiga como MaxConnectionsPerSource. Usar o journal para confirmar esse padrão.
   - Quando xinetd.service está ativo, xinetd é o dono da 6556, a resposta local contém <<<check_mk>>> e check_mk.socket está FAILED, a resolução conhecida é desabilitar/parar somente check_mk.socket, limpar o estado failed e preservar o mecanismo funcional do agente.
+  - Esta ocorrência possui fallback determinístico no código. Se o Ensemble/provedor de IA estiver indisponível, a aplicação pode executar checkmk.resolve_legacy_socket_conflict sem depender de inferência, mas somente quando todas as pré-condições funcionais da ferramenta forem comprovadas no próprio host.
   - Se check-mk-agent.socket for o dono esperado da 6556 e estiver realmente em falha, usar a recuperação normal do socket moderno em vez da limpeza da unit legada.
   - Depois de corrigir e validar o agente no TARGET_HOST, localizar o MONITORING_HOST e o CHECKMK_SITE do mesmo cliente, confirmar o TARGET_HOST com cmk -D, limpar o cache e executar cmk --debug -vvn.
   - A coleta no MONITORING_HOST deve localizar exatamente um site contendo o TARGET_HOST. Zero ou múltiplas correspondências impedem encerramento automático.
@@ -26,6 +27,7 @@ knowledge:
   - Código de retorno zero de uma correção local não significa que o sensor foi resolvido. O estado final só é resolvido quando a validação funcional do agente e o Checkmk confirmarem recuperação.
 constraints:
   - Nunca desabilitar check_mk.socket sem confirmar antes que xinetd.service está ativo, que xinetd possui a porta 6556 e que o agente responde localmente com <<<check_mk>>>.
+  - O fallback determinístico não ignora guardrails: exige ambiente elegível, ferramenta na allowlist NOC, rota site-scoped do mesmo cliente e todas as pré-condições do checkmk.resolve_legacy_socket_conflict.
   - Nunca executar omd/cmk no TARGET_HOST apenas porque ele está acessível; comandos Checkmk pertencem ao MONITORING_HOST/CHECKMK_SITE confirmado.
   - Não misturar sites, IPs internos ou sessões de clientes diferentes durante a procura do servidor de monitoramento.
   - Se a porta 6556 não responder ou pertencer a outro processo, interromper a correção legada e continuar o diagnóstico.
