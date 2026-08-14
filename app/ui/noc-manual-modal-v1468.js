@@ -39,7 +39,8 @@
   function ensureModal() {
     const ui = window.AgentCompactUI;
     if (!ui) return null;
-    const modal = ui.modal('noc-manual-execution-modal', 'Execução manual', 'Escolha exatamente o cliente, host e problema. Playbook e Skill são opcionais; em Automático a IA escolhe sozinha.');
+    const modal = ui.modal('noc-manual-execution-modal', 'Execução manual', '');
+    $('.compact-modal-head p', modal)?.remove();
     if (modal.dataset.manualReady === '1') return modal;
     modal.dataset.manualReady = '1';
     modal.classList.add('noc-manual-modal');
