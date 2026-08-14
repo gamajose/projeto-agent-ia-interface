@@ -184,6 +184,61 @@
     }
   }
 
+  function checkedValues(selector, attribute) {
+    return [...document.querySelectorAll(`${selector}:checked`)]
+      .map((item) => String(item.getAttribute(attribute) || '').trim())
+      .filter(Boolean);
+  }
+
+  function setupAgentSelectedModePersistence() {
+    const hostSearch = $('#noc-host-search');
+    if (hostSearch) {
+      hostSearch.placeholder = 'Buscar por IP ou nome';
+      hostSearch.setAttribute('aria-label', 'Buscar host por IP ou nome');
+      hostSearch.setAttribute('title', 'A pesquisa aceita IP ou nome do host');
+    }
+
+    document.querySelectorAll('#noc-agent-control [data-noc-mode]').forEach((button) => {
+      if (button.dataset.persistInactiveMode === '1') return;
+      button.dataset.persistInactiveMode = '1';
+      button.addEventListener('click', () => {
+        window.setTimeout(async () => {
+          const toggle = $('#noc-agent-toggle');
+          if (toggle?.checked) return;
+          const mode = String(button.dataset.nocMode || '').trim();
+          if (!['automatic', 'selected'].includes(mode)) return;
+          const message = $('#noc-scope-message');
+          try {
+            const current = await request('/ui/api/noc/autonomy');
+            const hasRenderedScope = Boolean(document.querySelector('[data-noc-site]'));
+            const sites = hasRenderedScope ? checkedValues('[data-noc-site]', 'data-noc-site') : [...(current.sites || [])];
+            const hosts = hasRenderedScope ? checkedValues('[data-noc-host]', 'data-noc-host') : [...(current.hosts || [])];
+            const problemKeys = hasRenderedScope ? checkedValues('[data-noc-problem]', 'data-noc-problem') : [...(current.problem_keys || [])];
+            await request('/ui/api/noc/autonomy', {
+              method: 'POST',
+              body: {
+                enabled: false,
+                mode,
+                sites,
+                hosts,
+                problem_keys: problemKeys,
+              },
+            });
+            if (message && mode === 'selected') {
+              message.textContent = 'Modo selecionado salvo. Escolha o cliente, host ou sensor e depois ligue os agentes quando quiser.';
+              message.classList.remove('error');
+            }
+          } catch (error) {
+            if (message) {
+              message.textContent = error.message;
+              message.classList.add('error');
+            }
+          }
+        }, 0);
+      });
+    });
+  }
+
   function setup() {
     setupFilters();
     setupPlaybookHeader();
@@ -192,6 +247,7 @@
     setupMultiHost();
     setupProjects();
     setupAgentPolicyScope();
+    setupAgentSelectedModePersistence();
   }
 
   document.addEventListener('DOMContentLoaded', () => window.setTimeout(setup, 0));

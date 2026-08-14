@@ -198,3 +198,13 @@ def test_noc_ui_exposes_switch_scope_and_skills() -> None:
     assert ".noc-skill-card" in css
     assert "noc-agents-control.js" in cache
     assert "noc-agents-control.css" in cache
+
+
+def test_inactive_agents_can_persist_selected_mode_and_search_host_by_ip_or_name() -> None:
+    source = (PROJECT_ROOT / "app" / "ui" / "noc-memory-ui-v146.js").read_text(encoding="utf-8")
+    assert "setupAgentSelectedModePersistence" in source
+    assert "if (toggle?.checked) return;" in source
+    assert "enabled: false" in source
+    assert "mode," in source
+    assert "Buscar por IP ou nome" in source
+    assert "data-noc-host" in source
