@@ -1,0 +1,144 @@
+id: noc-master
+title: NOC Master Skill
+version: 1
+objective: Centralizar em uma única fonte de verdade os procedimentos operacionais do NOC. A aplicação identifica o tipo do problema uma vez e executa somente o procedimento correspondente em todos os hosts do lote.
+principles:
+  - Uma única Skill física; problemas específicos são procedures internas, não Skills concorrentes.
+  - O mesmo procedure deve atender execução manual em lote e, futuramente, o agente contínuo.
+  - Cada host é tratado de forma idempotente: corrigir quando necessário, pular alteração quando já estiver no estado desejado e sempre revalidar a fonte de monitoramento.
+  - Nenhum host pode ser marcado como resolvido apenas porque um comando terminou com código zero.
+procedures:
+  - id: checkmk-systemd-socket-summary
+    title: Systemd Socket Summary - agente Checkmk
+    priority: 260
+    match:
+      service:
+        - '^Systemd Socket Summary$'
+        - 'Systemd.*Socket.*Summary'
+      output:
+        - 'socket failed.*check_mk'
+        - 'failed.*check_mk'
+        - '1 socket failed'
+        - 'check_mk.*CRIT'
+      host: []
+    target_strategy: internal_ssh
+    playbook_id: checkmk-systemd-socket-summary
+    objective: Resolver o alerta Systemd Socket Summary distinguindo TARGET_HOST de MONITORING_HOST, corrigindo com segurança o mecanismo do agente na porta 6556 e obrigatoriamente executando uma nova coleta no Checkmk responsável antes de considerar o incidente resolvido.
+    knowledge:
+      - TARGET_HOST é o servidor monitorado onde roda o Checkmk Agent; MONITORING_HOST é o servidor que possui Checkmk/OMD. Nunca assumir que são o mesmo host.
+      - O alerta pode ser causado por uma unit legada check_mk.socket em FAILED enquanto o xinetd já possui a porta TCP 6556 e entrega o agente normalmente.
+      - Quando xinetd.service está ativo, xinetd é o dono da 6556, a resposta local contém <<<check_mk>>> e check_mk.socket está FAILED, a sequência comprovada é desabilitar/parar somente check_mk.socket, limpar o estado failed, garantir xinetd habilitado e reiniciar xinetd.
+      - Se xinetd estiver active/enabled, check_mk.socket estiver inactive/disabled, xinetd for o dono da 6556, o agente responder e check_mk.socket não estiver em systemctl --failed, considerar LOCAL_STATE=ALREADY_CORRECT e ir direto para a revalidação do Checkmk.
+      - Depois da sequência comprovada, validar novamente xinetd ativo e habilitado, TCP/6556 pertencendo ao xinetd, resposta <<<check_mk>>> e ausência de check_mk.socket em systemctl --failed --type=socket.
+      - Depois de validar o TARGET_HOST, o MONITORING_HOST do mesmo cliente deve conseguir abrir TCP/6556 e receber <<<check_mk>>> do TARGET_IP antes da coleta Checkmk.
+      - No CHECKMK_SITE responsável, confirmar TARGET_HOST com cmk -D, limpar cache com cmk --flush e executar cmk --debug -vvn.
+      - Código de retorno zero de uma correção local ou de um job não significa que o sensor foi resolvido. O estado final só é resolvido quando o Livestatus/Checkmk confirmar o sensor em OK.
+    constraints:
+      - Nunca desabilitar check_mk.socket sem confirmar antes que xinetd.service está ativo, que xinetd possui a porta 6556 e que o agente responde localmente com <<<check_mk>>>.
+      - Nunca executar omd/cmk no TARGET_HOST apenas porque ele está acessível; comandos Checkmk pertencem ao MONITORING_HOST/CHECKMK_SITE confirmado.
+      - Não misturar sites, IPs internos ou sessões de clientes diferentes.
+      - Se a porta 6556 não responder localmente ou a partir do MONITORING_HOST, manter o incidente aberto.
+      - Não reiniciar o servidor, não controlar containers e não acessar banco de dados do cliente.
+
+  - id: checkmk-runtime
+    title: Runtime e serviços do Checkmk
+    priority: 85
+    match:
+      service: ['automation helpers', '^Check_MK$', 'Check_MK Discovery', 'Check_MK HW/SW Inventory']
+      output: ['Processes: 0', 'Service Check Timed Out', 'Missing monitoring data']
+      host: ['^checkmk-']
+    target_strategy: entry_context
+    objective: Validar o site Checkmk, seus processos e a fonte de coleta sem reiniciar componentes fora da política.
+    knowledge:
+      - Identificar site OMD e container antes de atuar.
+      - Verificar automation-helper, rrdcached, Nagios/CMC, Redis e estado OMD conforme o sintoma.
+      - Separar falha do plano de monitoramento de falha real no host monitorado.
+    constraints:
+      - Não reiniciar container automaticamente.
+      - Produção e standby permanecem somente leitura.
+
+  - id: linux-filesystem
+    title: Filesystem e capacidade de disco Linux
+    priority: 90
+    match:
+      service: ['^Filesystem', 'Disk', 'Mount']
+      output: ['used', 'inode', 'filesystem']
+      host: []
+    target_strategy: internal_ssh
+    playbook_id: linux-filesystem-high
+    objective: Confirmar ocupação, inodes, mounts e maiores consumidores antes de recomendar expansão ou limpeza.
+    knowledge:
+      - Validar df -h, df -i, mounts e consumo por diretório.
+      - Distinguir volume cheio, inode esgotado, mount ausente e filesystem somente leitura.
+    constraints:
+      - Não remover arquivos automaticamente.
+      - Não executar fsck, resize ou alteração de filesystem sem aprovação explícita.
+
+  - id: linux-memory-pressure
+    title: Pressão de memória e swap Linux
+    priority: 90
+    match:
+      service: ['^Memory$', 'Swap']
+      output: ['Swap:.*100', 'virtual memory', 'warn/crit.*memory']
+      host: []
+    target_strategy: internal_ssh
+    playbook_id: linux-swap-high
+    objective: Confirmar pressão de memória, uso de swap e processos consumidores antes de recomendar qualquer alteração.
+    knowledge:
+      - Validar free -h, swapon, vmstat e maiores consumidores de memória.
+      - Distinguir swap ocupada de pressão ativa de memória.
+      - Correlacionar recurso insuficiente com indisponibilidade do monitoramento quando houver evidência.
+    constraints:
+      - Não limpar swap automaticamente.
+      - Não encerrar processos automaticamente em produção ou standby.
+
+  - id: network-link
+    title: Link, gateway e conectividade de firewall
+    priority: 95
+    match:
+      service: ['^Gateway_', 'Interface', 'Packet']
+      output: ['Packet loss', '100.*por cento.*perca', 'indisponibilidade', 'timed out']
+      host: ['firewall', 'pfsense', 'forti']
+    target_strategy: entry_context
+    objective: Confirmar indisponibilidade, perda, rota e alcance a partir do ambiente correto antes de escalar para rede ou provedor.
+    knowledge:
+      - Correlacionar gateway, perda, latência e alcance sem alterar rotas.
+      - Executar testes somente dentro do contexto do cliente que originou o alerta.
+      - Distinguir falha de link, coleta Checkmk e indisponibilidade do equipamento.
+    constraints:
+      - Não alterar firewall, VPN, rota ou gateway automaticamente.
+      - Não reutilizar a sessão de um cliente para testar IP interno de outro cliente.
+
+  - id: oracle-backup
+    title: Oracle e rotinas de backup
+    priority: 80
+    match:
+      service: ['Backup.*Datapump', 'Datapump', 'Oracle']
+      output: ['MAX_AGE', 'status.*desatualizado', 'backup']
+      host: []
+    target_strategy: internal_ssh
+    objective: Validar a evidência da rotina de backup e a idade do artefato sem executar operação no banco.
+    knowledge:
+      - Confirmar timestamp, arquivo status e evidência da rotina antes de concluir falha de banco.
+      - Separar falha de automação/backup de indisponibilidade do Oracle.
+    constraints:
+      - Não iniciar, parar ou alterar banco de dados.
+      - Não executar backup manual automaticamente.
+
+  - id: snmp-bmc
+    title: SNMP, iDRAC, ILOM e BMC
+    priority: 100
+    match:
+      service: ['Check_MK Discovery', '^Check_MK$', 'Hardware']
+      output: ['Cannot fetch system description', 'SNMP', 'Missing monitoring data']
+      host: ['idrac', 'ilom', '(^|[-_])ilo($|[-_])', 'bmc']
+    target_strategy: entry_context
+    playbook_id: checkmk-snmp-timeout
+    objective: Validar transporte SNMP e gerenciamento BMC a partir do contexto do cliente, sem presumir acesso SSH ao equipamento de gerenciamento.
+    knowledge:
+      - Testar alcance e UDP 161 antes de concluir credencial incorreta.
+      - Diferenciar timeout, versão/comunidade incorreta e autorização SNMPv3.
+      - Usar IPMI/Redfish somente quando já estiver configurado e permitido.
+    constraints:
+      - Não alterar SNMP, firewall ou credenciais automaticamente.
+      - Não tentar SSH no BMC apenas porque existe um endereço IP.
