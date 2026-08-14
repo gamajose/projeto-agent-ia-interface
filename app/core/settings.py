@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     noc_autonomy_level: int = Field(default=4, ge=0, le=5)
     noc_self_heal_enabled: bool = True
     noc_self_heal_min_confidence: int = Field(default=85, ge=50, le=100)
-    noc_self_heal_tools: str = "systemd.recover_unit,checkmk.recover_omd_service"
+    noc_self_heal_tools: str = "systemd.recover_unit,checkmk.recover_omd_service,checkmk.resolve_legacy_socket_conflict"
     noc_autonomy_max_approval_rounds: int = Field(default=3, ge=1, le=6)
     noc_watch_interval_seconds: int = Field(default=60, ge=10, le=3600)
     noc_watch_timeout_seconds: int = Field(default=900, ge=60, le=86400)

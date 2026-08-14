@@ -64,6 +64,16 @@ PAIRED_OMD_STOP_START_RE = re.compile(
     r"(?:sudo\s+)?docker\s+exec\s+\1\s+omd\s+start\s+\2$",
     re.I,
 )
+# Exceção extremamente estreita para um problema já validado em campo: o
+# xinetd está saudável e dono da 6556, mas uma unit legada check_mk.socket
+# permanece FAILED e polui o Systemd Socket Summary. As pré-condições funcionais
+# são verificadas pela ferramenta estruturada antes deste comando ser executado.
+LEGACY_CHECKMK_SOCKET_CLEANUP_RE = re.compile(
+    r"^systemctl\s+disable\s+--now\s+check_mk\.socket\s*&&\s*"
+    r"systemctl\s+reset-failed\s+check_mk\.socket\s*&&\s*"
+    r"systemctl\s+daemon-reload$",
+    re.I,
+)
 
 CONTAINER_LIFECYCLE_RE = re.compile(
     r"(^|[;&|]\s*)(?:sudo\s+)?docker\s+(start|stop|restart|kill|rm|rmi|prune)\b",
@@ -91,6 +101,8 @@ def classify_command(command: str) -> ActionType:
         return ActionType.SERVICE_ADJUSTMENT
     if PAIRED_OMD_STOP_START_RE.fullmatch(command):
         return ActionType.OMD_ADJUSTMENT
+    if LEGACY_CHECKMK_SOCKET_CLEANUP_RE.fullmatch(command):
+        return ActionType.SERVICE_ADJUSTMENT
     if DESTRUCTIVE_RE.search(command):
         return ActionType.DESTRUCTIVE
     if OMD_ADJUST_RE.search(command):

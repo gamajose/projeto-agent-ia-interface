@@ -30,6 +30,7 @@ class ToolPlan:
     timeout: int = 120
     correction: bool = False
     preconditions: tuple[str, ...] = ()
+    preconditions_must_pass: bool = False
     validations: tuple[str, ...] = ()
     rollback_command: str | None = None
     purpose: str = ""
@@ -121,6 +122,13 @@ def describe_tools() -> list[dict[str, Any]]:
             {"address": "IP do equipamento SNMP"},
         ),
         ToolDescriptor("checkmk.inspect_agent_socket", "monitoring", "Valida socket, listener 6556 e resposta local do agente.", False, {}),
+        ToolDescriptor(
+            "checkmk.resolve_legacy_socket_conflict",
+            "monitoring",
+            "Remove somente a unit legada check_mk.socket quando xinetd já está saudável na 6556.",
+            True,
+            {},
+        ),
         ToolDescriptor("network.ssh_diagnostics", "network", "Valida sshd, listener e logs de negociação.", False, {}),
         ToolDescriptor("vpn.inspect", "network", "Valida interfaces, rotas e processos de VPN conhecidos.", False, {}),
         ToolDescriptor("systemd.recover_unit", "service", "Recupera somente unidades de monitoramento autorizadas.", True, {"unit": "unidade", "action": "start|restart|reload|enable --now"}),
@@ -213,6 +221,35 @@ def resolve_tool(name: str, arguments: dict[str, Any] | None = None) -> ToolPlan
     if name == "checkmk.inspect_agent_socket":
         command = "systemctl show check-mk-agent.socket check_mk.socket xinetd.socket xinetd.service --no-pager -p Id -p LoadState -p ActiveState -p SubState -p UnitFileState 2>/dev/null; ss -lntp 2>/dev/null | grep -E '(:|\\])6556[[:space:]]' || true; timeout 12 bash -c 'exec 3<>/dev/tcp/127.0.0.1/6556; head -n 12 <&3' 2>/dev/null || true"
         return ToolPlan(name, "monitoring", command, sudo=True, timeout=30, purpose="validar socket e resposta do agente Checkmk")
+    if name == "checkmk.resolve_legacy_socket_conflict":
+        command = "systemctl disable --now check_mk.socket && systemctl reset-failed check_mk.socket && systemctl daemon-reload"
+        listener = "ss -lntp 2>/dev/null | grep -E '(:|\\])6556[[:space:]]' | grep -Ei 'xinetd'"
+        agent_response = "timeout 12 bash -c 'exec 3<>/dev/tcp/127.0.0.1/6556; head -n 12 <&3' 2>/dev/null | grep -q '<<<check_mk>>>'"
+        preconditions = (
+            "systemctl is-active xinetd.service",
+            "systemctl is-failed check_mk.socket",
+            listener,
+            agent_response,
+        )
+        validations = (
+            "systemctl is-active xinetd.service",
+            listener,
+            agent_response,
+            "systemctl is-enabled check_mk.socket 2>/dev/null | grep -Eq '^(disabled|static|masked)$'",
+            "systemctl is-failed check_mk.socket 2>/dev/null | grep -vq '^failed$'",
+        )
+        return ToolPlan(
+            name,
+            "monitoring",
+            command,
+            sudo=True,
+            timeout=45,
+            correction=True,
+            preconditions=preconditions,
+            preconditions_must_pass=True,
+            validations=validations,
+            purpose="remover somente a unit legada check_mk.socket quando xinetd já entrega o agente na 6556",
+        )
     if name == "network.ssh_diagnostics":
         command = "systemctl show sshd.service ssh.service --no-pager -p Id -p LoadState -p ActiveState -p SubState 2>/dev/null; ss -lntp 2>/dev/null | grep -E '(:|\\])22[[:space:]]' || true; journalctl -u sshd -u ssh -n 100 --no-pager 2>/dev/null | tail -n 100"
         return ToolPlan(name, "network", command, sudo=True, purpose="diagnosticar serviço e negociação SSH")
@@ -290,6 +327,18 @@ def execute_tool(
     try:
         preconditions = [_run_read(executor, environment, command, sudo=plan.sudo, timeout=plan.timeout) for command in plan.preconditions]
         base["preconditions"] = preconditions
+        if plan.correction and plan.preconditions_must_pass:
+            failed = [item for item in preconditions if int(item.get("exit_code") or 0) != 0]
+            if failed:
+                return {
+                    **base,
+                    "status": "blocked",
+                    "reason": "pré-condições funcionais da correção não foram confirmadas; nenhuma alteração foi executada",
+                    "exit_code": 255,
+                    "stdout": "",
+                    "stderr": "",
+                    "normalized": {},
+                }
         if plan.correction:
             result = executor.run_sudo(plan.command, environment, approved=True, timeout=plan.timeout)
         else:
