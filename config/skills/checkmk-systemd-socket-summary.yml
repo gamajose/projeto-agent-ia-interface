@@ -1,0 +1,27 @@
+id: checkmk-systemd-socket-summary
+title: Systemd Socket Summary - agente Checkmk
+priority: 260
+match:
+  service:
+    - '^Systemd Socket Summary$'
+    - 'Systemd.*Socket.*Summary'
+  output:
+    - 'socket failed.*check_mk'
+    - 'failed.*check_mk'
+    - '1 socket failed'
+    - 'check_mk.*CRIT'
+  host: []
+target_strategy: internal_ssh
+playbook_id: checkmk-systemd-socket-summary
+objective: Resolver o alerta Systemd Socket Summary do agente Checkmk, distinguindo socket moderno de unit legada em conflito com xinetd e confirmando a recuperação no Checkmk.
+knowledge:
+  - O alerta pode ser causado por uma unit legada check_mk.socket em FAILED enquanto o xinetd já possui a porta TCP 6556 e entrega o agente normalmente.
+  - Quando xinetd.service está ativo, xinetd é o dono da 6556, a resposta local contém <<<check_mk>>> e check_mk.socket está FAILED, não reiniciar xinetd nem tentar subir o socket legado. A resolução conhecida é desabilitar/parar somente check_mk.socket, limpar o estado failed e preservar o xinetd.
+  - A resolução validada anteriormente equivale a systemctl disable --now check_mk.socket, systemctl reset-failed check_mk.socket e systemctl daemon-reload, seguida da validação da 6556 e da saída do agente.
+  - Se check-mk-agent.socket for o dono esperado da 6556 e estiver realmente em falha, usar a recuperação normal do socket moderno em vez da limpeza da unit legada.
+  - Código de retorno zero de uma coleta não significa que o sensor foi resolvido. O estado final só é resolvido quando a validação funcional do agente e o Checkmk confirmarem recuperação.
+constraints:
+  - Nunca desabilitar check_mk.socket sem confirmar antes que xinetd.service está ativo, que xinetd possui a porta 6556 e que o agente responde localmente com <<<check_mk>>>.
+  - Não reiniciar, parar ou alterar xinetd quando ele já estiver saudável e entregando o agente.
+  - Não reiniciar o servidor, não controlar containers e não acessar banco de dados do cliente.
+  - Se a porta 6556 não responder ou pertencer a outro processo, interromper a correção legada e continuar o diagnóstico.
