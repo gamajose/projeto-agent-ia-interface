@@ -59,6 +59,11 @@ def _optional_id(value: str | None, *, limit: int) -> str | None:
     return normalized[:limit] or None
 
 
+def _optional_text(value: str | None, *, limit: int) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized[:limit] or None
+
+
 def _default_control() -> dict[str, Any]:
     return {
         "enabled": False,
@@ -182,6 +187,7 @@ def request_selected_run(
     problem_keys: list[str] | None = None,
     playbook_id: str | None = None,
     skill_id: str | None = None,
+    operator_instruction: str | None = None,
     operator: str | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
@@ -194,6 +200,7 @@ def request_selected_run(
         "problem_keys": _unique(problem_keys, limit=5000),
         "playbook_id": _optional_id(playbook_id, limit=120),
         "skill_id": _optional_id(skill_id, limit=64),
+        "operator_instruction": _optional_text(operator_instruction, limit=4000),
     }
     if not any((scope["sites"], scope["hosts"], scope["problem_keys"])):
         raise ValueError("selecione ao menos um cliente, host ou problema antes de executar")
@@ -206,6 +213,7 @@ def request_selected_run(
         "manual_options": {
             "playbook_id": scope.get("playbook_id"),
             "skill_id": scope.get("skill_id"),
+            "operator_instruction": scope.get("operator_instruction"),
         },
         "created_at": _now(),
         "updated_at": _now(),
