@@ -12,7 +12,7 @@ from app.services.site_scoped_execution import build_approved_execution_route
 from app.services.tool_registry import execute_tool
 
 
-# Skills desta tabela representam correções operacionais já validadas em campo.
+# Procedures determinísticos da NOC Master Skill já validados em campo.
 # A IA continua útil para enriquecer diagnóstico e causa, porém indisponibilidade
 # do provedor não pode impedir uma correção cuja sequência já possui guardrails
 # e validações funcionais determinísticas.
@@ -31,6 +31,7 @@ _DETERMINISTIC_SKILLS: dict[str, dict[str, Any]] = {
         ],
         "checkmk_post_collection": True,
         "require_no_failed_legacy_socket": True,
+        "idempotent_local_state": True,
     },
 }
 
@@ -40,6 +41,29 @@ _FAILED_LEGACY_SOCKET_CHECK = (
     "| grep -Eq '(^|[[:space:]])check_mk\\.socket([[:space:]]|$)'; "
     "then echo 'LEGACY_SOCKET_FAILED=yes'; exit 1; "
     "else echo 'LEGACY_SOCKET_FAILED=no'; exit 0; fi"
+)
+
+
+_ALREADY_CORRECT_SOCKET_CHECK = (
+    "x_active=$(systemctl is-active xinetd.service 2>/dev/null || true); "
+    "x_enabled=$(systemctl is-enabled xinetd.service 2>/dev/null || true); "
+    "legacy_active=$(systemctl is-active check_mk.socket 2>/dev/null || true); "
+    "legacy_enabled=$(systemctl is-enabled check_mk.socket 2>/dev/null || true); "
+    "echo \"XINETD_ACTIVE=$x_active XINETD_ENABLED=$x_enabled "
+    "LEGACY_ACTIVE=$legacy_active LEGACY_ENABLED=$legacy_enabled\"; "
+    "[ \"$x_active\" = 'active' ] || { echo 'LOCAL_STATE=NOT_READY reason=xinetd_not_active'; exit 1; }; "
+    "[ \"$x_enabled\" = 'enabled' ] || { echo 'LOCAL_STATE=NOT_READY reason=xinetd_not_enabled'; exit 1; }; "
+    "[ \"$legacy_active\" = 'inactive' ] || { echo 'LOCAL_STATE=NOT_READY reason=legacy_not_inactive'; exit 1; }; "
+    "[ \"$legacy_enabled\" = 'disabled' ] || { echo 'LOCAL_STATE=NOT_READY reason=legacy_not_disabled'; exit 1; }; "
+    "if systemctl --failed --type=socket --no-legend --plain 2>/dev/null "
+    "| grep -Eq '(^|[[:space:]])check_mk\\.socket([[:space:]]|$)'; "
+    "then echo 'LOCAL_STATE=NOT_READY reason=legacy_still_failed'; exit 1; fi; "
+    "if ! ss -lntp 2>/dev/null | grep -E '(:|\\])6556[[:space:]]' | grep -qi xinetd; "
+    "then echo 'LOCAL_STATE=NOT_READY reason=xinetd_not_owner_6556'; exit 1; fi; "
+    "if ! timeout 15 bash -c 'exec 3<>/dev/tcp/127.0.0.1/6556; head -n 40 <&3' 2>/dev/null "
+    "| grep -q '<<<check_mk>>>'; "
+    "then echo 'LOCAL_STATE=NOT_READY reason=agent_payload_invalid'; exit 1; fi; "
+    "echo 'LOCAL_STATE=ALREADY_CORRECT'; exit 0"
 )
 
 
@@ -82,17 +106,16 @@ def _persist_known_cause(
                 "analysis_status": "attention",
                 "confidence": 100,
                 "probable_cause": (
-                    "Conflito legado do agente Checkmk confirmado: check_mk.socket em falha enquanto "
-                    "xinetd é o mecanismo funcional responsável pela TCP/6556."
+                    "Conflito/estado legado do agente Checkmk identificado em torno de check_mk.socket e xinetd/6556."
                 ),
                 "conclusion": conclusion,
                 "deterministic_skill": skill_id,
+                "master_skill": "noc-master",
+                "procedure_id": skill_id,
             }
         )
         incident_store._store(client, settings, current)
     except Exception:
-        # Falha ao enriquecer o histórico nunca deve transformar uma correção
-        # tecnicamente validada em falha operacional.
         return
 
 
@@ -165,13 +188,12 @@ def run_deterministic_skill_correction(
     *,
     settings: Settings,
 ) -> dict[str, Any] | None:
-    """Executa uma Skill comprovada sem depender da inferência do provedor.
+    """Executa um procedure comprovado da NOC Master Skill.
 
-    Para Systemd Socket Summary a sequência é deliberadamente explícita:
-    confirmar o cenário, remover somente ``check_mk.socket``, garantir xinetd
-    habilitado, reiniciar xinetd, validar novamente a 6556/agent e confirmar que
-    o socket legado saiu de ``systemctl --failed``. Depois a aplicação volta ao
-    MONITORING_HOST do mesmo cliente e força uma nova coleta Checkmk.
+    O fluxo é idempotente. Se o TARGET_HOST já estiver exatamente no estado
+    desejado (xinetd active/enabled, check_mk.socket inactive/disabled, xinetd
+    dono da 6556, agente válido e nenhuma unit legada FAILED), nenhuma alteração
+    local é repetida: o procedure segue direto para a revalidação no Checkmk.
     """
 
     skill = deterministic_skill_for_incident(incident)
@@ -209,7 +231,7 @@ def run_deterministic_skill_correction(
             "status": "blocked",
             "state": "tool_not_allowed",
             "reason": (
-                "a Skill determinística exige ferramenta fora da allowlist NOC"
+                "o procedure determinístico exige ferramenta fora da allowlist NOC"
                 + (f": {', '.join(missing)}" if missing else "")
             ),
             "deterministic_skill": skill_id,
@@ -239,7 +261,7 @@ def run_deterministic_skill_correction(
         return {
             "status": "failed",
             "state": "route_error",
-            "reason": f"não foi possível reconstruir a rota segura da Skill: {type(exc).__name__}: {exc}",
+            "reason": f"não foi possível reconstruir a rota segura do procedure: {type(exc).__name__}: {exc}",
             "deterministic_skill": skill_id,
             "results": [],
         }
@@ -252,17 +274,17 @@ def run_deterministic_skill_correction(
         return {
             "status": "blocked",
             "state": "route_not_site_scoped",
-            "reason": "Skill determinística exige rota site-scoped; acesso direto foi recusado",
+            "reason": "procedure determinístico exige rota site-scoped; acesso direto foi recusado",
             "deterministic_skill": skill_id,
             "results": [],
         }
 
     executor = route.executor
     results: list[dict[str, Any]] = []
+    local_already_correct = False
     try:
         executor.connect()
 
-        # Snapshot antes da correção: mostra units, dono da porta e resposta do agente.
         diagnosis = execute_tool(
             executor,
             environment,
@@ -272,50 +294,64 @@ def run_deterministic_skill_correction(
         )
         results.append(diagnosis)
 
-        # A primeira ferramenta possui as pré-condições duras do cenário legado:
-        # xinetd ativo, check_mk.socket FAILED, xinetd dono da 6556 e agent válido.
-        # As duas seguintes reproduzem a sequência comprovada: garantir xinetd
-        # habilitado e reiniciá-lo depois da remoção do socket concorrente.
-        for action in actions:
-            correction = execute_tool(
+        if specification.get("idempotent_local_state"):
+            desired_state = _read_check(
                 executor,
                 environment,
-                str(action.get("tool") or ""),
-                dict(action.get("arguments") or {}),
-                approved=True,
+                _ALREADY_CORRECT_SOCKET_CHECK,
+                purpose=(
+                    "detectar estado local já corrigido: xinetd active/enabled, check_mk.socket "
+                    "inactive/disabled, 6556 no xinetd, agente válido e sem socket legado FAILED"
+                ),
+                timeout=45,
             )
-            results.append(correction)
-            if str(correction.get("status") or "") != "validated":
+            desired_state["stage"] = "local_idempotency_check"
+            results.append(desired_state)
+            local_already_correct = (
+                desired_state.get("status") == "validated"
+                and "LOCAL_STATE=ALREADY_CORRECT" in str(desired_state.get("stdout") or "")
+            )
+
+        if not local_already_correct:
+            for action in actions:
+                correction = execute_tool(
+                    executor,
+                    environment,
+                    str(action.get("tool") or ""),
+                    dict(action.get("arguments") or {}),
+                    approved=True,
+                )
+                results.append(correction)
+                if str(correction.get("status") or "") != "validated":
+                    return {
+                        "status": "failed" if correction.get("status") == "failed" else "blocked",
+                        "state": "deterministic_preconditions_not_met",
+                        "reason": str(
+                            correction.get("reason")
+                            or f"a etapa {action.get('tool')} não foi validada; o procedure foi interrompido"
+                        ),
+                        "deterministic_skill": skill_id,
+                        "results": results,
+                        "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
+                    }
+
+            after_snapshot = execute_tool(
+                executor,
+                environment,
+                "checkmk.inspect_agent_socket",
+                {},
+                approved=False,
+            )
+            results.append(after_snapshot)
+            if str(after_snapshot.get("status") or "") not in {"executed", "validated"} or int(after_snapshot.get("exit_code") or 0) != 0:
                 return {
-                    "status": "failed" if correction.get("status") == "failed" else "blocked",
-                    "state": "deterministic_preconditions_not_met",
-                    "reason": str(
-                        correction.get("reason")
-                        or f"a etapa {action.get('tool')} não foi validada; a Skill foi interrompida"
-                    ),
+                    "status": "failed",
+                    "state": "agent_post_validation_failed",
+                    "reason": "não foi possível obter a validação pós-correção do socket/agent",
                     "deterministic_skill": skill_id,
                     "results": results,
                     "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
                 }
-
-        # Confirma novamente o estado funcional depois do restart do xinetd.
-        after_snapshot = execute_tool(
-            executor,
-            environment,
-            "checkmk.inspect_agent_socket",
-            {},
-            approved=False,
-        )
-        results.append(after_snapshot)
-        if str(after_snapshot.get("status") or "") not in {"executed", "validated"} or int(after_snapshot.get("exit_code") or 0) != 0:
-            return {
-                "status": "failed",
-                "state": "agent_post_validation_failed",
-                "reason": "não foi possível obter a validação pós-correção do socket/agent",
-                "deterministic_skill": skill_id,
-                "results": results,
-                "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
-            }
 
         if specification.get("require_no_failed_legacy_socket"):
             failed_check = _read_check(
@@ -339,9 +375,12 @@ def run_deterministic_skill_correction(
             incident,
             skill_id=skill_id,
             conclusion=(
-                "A Skill determinística confirmou o conflito, desabilitou check_mk.socket, limpou o FAILED, "
-                "garantiu xinetd habilitado, reiniciou xinetd e validou novamente a TCP/6556. "
-                "A validação continua no servidor de monitoramento."
+                "O TARGET_HOST já estava no estado local correto; nenhuma alteração redundante foi executada. "
+                "A validação seguiu diretamente para o MONITORING_HOST/Checkmk."
+                if local_already_correct
+                else
+                "O procedure confirmou o conflito, desabilitou check_mk.socket, limpou o FAILED, garantiu "
+                "xinetd habilitado, reiniciou xinetd e validou novamente a TCP/6556. A validação continua no Checkmk."
             ),
             settings=settings,
         )
@@ -364,16 +403,17 @@ def run_deterministic_skill_correction(
                     incident,
                     skill_id=skill_id,
                     conclusion=(
-                        "A correção local foi aplicada e validada, porém o MONITORING_HOST não confirmou "
-                        "o acesso funcional ao agente e/ou a nova coleta no Checkmk. O incidente permanece aberto."
+                        "O estado local do agente foi validado, porém o MONITORING_HOST não confirmou o acesso "
+                        "funcional ao agente e/ou a nova coleta no Checkmk. O incidente permanece aberto."
                     ),
                     settings=settings,
                 )
                 return {
                     "status": "failed",
                     "state": "checkmk_post_collection_failed",
-                    "reason": "correção local aplicada, mas a validação do agente/coleta a partir do monitor falhou",
+                    "reason": "estado local validado, mas a validação do agente/coleta a partir do monitor falhou",
                     "deterministic_skill": skill_id,
+                    "local_already_correct": local_already_correct,
                     "results": results,
                     "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
                 }
@@ -382,17 +422,23 @@ def run_deterministic_skill_correction(
             incident,
             skill_id=skill_id,
             conclusion=(
-                "Conflito legado corrigido no TARGET_HOST; xinetd e agente validados; MONITORING_HOST alcançou "
-                "a TCP/6556 e executou a nova coleta no CHECKMK_SITE do mesmo cliente. "
-                "O incidente só será marcado como resolvido quando o Livestatus confirmar o sensor em OK."
+                "TARGET_HOST validado; MONITORING_HOST alcançou a TCP/6556 e executou a nova coleta no CHECKMK_SITE "
+                "do mesmo cliente. O incidente só será marcado como resolvido quando o Livestatus confirmar OK."
             ),
             settings=settings,
         )
         return {
             "status": "validated",
             "state": "deterministic_skill_validated",
-            "summary": "Sequência conhecida executada e validada até a nova coleta Checkmk.",
+            "summary": (
+                "Estado local já estava correto; revalidação Checkmk executada."
+                if local_already_correct
+                else "Sequência conhecida executada e validada até a nova coleta Checkmk."
+            ),
             "deterministic_skill": skill_id,
+            "master_skill": "noc-master",
+            "procedure_id": skill_id,
+            "local_already_correct": local_already_correct,
             "results": results,
             "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
             "new_approval_required": False,
@@ -404,6 +450,7 @@ def run_deterministic_skill_correction(
             "state": "deterministic_execution_error",
             "reason": f"{type(exc).__name__}: {exc}",
             "deterministic_skill": skill_id,
+            "local_already_correct": local_already_correct,
             "results": results,
             "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
         }
