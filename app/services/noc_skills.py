@@ -39,6 +39,7 @@ class NOCSkill:
     objective: str
     knowledge: tuple[str, ...]
     constraints: tuple[str, ...]
+    prescribed_actions: tuple[dict[str, Any], ...]
     source: str
 
     @staticmethod
@@ -79,6 +80,7 @@ class NOCSkill:
             "objective": self.objective,
             "knowledge": list(self.knowledge),
             "constraints": list(self.constraints),
+            "prescribed_actions": [dict(item) for item in self.prescribed_actions],
             "source": self.source,
             "master_skill_id": _MASTER_SKILL_ID,
             "procedure_id": self.id,
@@ -123,6 +125,11 @@ def _skill_from_payload(payload: dict[str, Any], *, source: str, fallback_id: st
     priority = int(payload.get("priority") or 0)
     if priority < -1000 or priority > 10000:
         raise ValueError("priority fora do intervalo permitido")
+    prescribed_actions = tuple(
+        dict(item)
+        for item in payload.get("prescribed_actions") or ()
+        if isinstance(item, dict)
+    )
     return NOCSkill(
         id=skill_id,
         title=title,
@@ -135,6 +142,7 @@ def _skill_from_payload(payload: dict[str, Any], *, source: str, fallback_id: st
         objective=str(payload.get("objective") or "Investigar a causa do alerta usando somente evidências verificáveis.").strip()[:2000],
         knowledge=tuple(str(item)[:1000] for item in payload.get("knowledge") or ()),
         constraints=tuple(str(item)[:1000] for item in payload.get("constraints") or ()),
+        prescribed_actions=prescribed_actions,
         source=source,
     )
 
@@ -277,6 +285,7 @@ def save_noc_skill(payload: dict[str, Any]) -> dict[str, Any]:
         "objective": skill.objective,
         "knowledge": list(skill.knowledge),
         "constraints": list(skill.constraints),
+        "prescribed_actions": [dict(item) for item in skill.prescribed_actions],
     }
     disabled = [item for item in catalog.get("disabled") or [] if str(item).strip().lower() != skill.id]
     _write_runtime_catalog({"items": items, "disabled": disabled})
@@ -318,6 +327,7 @@ def select_noc_skill(event: dict[str, Any], *, host_kind: str | None = None) -> 
                 "Usar o output do Checkmk como ponto de partida, nunca como prova única.",
             ],
             "constraints": ["Somente leitura até a política de correção autorizar uma ação."],
+            "prescribed_actions": [],
             "source": "builtin",
             "master_skill_id": _MASTER_SKILL_ID,
             "procedure_id": "generic-checkmk-alert",
@@ -353,10 +363,20 @@ def build_skill_objective(
     ]
     knowledge = [str(item) for item in skill.get("knowledge") or []]
     constraints = [str(item) for item in skill.get("constraints") or []]
+    prescribed = [dict(item) for item in skill.get("prescribed_actions") or [] if isinstance(item, dict)]
     if knowledge:
         lines.append("Conhecimento do procedure: " + " | ".join(knowledge))
     if constraints:
         lines.append("Restricoes: " + " | ".join(constraints))
+    if prescribed:
+        lines.append(
+            "Acoes prescritas pelo procedure: "
+            + yaml.safe_dump(prescribed, allow_unicode=True, sort_keys=False, default_flow_style=True).strip()
+        )
+        lines.append(
+            "Regra de precedencia: estas acoes prescritas devem ser executadas pelo canal estruturado da Skill; "
+            "nao trate um veto do Ansible ou da politica generica como substituto da prescricao."
+        )
     lines.append(
         "Regra de isolamento: nao usar IP interno, rota, sessao ou evidencia pertencente a outro site/cliente."
     )
