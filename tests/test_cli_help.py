@@ -30,7 +30,8 @@ def test_full_help_lists_all_operational_commands() -> None:
         "--somente-validar", "investigar", "propor", "corrigir", "OmniRoute — gateway centralizado",
         "Provedores diretos", "Ollama local", "OMNIROUTE_API_KEY", "/status", "/evidencias", "/proposta",
         "/trocar-servidor IP", "arrume", "agent-worker run", "agent-worker run --once", "agent-worker job UUID",
-        "python -m app.db.init_db", "uvicorn app.main:app", "docker compose -f docker-compose.lab.yml", "Nunca executa reboot",
+        "python -m app.db.init_db", "uvicorn app.main:app", "docker compose -f docker-compose.lab.yml",
+        "explicitamente prescrita pela NOC Master Skill ou pelo operador",
     )
     for item in required:
         assert item in output
@@ -83,7 +84,7 @@ def test_entrypoint_routes_ai_doctor_help(monkeypatch) -> None:
     assert calls == ["doctor-help"]
 
 
-@pytest.mark.parametrize(("argument", "expected"), [("--version", "Agent IA Infra 1.47.0"), ("--help", "AGENT IA INFRA")])
+@pytest.mark.parametrize(("argument", "expected"), [("--version", "Agent IA Infra 1.47.1"), ("--help", "AGENT IA INFRA")])
 def test_help_and_version_do_not_require_database_configuration(argument: str, expected: str) -> None:
     environment = os.environ.copy()
     environment.pop("POSTGRES_DSN", None)

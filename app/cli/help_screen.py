@@ -157,7 +157,7 @@ def _chat_table() -> Table:
     table.add_row("arrume", "Solicita a execução da última proposta revisada e exige confirmação explícita.")
     table.add_row(
         "reinicie o serviço X",
-        "Primeiro valida e propõe a ação. Não executa restart imediatamente.",
+        "Na sessão interativa tradicional, primeiro valida e propõe a ação. No NOC Manual, instruções explícitas reconhecidas podem virar prescrição operacional.",
     )
     table.add_row(
         "veja os logs / faça outra validação",
@@ -261,13 +261,12 @@ def render_full_help(console: Console, *, version: str | None = None) -> None:
     console.print(_examples_table())
 
     console.print(Panel(
-        "• Nunca acessa banco de dados de cliente.\n"
-        "• Nunca executa reboot, shutdown, poweroff ou halt do servidor.\n"
-        "• Nunca controla start, stop, restart, kill ou remoção de containers.\n"
-        "• Produção, standby e ambiente desconhecido não recebem correção automática.\n"
-        "• Correções ficam limitadas a monitoramento e treinamento, com ferramenta autorizada, "
-        "evidência, segunda IA, token assinado e confirmação humana.\n"
-        "• Reinício de serviço solicitado no chat é primeiro investigado e proposto.",
+        "• Nunca acessa banco de dados de cliente diretamente.\n"
+        "• Reboot/shutdown/poweroff/halt e stop/start de serviços sensíveis continuam bloqueados quando forem apenas inferidos pela IA.\n"
+        "• No NOC, uma ação estruturada explicitamente prescrita pela NOC Master Skill ou pelo operador tem precedência sobre o veto genérico do Ansible.\n"
+        "• A prescrição não libera shell arbitrário e permanece isolada no cliente/site correto.\n"
+        "• Ações não prescritas continuam exigindo ambiente, política, evidência, revisão e autorização aplicáveis.\n"
+        "• Mesmo após uma ação prescrita, o incidente só é resolvido quando a pós-validação confirmar recuperação.",
         title="Proteções obrigatórias",
         border_style="red",
     ))
