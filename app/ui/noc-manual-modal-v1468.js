@@ -49,7 +49,12 @@
       <section class="noc-manual-guidance">
         <div><strong>Playbook</strong><select id="noc-manual-playbook"><option value="">Automático · IA escolhe</option></select></div>
         <div><strong>Skill</strong><select id="noc-manual-skill"><option value="">Automático · IA identifica</option></select></div>
-        <small>Se você escolher manualmente, a execução fica presa a esse conhecimento. Sem seleção, a IA identifica o problema, escolhe a Skill, liga o Playbook correspondente e resolve.</small>
+        <small>Se você escolher manualmente, a execução fica presa a esse conhecimento. Sem seleção, a IA identifica o problema, escolhe a NOC Master Skill e o procedimento correspondente.</small>
+        <div class="noc-manual-prescription">
+          <strong>Instrução explícita do operador <em>opcional</em></strong>
+          <textarea id="noc-manual-operator-instruction" maxlength="4000" rows="3" placeholder="Ex.: systemctl stop postgresql.service; depois systemctl start postgresql.service; depois reiniciar o servidor"></textarea>
+          <small>Quando uma ação operacional estiver escrita explicitamente aqui, ela vira uma prescrição do operador e tem precedência sobre o veto genérico do Ansible. Ações não prescritas continuam seguindo a política normal.</small>
+        </div>
       </section>
       <section class="noc-manual-scope">
         <header class="noc-manual-summary">
@@ -123,7 +128,7 @@
       button.id = 'noc-manual-button';
       button.className = 'secondary-button noc-manual-button';
       button.textContent = 'Manual';
-      button.title = 'Escolher cliente, host, sensor, Playbook e Skill para uma correção pontual';
+      button.title = 'Escolher cliente, host, sensor e instrução para uma correção pontual';
       button.addEventListener('click', () => void openManual());
       const skills = $('#skills-manager-button', power);
       if (skills) power.insertBefore(button, skills);
@@ -180,7 +185,7 @@
     const skillValue = skill?.value || '';
     const playbookValue = playbook?.value || '';
     if (skill) {
-      skill.innerHTML = '<option value="">Automático · IA identifica</option>' + state.skills.map((item) => `<option value="${esc(item.id)}">${esc(item.title || item.id)}${item.playbook_id ? ` · ${esc(item.playbook_id)}` : ''}</option>`).join('');
+      skill.innerHTML = '<option value="">Automático · NOC Master identifica</option>' + state.skills.map((item) => `<option value="${esc(item.id)}">${esc(item.title || item.id)}${item.playbook_id ? ` · ${esc(item.playbook_id)}` : ''}</option>`).join('');
       skill.value = skillValue;
     }
     if (playbook) {
@@ -322,6 +327,7 @@
     const button = $('#noc-manual-run', modal);
     if (button) { button.disabled = true; button.textContent = 'Iniciando...'; }
     try {
+      const operatorInstruction = String($('#noc-manual-operator-instruction', modal)?.value || '').trim();
       const run = await request('/ui/api/noc/autonomy/run-selected', {
         method: 'POST',
         body: {
@@ -330,10 +336,13 @@
           problem_keys: [...state.selectedProblems],
           playbook_id: String($('#noc-manual-playbook', modal)?.value || '') || null,
           skill_id: String($('#noc-manual-skill', modal)?.value || '') || null,
+          operator_instruction: operatorInstruction || null,
         },
       });
       state.runId = String(run.id || '');
-      setMessage('Execução manual iniciada. O modo Automático não foi alterado.');
+      setMessage(operatorInstruction
+        ? 'Execução manual iniciada com prescrição explícita do operador. O modo Automático não foi alterado.'
+        : 'Execução manual iniciada. O modo Automático não foi alterado.');
       renderRun(run);
       pollRun();
     } catch (error) {
