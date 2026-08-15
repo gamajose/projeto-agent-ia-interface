@@ -205,16 +205,19 @@ def request_selected_run(
     if not any((scope["sites"], scope["hosts"], scope["problem_keys"])):
         raise ValueError("selecione ao menos um cliente, host ou problema antes de executar")
 
+    manual_options: dict[str, Any] = {
+        "playbook_id": scope.get("playbook_id"),
+        "skill_id": scope.get("skill_id"),
+    }
+    if scope.get("operator_instruction"):
+        manual_options["operator_instruction"] = scope["operator_instruction"]
+
     run_id = str(uuid.uuid4())
     run = {
         "id": run_id,
         "status": "queued",
         "scope": scope,
-        "manual_options": {
-            "playbook_id": scope.get("playbook_id"),
-            "skill_id": scope.get("skill_id"),
-            "operator_instruction": scope.get("operator_instruction"),
-        },
+        "manual_options": manual_options,
         "created_at": _now(),
         "updated_at": _now(),
         "requested_by": str(operator or "operator"),
