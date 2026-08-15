@@ -22,6 +22,7 @@ from app.services.noc_autonomy_control import (
     scope_matches_problem,
 )
 from app.services.noc_incidents import attach_job, incident_objective
+from app.services.noc_prescriptions import parse_operator_instruction
 from app.services.noc_skills import build_skill_objective, load_noc_skills
 from app.services.redaction import redact_text
 
@@ -83,6 +84,7 @@ def _mark_manual_correction_intent(
     *,
     run_id: str,
     operator: str,
+    operator_instruction: str | None,
     settings: Settings,
 ) -> None:
     if not incident_id:
@@ -91,12 +93,16 @@ def _mark_manual_correction_intent(
     incident = incident_store._load(client, settings, incident_id)
     if not incident:
         return
+    instruction = str(operator_instruction or "").strip()[:4000] or None
+    prescribed_actions = parse_operator_instruction(instruction)
     incident.update(
         {
             "manual_correction_requested": True,
             "manual_correction_run_id": run_id,
             "manual_correction_requested_by": operator,
             "manual_correction_requested_at": datetime.now(timezone.utc).isoformat(),
+            "operator_instruction": instruction,
+            "operator_prescribed_actions": prescribed_actions,
         }
     )
     incident_store._store(client, settings, incident)
@@ -131,10 +137,13 @@ def _ensure_manual_job(
         return result
 
     incident_id = str(incident.get("id") or "")
+    operator_instruction = str(scope.get("operator_instruction") or "").strip()[:4000] or None
+    operator_prescribed_actions = parse_operator_instruction(operator_instruction)
     _mark_manual_correction_intent(
         incident_id,
         run_id=run_id,
         operator=operator,
+        operator_instruction=operator_instruction,
         settings=settings,
     )
 
@@ -171,16 +180,26 @@ def _ensure_manual_job(
     )
     objective += (
         "\n\nINTENÇÃO DO OPERADOR: ARRUMAR ESTE PROBLEMA. "
-        "Não encerre o trabalho somente com diagnóstico. Identifique a causa, produza a ação corretiva estruturada "
-        "permitida pelo playbook/Skill, submeta-a à revisão da segunda IA e prepare a pós-validação. "
-        "Se a evidência mostrar que o alerta está em um host mas a causa/correção pertence ao servidor de monitoramento "
-        "do mesmo cliente, preserve o isolamento do site, volte ao contexto do monitoramento, corrija ali e depois revalide "
-        "o sensor original no Checkmk. Reboot/shutdown, banco, ações destrutivas e lifecycle de containers permanecem proibidos."
+        "Não encerre o trabalho somente com diagnóstico. Identifique a causa, produza ações corretivas estruturadas e "
+        "prepare a pós-validação. Se a NOC Master Skill ou o operador prescrever explicitamente uma ação operacional, "
+        "essa prescrição tem precedência e será executada pelo canal de ações prescritas, sem depender do veto do Ansible "
+        "ou de nova aprovação da segunda IA. Não invente reboot, stop/start de banco ou outra alteração privilegiada quando "
+        "ela não estiver prescrita. Para ações não prescritas, mantenha a política normal. Se a evidência mostrar que o alerta "
+        "está em um host mas a causa/correção pertence ao servidor de monitoramento do mesmo cliente, preserve o isolamento "
+        "do site, volte ao contexto do monitoramento, corrija ali e depois revalide o sensor original no Checkmk."
     )
     if manual_skill_id:
         objective += f"\nSkill escolhida manualmente pelo operador: {manual_skill_id}."
     if manual_playbook_id:
         objective += f"\nPlaybook escolhido manualmente pelo operador: {manual_playbook_id}."
+    if operator_instruction:
+        objective += (
+            "\nINSTRUÇÃO EXPLÍCITA DO OPERADOR: "
+            + operator_instruction
+            + "\nAções estruturadas reconhecidas como prescrição: "
+            + (json.dumps(operator_prescribed_actions, ensure_ascii=False) if operator_prescribed_actions else "nenhuma ação privilegiada reconhecida automaticamente")
+            + "."
+        )
 
     queued = enqueue_investigation(
         str(route.get("entry_address") or ""),
@@ -219,6 +238,8 @@ def _ensure_manual_job(
             "manual_selected": True,
             "manual_correction_requested": True,
             "manual_correction_requested_by": operator,
+            "operator_instruction": operator_instruction,
+            "operator_prescribed_actions": operator_prescribed_actions,
             "allow_monitoring_context_fallback": True,
             "isolation": {
                 "site_id": route.get("site_id"),
@@ -299,6 +320,7 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
                             "created_at": job.get("created_at"),
                             "manual_skill_id": scope.get("skill_id"),
                             "manual_playbook_id": scope.get("playbook_id"),
+                            "operator_instruction": scope.get("operator_instruction"),
                         }
                     )
             except Exception as exc:
@@ -312,6 +334,7 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
             "manual_options": {
                 "skill_id": scope.get("skill_id"),
                 "playbook_id": scope.get("playbook_id"),
+                "operator_instruction": scope.get("operator_instruction"),
             },
             "problems_seen": len(selected_problems),
             "jobs_queued": len(jobs),
