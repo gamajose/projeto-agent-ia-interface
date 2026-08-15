@@ -30,7 +30,8 @@ def test_full_help_lists_all_operational_commands() -> None:
         "--somente-validar", "investigar", "propor", "corrigir", "OmniRoute — gateway centralizado",
         "Provedores diretos", "Ollama local", "OMNIROUTE_API_KEY", "/status", "/evidencias", "/proposta",
         "/trocar-servidor IP", "arrume", "agent-worker run", "agent-worker run --once", "agent-worker job UUID",
-        "python -m app.db.init_db", "uvicorn app.main:app", "docker compose -f docker-compose.lab.yml", "Nunca executa reboot",
+        "python -m app.db.init_db", "uvicorn app.main:app", "docker compose -f docker-compose.lab.yml",
+        "explicitamente prescrita pela NOC Master Skill ou pelo operador",
     )
     for item in required:
         assert item in output
