@@ -4,11 +4,9 @@ import re
 import shlex
 from typing import Any
 
-import yaml
-
 from app.core.policies import EnvironmentType
 from app.core.settings import Settings
-from app.services.noc_skills import _master_skill_path, _read_runtime_catalog, select_noc_skill
+from app.services.noc_skills import select_noc_skill
 from app.services.redaction import redact_text
 from app.services.site_scoped_execution import build_approved_execution_route
 
@@ -19,24 +17,30 @@ _SYSTEMCTL_INSTRUCTION_RE = re.compile(
     re.IGNORECASE,
 )
 _REBOOT_RE = re.compile(
-    r"\b(?:reboot|reinici(?:ar|e|a)|restart)\b.{0,18}\b(?:servidor|server|host|maquina|máquina)\b|\bsystemctl\s+(?:--no-block\s+)?reboot\b",
+    r"\b(?:reboot|reinici(?:ar|e|a)|restart)\b.{0,18}\b(?:servidor|server|host|maquina|máquina)\b"
+    r"|\bsystemctl\s+(?:--no-block\s+)?reboot\b",
     re.IGNORECASE,
 )
 _STOP_START_RE = re.compile(
-    r"\b(?:stop|parar|pare)\b(?:\s+(?:o|a))?(?:\s+servi[cç]o)?\s+(?P<unit>[A-Za-z0-9_.@:-]+)"
-    r".{0,80}?\b(?:start|iniciar|inicie)\b(?:\s+(?:o|a))?(?:\s+servi[cç]o)?(?:\s+(?P=unit))?",
+    r"(?:"
+    r"\b(?:stop|parar|pare)\b(?:\s+(?:o|a|no|na))?(?:\s+servi[cç]o)?\s+(?P<unit1>[A-Za-z0-9_.@:-]+)"
+    r".{0,80}?\b(?:start|iniciar|inicie)\b(?:\s+(?:o|a|no|na))?(?:\s+servi[cç]o)?(?:\s+(?P=unit1))?"
+    r"|"
+    r"\bstop\s*(?:/|\+|e|and|\s)\s*start\b(?:\s+(?:o|a|no|na|em))?(?:\s+servi[cç]o)?\s+(?P<unit2>[A-Za-z0-9_.@:-]+)"
+    r")",
     re.IGNORECASE,
 )
 _RESTART_SERVICE_RE = re.compile(
-    r"\b(?:restart|reiniciar|reinicie)\b(?:\s+(?:o|a))?(?:\s+servi[cç]o)?\s+(?P<unit>[A-Za-z0-9_.@:-]+)",
+    r"\b(?:restart|reiniciar|reinicie|reset|resetar)\b"
+    r"(?:\s+(?:o|a|no|na|em))?(?:\s+servi[cç]o)?\s+(?P<unit>[A-Za-z0-9_.@:-]+)",
     re.IGNORECASE,
 )
 _STOP_SERVICE_RE = re.compile(
-    r"\b(?:stop|parar|pare)\b(?:\s+(?:o|a))?(?:\s+servi[cç]o)?\s+(?P<unit>[A-Za-z0-9_.@:-]+)",
+    r"\b(?:stop|parar|pare)\b(?:\s+(?:o|a|no|na))?(?:\s+servi[cç]o)?\s+(?P<unit>[A-Za-z0-9_.@:-]+)",
     re.IGNORECASE,
 )
 _START_SERVICE_RE = re.compile(
-    r"\b(?:start|iniciar|inicie)\b(?:\s+(?:o|a))?(?:\s+servi[cç]o)?\s+(?P<unit>[A-Za-z0-9_.@:-]+)",
+    r"\b(?:start|iniciar|inicie)\b(?:\s+(?:o|a|no|na))?(?:\s+servi[cç]o)?\s+(?P<unit>[A-Za-z0-9_.@:-]+)",
     re.IGNORECASE,
 )
 
@@ -49,17 +53,37 @@ _ALLOWED_SERVICE_ACTIONS = {
     "disable --now",
     "stop_start",
 }
+_RESERVED_NON_UNITS = {
+    "servidor",
+    "server",
+    "host",
+    "maquina",
+    "máquina",
+    "servico",
+    "serviço",
+    "banco",
+    "database",
+    "db",
+}
 
 
 def _safe_unit(value: Any) -> str:
     unit = str(value or "").strip()
     if not _SAFE_UNIT_RE.fullmatch(unit) or unit.startswith("-"):
         raise ValueError(f"unit systemd inválida para ação prescrita: {unit or '-'}")
+    if unit.casefold() in _RESERVED_NON_UNITS:
+        raise ValueError(f"nome de unit genérico não é suficiente para ação prescrita: {unit}")
     return unit
 
 
 def _normalize_action(value: Any) -> str:
-    action = str(value or "restart").strip().casefold().replace("stop/start", "stop_start").replace("stop+start", "stop_start")
+    action = (
+        str(value or "restart")
+        .strip()
+        .casefold()
+        .replace("stop/start", "stop_start")
+        .replace("stop+start", "stop_start")
+    )
     action = re.sub(r"\s+", " ", action)
     if action not in _ALLOWED_SERVICE_ACTIONS:
         raise ValueError(f"ação systemd prescrita não suportada: {action}")
@@ -105,57 +129,74 @@ def _dedupe(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _overlaps(span: tuple[int, int], occupied: list[tuple[int, int]]) -> bool:
+    start, end = span
+    return any(start < other_end and end > other_start for other_start, other_end in occupied)
+
+
 def parse_operator_instruction(text: str | None) -> list[dict[str, Any]]:
     """Extrai somente prescrições operacionais inequívocas do texto do operador.
 
-    Texto não reconhecido continua disponível para a investigação, mas não ganha
-    autorização elevada. Isso evita transformar interpretação livre da IA em
-    uma autorização para comando não solicitado.
+    A ordem do texto é preservada. Texto não reconhecido continua disponível
+    para a investigação, mas não ganha autorização elevada. Assim uma frase
+    como "stop/start postgresql.service e depois reiniciar o servidor" executa
+    primeiro o serviço e só então submete o reboot.
     """
 
     value = str(text or "").strip()
     if not value:
         return []
 
-    actions: list[dict[str, Any]] = []
-    consumed_units: set[str] = set()
-
-    if _REBOOT_RE.search(value):
-        actions.append(
-            normalize_prescription(
-                {"type": "reboot", "reason": "reboot solicitado explicitamente pelo operador"},
-                source="operator_prescription",
-            )
-        )
+    candidates: list[tuple[int, int, dict[str, Any]]] = []
+    occupied: list[tuple[int, int]] = []
 
     for match in _SYSTEMCTL_INSTRUCTION_RE.finditer(value):
-        unit = _safe_unit(match.group("unit"))
-        action = _normalize_action(match.group("action"))
-        consumed_units.add(unit.casefold())
-        actions.append(
-            normalize_prescription(
-                {
-                    "type": "systemd",
-                    "unit": unit,
-                    "action": action,
-                    "reason": "comando systemctl solicitado explicitamente pelo operador",
-                },
-                source="operator_prescription",
+        try:
+            unit = _safe_unit(match.group("unit"))
+            action = _normalize_action(match.group("action"))
+        except ValueError:
+            continue
+        span = match.span()
+        occupied.append(span)
+        candidates.append(
+            (
+                span[0],
+                span[1],
+                normalize_prescription(
+                    {
+                        "type": "systemd",
+                        "unit": unit,
+                        "action": action,
+                        "reason": "comando systemctl solicitado explicitamente pelo operador",
+                    },
+                    source="operator_prescription",
+                ),
             )
         )
 
     for match in _STOP_START_RE.finditer(value):
-        unit = _safe_unit(match.group("unit"))
-        consumed_units.add(unit.casefold())
-        actions.append(
-            normalize_prescription(
-                {
-                    "type": "systemd",
-                    "unit": unit,
-                    "action": "stop_start",
-                    "reason": "stop/start solicitado explicitamente pelo operador",
-                },
-                source="operator_prescription",
+        span = match.span()
+        if _overlaps(span, occupied):
+            continue
+        raw_unit = match.group("unit1") or match.group("unit2")
+        try:
+            unit = _safe_unit(raw_unit)
+        except ValueError:
+            continue
+        occupied.append(span)
+        candidates.append(
+            (
+                span[0],
+                span[1],
+                normalize_prescription(
+                    {
+                        "type": "systemd",
+                        "unit": unit,
+                        "action": "stop_start",
+                        "reason": "stop/start solicitado explicitamente pelo operador",
+                    },
+                    source="operator_prescription",
+                ),
             )
         )
 
@@ -165,46 +206,48 @@ def parse_operator_instruction(text: str | None) -> list[dict[str, Any]]:
         (_START_SERVICE_RE, "start"),
     ):
         for match in pattern.finditer(value):
-            unit = _safe_unit(match.group("unit"))
-            if unit.casefold() in consumed_units:
+            span = match.span()
+            if _overlaps(span, occupied):
                 continue
-            if unit.casefold() in {"servidor", "server", "host", "maquina", "máquina"}:
+            try:
+                unit = _safe_unit(match.group("unit"))
+            except ValueError:
                 continue
-            consumed_units.add(unit.casefold())
-            actions.append(
-                normalize_prescription(
-                    {
-                        "type": "systemd",
-                        "unit": unit,
-                        "action": action_name,
-                        "reason": f"{action_name} solicitado explicitamente pelo operador",
-                    },
-                    source="operator_prescription",
+            occupied.append(span)
+            candidates.append(
+                (
+                    span[0],
+                    span[1],
+                    normalize_prescription(
+                        {
+                            "type": "systemd",
+                            "unit": unit,
+                            "action": action_name,
+                            "reason": f"{action_name} solicitado explicitamente pelo operador",
+                        },
+                        source="operator_prescription",
+                    ),
                 )
             )
 
-    return _dedupe(actions)
+    for match in _REBOOT_RE.finditer(value):
+        span = match.span()
+        if _overlaps(span, occupied):
+            continue
+        occupied.append(span)
+        candidates.append(
+            (
+                span[0],
+                span[1],
+                normalize_prescription(
+                    {"type": "reboot", "reason": "reboot solicitado explicitamente pelo operador"},
+                    source="operator_prescription",
+                ),
+            )
+        )
 
-
-def _raw_skill_prescriptions(procedure_id: str) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    path = _master_skill_path()
-    if path.exists():
-        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for raw in payload.get("procedures") or []:
-            if not isinstance(raw, dict) or str(raw.get("id") or "").strip() != procedure_id:
-                continue
-            result = [dict(item) for item in raw.get("prescribed_actions") or [] if isinstance(item, dict)]
-            break
-
-    try:
-        runtime = _read_runtime_catalog()
-        override = dict((runtime.get("items") or {}).get(procedure_id) or {})
-    except Exception:
-        override = {}
-    if "prescribed_actions" in override:
-        result = [dict(item) for item in override.get("prescribed_actions") or [] if isinstance(item, dict)]
-    return result
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return _dedupe([item[2] for item in candidates])
 
 
 def skill_prescriptions(incident: dict[str, Any]) -> tuple[str | None, list[dict[str, Any]]]:
@@ -223,8 +266,9 @@ def skill_prescriptions(incident: dict[str, Any]) -> tuple[str | None, list[dict
         return None, []
 
     actions: list[dict[str, Any]] = []
-    for raw in _raw_skill_prescriptions(procedure_id):
-        actions.append(normalize_prescription(raw, source="skill_prescription"))
+    for raw in skill.get("prescribed_actions") or []:
+        if isinstance(raw, dict):
+            actions.append(normalize_prescription(dict(raw), source="skill_prescription"))
     return procedure_id, _dedupe(actions)
 
 
@@ -245,10 +289,10 @@ def _underlying_executor(executor: Any, command: str) -> Any:
 
 
 def _prescribed_sudo(executor: Any, command: str, *, timeout: int) -> Any:
-    """Executa comando já estruturado e prescrito sem passar pela política Ansible/IA.
+    """Executa comando estruturado e prescrito sem passar pelo veto genérico.
 
-    O bypass é deliberadamente estreito: somente comandos produzidos neste
-    módulo chegam aqui. Não existe entrada de shell livre.
+    O bypass é deliberadamente estreito: somente comandos construídos neste
+    módulo chegam aqui. Não existe entrada de shell livre do usuário ou da IA.
     """
 
     target = _underlying_executor(executor, command)
@@ -508,6 +552,15 @@ def run_prescribed_correction(
                     "status": "failed",
                     "state": "prescribed_action_failed",
                     "reason": str(item.get("reason") or "ação prescrita não foi validada"),
+                    "procedure_id": procedure_id,
+                    "results": results,
+                    "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
+                }
+            if item.get("reconnect_required") and action is not actions[-1]:
+                return {
+                    "status": "failed",
+                    "state": "prescribed_reboot_not_last",
+                    "reason": "reboot prescrito deve ser a última ação do procedure/instrução para permitir a revalidação posterior",
                     "procedure_id": procedure_id,
                     "results": results,
                     "execution_route": {**dict(route.metadata), "site_scoped": True, "context": route.context},
