@@ -14,6 +14,7 @@ from app.services.noc_deterministic_skill import (
     is_ai_dependency_failure,
     run_deterministic_skill_correction,
 )
+from app.services.noc_prescriptions import prescribed_actions_for_incident, run_prescribed_correction
 from app.services import noc_incidents as incident_store
 
 
@@ -127,11 +128,11 @@ def _allowed_tools(
         if str(item).strip()
     }
     if source == "manual_selected":
-        # O clique em "Arrumar selecionados" autoriza somente as correções que
-        # pertencem ao playbook/skill da investigação ou à allowlist NOC global.
+        # Quando NÃO existe prescrição explícita, o clique em Arrumar continua
+        # limitado às correções do playbook/Skill ou à allowlist NOC global.
         return playbook_tools | global_tools
-    # Automático continua mais conservador: somente allowlist global e, quando
-    # o playbook declarou escopo, a ação também precisa pertencer a ele.
+    # Automático não prescrito continua conservador: somente allowlist global e,
+    # quando o playbook declarou escopo, a ação também precisa pertencer a ele.
     return global_tools if not playbook_tools else global_tools & playbook_tools
 
 
@@ -232,14 +233,17 @@ def attempt_requested_correction(
     *,
     settings: Settings | None = None,
 ) -> dict[str, Any] | None:
-    """Executa o ciclo corrigir -> revalidar quando o NOC recebeu intenção de correção.
+    """Executa o ciclo corrigir -> revalidar quando o NOC recebeu intenção.
 
-    A investigação por IA continua sendo o caminho preferencial. Quando o
-    bloqueio é exclusivamente a indisponibilidade/baixa confiança da IA e o
-    incidente corresponde a uma Skill determinística já validada em campo, o
-    NOC pode executar a ferramenta estruturada dessa Skill sem depender do
-    Ensemble. Políticas, allowlist, rota do cliente e pré-condições funcionais
-    continuam obrigatórias.
+    Precedência operacional:
+    1. ação estruturada prescrita pela NOC Master Skill;
+    2. ação estruturada explicitamente passada pelo operador;
+    3. somente na ausência de prescrição, fluxo normal de IA/Ansible/políticas.
+
+    A prescrição não libera shell arbitrário: ela passa pelo executor estruturado
+    de prescrições, preserva a rota isolada do cliente/site e registra a origem
+    ``skill_prescription`` ou ``operator_prescription``. Depois da alteração, a
+    resolução continua dependendo da revalidação real do Checkmk.
     """
 
     settings = settings or get_settings()
@@ -257,23 +261,24 @@ def attempt_requested_correction(
         return incident
 
     job_id = str(incident.get("job_id") or "")
-    eligible, reason, allowed_tools = _eligibility(
-        incident,
-        result,
-        source=source,
-        settings=settings,
-    )
-
+    procedure_id, prescribed_actions = prescribed_actions_for_incident(incident)
+    execution_override: dict[str, Any] | None = None
     deterministic_execution: dict[str, Any] | None = None
-    if not eligible and is_ai_dependency_failure(reason):
+    allowed_tools: set[str] = set()
+
+    if prescribed_actions:
+        sources = sorted({str(item.get("authorization_source") or "") for item in prescribed_actions})
         _store_job_phase(
             job_id,
             status="running",
             percent=88,
-            stage="deterministic_skill",
-            detail="IA indisponível ou inconclusiva. Validando a Skill conhecida diretamente no ambiente.",
+            stage="prescribed_correction",
+            detail=(
+                f"Executando {len(prescribed_actions)} ação(ões) prescrita(s) pela Skill/operador "
+                "sem submeter a prescrição ao veto genérico do Ansible."
+            ),
             settings=settings,
-            extra={"resolution_status": "correcting"},
+            extra={"resolution_status": "correcting", "prescription_sources": sources},
         )
         incident = _incident_update(
             incident_id,
@@ -281,43 +286,137 @@ def attempt_requested_correction(
                 "status": "correcting",
                 "attention_reason": None,
                 "correction_intent_source": source,
-                "correction_fallback": "deterministic_skill",
+                "correction_precedence": "prescribed_action",
+                "prescribed_procedure_id": procedure_id,
+                "prescribed_actions": prescribed_actions,
             },
             settings,
         ) or incident
-        _event(incident, "deterministic_skill_started", {"source": source, "ai_blocker": reason}, settings)
-        deterministic_execution = run_deterministic_skill_correction(
+        _event(
             incident,
-            result,
-            settings=settings,
+            "prescribed_correction_started",
+            {
+                "source": source,
+                "procedure_id": procedure_id,
+                "prescription_sources": sources,
+                "action_count": len(prescribed_actions),
+            },
+            settings,
         )
-        if deterministic_execution and str(deterministic_execution.get("status") or "") == "validated":
+        execution_override = run_prescribed_correction(incident, result, settings=settings)
+        if execution_override and str(execution_override.get("status") or "") == "validated":
             eligible = True
             reason = (
-                "Skill determinística validou a correção sem depender do provedor de IA: "
-                f"{deterministic_execution.get('deterministic_skill') or 'skill conhecida'}"
+                "ação prescrita executada diretamente por precedência operacional: "
+                + ", ".join(execution_override.get("prescription_sources") or sources)
             )
-            allowed_tools = {
-                str(item.get("tool") or "").strip()
-                for item in deterministic_execution.get("results") or []
-                if isinstance(item, dict) and str(item.get("tool") or "").strip()
-            }
             _event(
                 incident,
-                "deterministic_skill_validated",
+                "prescribed_correction_validated",
                 {
                     "source": source,
-                    "skill": deterministic_execution.get("deterministic_skill"),
-                    "ai_blocker": reason,
+                    "procedure_id": procedure_id,
+                    "execution": execution_override,
                 },
                 settings,
             )
-        elif deterministic_execution:
-            fallback_reason = str(
-                deterministic_execution.get("reason")
-                or "pré-condições da Skill determinística não foram confirmadas"
+        else:
+            prescribed_reason = str(
+                (execution_override or {}).get("reason")
+                or "a ação prescrita não foi executada/validada"
             )
-            reason = f"{reason}. Skill determinística não executada/validada: {fallback_reason}"
+            updated = _incident_update(
+                incident_id,
+                {
+                    "status": "needs_attention",
+                    "attention_reason": f"Falha ao executar ação prescrita: {prescribed_reason}"[:2000],
+                    "correction_intent_source": source,
+                    "correction_eligibility": {
+                        "eligible": False,
+                        "reason": prescribed_reason,
+                        "precedence": "prescribed_action",
+                    },
+                    "prescribed_execution": execution_override,
+                },
+                settings,
+            ) or incident
+            _store_job_phase(
+                job_id,
+                status="failed",
+                percent=100,
+                stage="prescribed_correction_failed",
+                detail=str(updated.get("attention_reason") or prescribed_reason),
+                settings=settings,
+                extra={"resolution_status": "needs_attention"},
+            )
+            _event(
+                updated,
+                "prescribed_correction_failed",
+                {"source": source, "procedure_id": procedure_id, "reason": prescribed_reason},
+                settings,
+            )
+            return updated
+    else:
+        eligible, reason, allowed_tools = _eligibility(
+            incident,
+            result,
+            source=source,
+            settings=settings,
+        )
+
+        if not eligible and is_ai_dependency_failure(reason):
+            _store_job_phase(
+                job_id,
+                status="running",
+                percent=88,
+                stage="deterministic_skill",
+                detail="IA indisponível ou inconclusiva. Validando a Skill conhecida diretamente no ambiente.",
+                settings=settings,
+                extra={"resolution_status": "correcting"},
+            )
+            incident = _incident_update(
+                incident_id,
+                {
+                    "status": "correcting",
+                    "attention_reason": None,
+                    "correction_intent_source": source,
+                    "correction_fallback": "deterministic_skill",
+                },
+                settings,
+            ) or incident
+            _event(incident, "deterministic_skill_started", {"source": source, "ai_blocker": reason}, settings)
+            deterministic_execution = run_deterministic_skill_correction(
+                incident,
+                result,
+                settings=settings,
+            )
+            if deterministic_execution and str(deterministic_execution.get("status") or "") == "validated":
+                eligible = True
+                reason = (
+                    "Skill determinística validou a correção sem depender do provedor de IA: "
+                    f"{deterministic_execution.get('deterministic_skill') or 'skill conhecida'}"
+                )
+                allowed_tools = {
+                    str(item.get("tool") or "").strip()
+                    for item in deterministic_execution.get("results") or []
+                    if isinstance(item, dict) and str(item.get("tool") or "").strip()
+                }
+                _event(
+                    incident,
+                    "deterministic_skill_validated",
+                    {
+                        "source": source,
+                        "skill": deterministic_execution.get("deterministic_skill"),
+                        "ai_blocker": reason,
+                    },
+                    settings,
+                )
+            elif deterministic_execution:
+                fallback_reason = str(
+                    deterministic_execution.get("reason")
+                    or "pré-condições da Skill determinística não foram confirmadas"
+                )
+                reason = f"{reason}. Skill determinística não executada/validada: {fallback_reason}"
 
     if not eligible:
         updated = _incident_update(
@@ -347,7 +446,23 @@ def attempt_requested_correction(
         _event(updated, "correction_blocked", {"source": source, "reason": reason}, settings)
         return updated
 
-    if deterministic_execution is None:
+    if execution_override is not None:
+        incident = _incident_update(
+            incident_id,
+            {
+                "status": "correcting",
+                "attention_reason": None,
+                "correction_intent_source": source,
+                "correction_eligibility": {
+                    "eligible": True,
+                    "reason": reason,
+                    "precedence": "prescribed_action",
+                },
+                "prescribed_execution": execution_override,
+            },
+            settings,
+        ) or incident
+    elif deterministic_execution is None:
         _store_job_phase(
             job_id,
             status="running",
@@ -382,7 +497,7 @@ def attempt_requested_correction(
         ) or incident
 
     try:
-        execution: dict[str, Any] | None = deterministic_execution
+        execution: dict[str, Any] | None = execution_override or deterministic_execution
         if execution is None:
             current_token = str(result.get("approval_token") or "")
             investigation_id = str(result.get("investigation_id") or "")
