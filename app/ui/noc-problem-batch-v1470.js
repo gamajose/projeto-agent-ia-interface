@@ -12,6 +12,7 @@
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+  const MASTER_SKILL_HELP = 'A NOC Master Skill é a única fonte de conhecimento. O problema selecionado define o procedimento interno; o Playbook continua opcional para complementar a execução.';
 
   async function request(path, options = {}) {
     const method = String(options.method || 'GET').toUpperCase();
@@ -34,11 +35,14 @@
     if (!modal || !select) return false;
     const holder = select.closest('.noc-manual-guidance > div') || select.parentElement;
     if (!holder) return false;
+
+    if (modal.dataset.masterSkillNormalized === '1' && $('.noc-master-skill-static', holder)) return true;
+
     select.value = '';
     select.hidden = true;
     holder.classList.add('noc-master-skill-holder');
     const title = $('strong', holder);
-    if (title) title.textContent = 'Skill única';
+    if (title && title.textContent !== 'Skill única') title.textContent = 'Skill única';
     if (!$('.noc-master-skill-static', holder)) {
       const badge = document.createElement('div');
       badge.className = 'noc-master-skill-static';
@@ -46,9 +50,8 @@
       holder.appendChild(badge);
     }
     const help = $('.noc-manual-guidance > small', modal);
-    if (help) {
-      help.textContent = 'A NOC Master Skill é a única fonte de conhecimento. O problema selecionado define o procedimento interno; o Playbook continua opcional para complementar a execução.';
-    }
+    if (help && help.textContent !== MASTER_SKILL_HELP) help.textContent = MASTER_SKILL_HELP;
+    modal.dataset.masterSkillNormalized = '1';
     return true;
   }
 
@@ -190,7 +193,7 @@
     const problemCount = Number(group.problem_count || 0);
     const accepted = window.confirm(
       `Executar “${group.title || procedureId}” em todos os ${hostCount} host(s) que ainda apresentarem este problema?\n\n` +
-      `A lista será atualizada novamente no Checkmk antes da execução. Alertas que já desapareceram não serão incluídos.`,
+      'A lista será atualizada novamente no Checkmk antes da execução. Alertas que já desapareceram não serão incluídos.',
     );
     if (!accepted) return;
 
@@ -217,13 +220,46 @@
     }
   }
 
-  function wire() {
-    ensureMainButton();
-    normalizeManualSkill();
+  let observer = null;
+  let wiringTimer = null;
+
+  function stopWiring() {
+    if (observer) {
+      observer.disconnect();
+      observer = null;
+    }
+    if (wiringTimer) {
+      window.clearInterval(wiringTimer);
+      wiringTimer = null;
+    }
   }
 
-  const observer = new MutationObserver(() => wire());
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-  document.addEventListener('DOMContentLoaded', () => wire());
-  wire();
+  function wire() {
+    const buttonReady = ensureMainButton();
+    const skillReady = normalizeManualSkill();
+    if (buttonReady && skillReady) stopWiring();
+    return buttonReady && skillReady;
+  }
+
+  function startWiring() {
+    if (wire()) return;
+    if (!observer) {
+      observer = new MutationObserver(() => {
+        if (wire()) stopWiring();
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+    if (!wiringTimer) {
+      wiringTimer = window.setInterval(() => {
+        if (!document.hidden && wire()) stopWiring();
+      }, 1000);
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => startWiring());
+  document.addEventListener('click', (event) => {
+    if (event.target.closest('#compact-agent-button, #noc-manual-button')) window.setTimeout(startWiring, 40);
+  });
+  window.addEventListener('beforeunload', stopWiring);
+  startWiring();
 })();
