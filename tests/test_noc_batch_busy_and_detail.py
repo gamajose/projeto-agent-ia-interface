@@ -76,13 +76,18 @@ def test_batch_waits_for_running_snapshot_and_uses_just_persisted_state(monkeypa
             }
         },
     )
+    monkeypatch.setattr(noc_problem_batch, "_active_batch_run", lambda *args, **kwargs: None)
     captured: dict = {}
 
     def fake_request_selected_run(**kwargs):
         captured.update(kwargs)
         return {"id": "run-busy", "status": "queued", "scope": {}}
 
+    def fake_save(run, *, procedure_id, batch, snapshot_completed_at, settings):
+        return {**run, "batch": batch, "scope": {"batch_procedure_id": procedure_id}}
+
     monkeypatch.setattr(noc_problem_batch, "request_selected_run", fake_request_selected_run)
+    monkeypatch.setattr(noc_problem_batch, "_save_batch_context", fake_save)
 
     result = noc_problem_batch.request_procedure_batch(
         "checkmk-systemd-socket-summary",
