@@ -36,8 +36,13 @@ def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _ins
         return
 
     # O lock dura somente até o fim da transação e é compartilhado por todos os
-    # processos conectados ao mesmo PostgreSQL.
-    session.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": _ADVISORY_LOCK_ID})
+    # processos conectados ao mesmo PostgreSQL. Sessões SQLite usadas em testes
+    # continuam recebendo apenas a deduplicação local, sem SQL específico do PG.
+    get_bind = getattr(session, "get_bind", None)
+    bind = get_bind() if callable(get_bind) else None
+    dialect = str(getattr(getattr(bind, "dialect", None), "name", "") or "")
+    if not dialect or dialect == "postgresql":
+        session.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": _ADVISORY_LOCK_ID})
 
     problems: dict[str, CheckmkProblemORM] = {}
     hosts: dict[tuple[str, str], CheckmkHostORM] = {}
