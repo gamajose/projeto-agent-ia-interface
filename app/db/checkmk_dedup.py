@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import event
+from sqlalchemy import event, select, text
 from sqlalchemy.orm import Session
 
 
 _INSTALLED = False
+_ADVISORY_LOCK_ID = 1475001
 
 
 def _copy_fields(target: Any, source: Any, fields: tuple[str, ...]) -> None:
@@ -15,16 +16,28 @@ def _copy_fields(target: Any, source: Any, fields: tuple[str, ...]) -> None:
 
 
 def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _instances: object) -> None:
-    """Evita INSERT duplicado quando o Livestatus devolve a mesma linha mais de uma vez.
+    """Consolida inserts Checkmk duplicados no mesmo flush e entre processos.
 
-    O coletor trabalha com ``autoflush=False``. Se um problema ainda não existe no
-    banco e aparece duas vezes no mesmo payload, as duas instâncias ficam em
-    ``session.new`` até o commit. A constraint de ``problem_key`` então rejeita o
-    segundo INSERT. Consolidamos essas instâncias antes do flush, preservando a
-    versão mais recente dos campos recebidos.
+    ``agent-ia-web`` e ``agent-ia-worker`` são processos separados; portanto um
+    ``threading.Lock`` no coletor não impede duas fotografias de persistirem ao
+    mesmo tempo. Antes do flush das entidades Checkmk usamos um advisory lock
+    transacional do PostgreSQL. Depois de obter o lock, consultamos novamente as
+    chaves novas: se outro processo acabou de gravá-las, transformamos o INSERT
+    concorrente em UPDATE da linha já existente.
+
+    Isso também cobre a situação mais simples em que o próprio Livestatus devolve
+    a mesma linha duas vezes dentro do mesmo payload.
     """
 
     from app.db.checkmk_master_models import CheckmkHostORM, CheckmkProblemORM
+
+    checkmk_new = [obj for obj in list(session.new) if isinstance(obj, (CheckmkProblemORM, CheckmkHostORM))]
+    if not checkmk_new:
+        return
+
+    # O lock dura somente até o fim da transação e é compartilhado por todos os
+    # processos conectados ao mesmo PostgreSQL.
+    session.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": _ADVISORY_LOCK_ID})
 
     problems: dict[str, CheckmkProblemORM] = {}
     hosts: dict[tuple[str, str], CheckmkHostORM] = {}
@@ -39,7 +52,6 @@ def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _ins
         "state_name",
         "output",
         "active",
-        "occurrence_count",
         "skill_id",
         "skill_title",
         "route_strategy",
@@ -61,6 +73,7 @@ def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _ins
         "last_seen_at",
     )
 
+    # Primeiro elimina duplicatas criadas dentro da mesma Session.
     for obj in list(session.new):
         if isinstance(obj, CheckmkProblemORM):
             key = str(obj.problem_key or "").strip()
@@ -71,10 +84,7 @@ def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _ins
                 problems[key] = obj
                 continue
             _copy_fields(previous, obj, problem_fields)
-            previous.occurrence_count = max(
-                int(previous.occurrence_count or 1),
-                int(obj.occurrence_count or 1),
-            )
+            previous.occurrence_count = max(int(previous.occurrence_count or 1), int(obj.occurrence_count or 1))
             session.expunge(obj)
             continue
 
@@ -88,6 +98,30 @@ def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _ins
                 continue
             _copy_fields(previous, obj, host_fields)
             session.expunge(obj)
+
+    # Depois do advisory lock, uma fotografia concorrente já pode ter commitado.
+    # Com autoflush=False estas consultas não tentam gravar os objetos pendentes.
+    for key, obj in list(problems.items()):
+        existing = session.scalar(select(CheckmkProblemORM).where(CheckmkProblemORM.problem_key == key))
+        if existing is None or existing is obj:
+            continue
+        _copy_fields(existing, obj, problem_fields)
+        existing.occurrence_count = int(existing.occurrence_count or 0) + max(1, int(obj.occurrence_count or 1))
+        session.expunge(obj)
+        problems[key] = existing
+
+    for (site_id, host_name), obj in list(hosts.items()):
+        existing = session.scalar(
+            select(CheckmkHostORM).where(
+                CheckmkHostORM.site_id == site_id,
+                CheckmkHostORM.host_name == host_name,
+            )
+        )
+        if existing is None or existing is obj:
+            continue
+        _copy_fields(existing, obj, host_fields)
+        session.expunge(obj)
+        hosts[(site_id, host_name)] = existing
 
 
 def install_checkmk_session_guards() -> None:
