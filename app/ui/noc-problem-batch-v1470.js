@@ -35,7 +35,6 @@
     if (!modal || !select) return false;
     const holder = select.closest('.noc-manual-guidance > div') || select.parentElement;
     if (!holder) return false;
-
     if (modal.dataset.masterSkillNormalized === '1' && $('.noc-master-skill-static', holder)) return true;
 
     select.value = '';
@@ -59,6 +58,7 @@
     const power = $('#noc-agent-control .noc-agent-power');
     if (!power) return false;
     if ($('#noc-problem-batch-button', power)) return true;
+
     const button = document.createElement('button');
     button.type = 'button';
     button.id = 'noc-problem-batch-button';
@@ -81,9 +81,11 @@
       'A NOC Master Skill agrupa os alertas atuais e executa um único procedimento em todos os hosts correspondentes.',
     );
     if (modal.dataset.batchReady === '1') return modal;
+
     modal.dataset.batchReady = '1';
     modal.classList.add('noc-problem-batch-modal');
     const body = $('.compact-modal-body', modal);
+    if (!body) return modal;
     body.innerHTML = `
       <section class="noc-problem-batch-head">
         <div>
@@ -109,7 +111,8 @@
   }
 
   function setMessage(message = '', error = false) {
-    const target = $('#noc-problem-batch-message', ensureModal() || document);
+    const modal = ensureModal();
+    const target = modal ? $('#noc-problem-batch-message', modal) : null;
     if (!target) return;
     target.textContent = String(message || '');
     target.classList.toggle('error', Boolean(error));
@@ -220,46 +223,41 @@
     }
   }
 
-  let observer = null;
-  let wiringTimer = null;
+  let retryTimer = null;
+  let retryCount = 0;
 
-  function stopWiring() {
-    if (observer) {
-      observer.disconnect();
-      observer = null;
-    }
-    if (wiringTimer) {
-      window.clearInterval(wiringTimer);
-      wiringTimer = null;
-    }
+  function stopRetry() {
+    if (retryTimer) window.clearTimeout(retryTimer);
+    retryTimer = null;
+    retryCount = 0;
   }
 
-  function wire() {
+  function wireOnce() {
     const buttonReady = ensureMainButton();
     const skillReady = normalizeManualSkill();
-    if (buttonReady && skillReady) stopWiring();
     return buttonReady && skillReady;
   }
 
-  function startWiring() {
-    if (wire()) return;
-    if (!observer) {
-      observer = new MutationObserver(() => {
-        if (wire()) stopWiring();
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-    }
-    if (!wiringTimer) {
-      wiringTimer = window.setInterval(() => {
-        if (!document.hidden && wire()) stopWiring();
-      }, 1000);
-    }
+  function scheduleWiring() {
+    stopRetry();
+    const tick = () => {
+      retryTimer = null;
+      if (wireOnce()) {
+        retryCount = 0;
+        return;
+      }
+      retryCount += 1;
+      if (retryCount < 20) retryTimer = window.setTimeout(tick, 250);
+    };
+    retryTimer = window.setTimeout(tick, 0);
   }
 
-  document.addEventListener('DOMContentLoaded', () => startWiring());
+  document.addEventListener('DOMContentLoaded', scheduleWiring);
   document.addEventListener('click', (event) => {
-    if (event.target.closest('#compact-agent-button, #noc-manual-button')) window.setTimeout(startWiring, 40);
+    if (event.target.closest('#compact-agent-button, #noc-manual-button')) {
+      window.setTimeout(scheduleWiring, 40);
+    }
   });
-  window.addEventListener('beforeunload', stopWiring);
-  startWiring();
+  window.addEventListener('beforeunload', stopRetry);
+  if (document.readyState !== 'loading') scheduleWiring();
 })();
