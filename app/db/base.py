@@ -38,7 +38,9 @@ def ensure_database_schema() -> list[str]:
             return []
 
         from app.db import checkmk_master_models, fleet_models, models, n2_models  # noqa: F401
+        from app.db.checkmk_dedup import install_checkmk_session_guards
 
+        install_checkmk_session_guards()
         inspector = inspect(engine)
         before = set(inspector.get_table_names())
         Base.metadata.create_all(bind=engine, checkfirst=True)
