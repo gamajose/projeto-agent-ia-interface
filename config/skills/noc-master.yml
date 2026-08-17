@@ -12,19 +12,18 @@ procedures:
     title: Systemd Socket Summary - agente Checkmk
     priority: 260
     match:
-      service:
-        - '^Systemd Socket Summary$'
-        - 'Systemd.*Socket.*Summary'
+      service: []
       output:
         - 'socket failed.*check_mk'
         - 'failed.*check_mk'
-        - '1 socket failed'
         - 'check_mk.*CRIT'
+        - 'check_mk\.socket'
       host: []
     target_strategy: internal_ssh
     playbook_id: checkmk-systemd-socket-summary
-    objective: Resolver o alerta Systemd Socket Summary distinguindo TARGET_HOST de MONITORING_HOST, corrigindo com segurança o mecanismo do agente na porta 6556 e obrigatoriamente executando uma nova coleta no Checkmk responsável antes de considerar o incidente resolvido.
+    objective: Resolver somente o alerta Systemd Socket Summary relacionado ao mecanismo do agente Checkmk, distinguindo TARGET_HOST de MONITORING_HOST, corrigindo com segurança a porta 6556 e obrigatoriamente executando uma nova coleta no Checkmk responsável antes de considerar o incidente resolvido.
     knowledge:
+      - Este procedure é exclusivo para falhas que citam check_mk/check_mk.socket no output. Falhas de outros sockets, como rpcbind.socket, não pertencem a este fluxo.
       - TARGET_HOST é o servidor monitorado onde roda o Checkmk Agent; MONITORING_HOST é o servidor que possui Checkmk/OMD. Nunca assumir que são o mesmo host.
       - O alerta pode ser causado por uma unit legada check_mk.socket em FAILED enquanto o xinetd já possui a porta TCP 6556 e entrega o agente normalmente.
       - Quando xinetd.service está ativo, xinetd é o dono da 6556, a resposta local contém <<<check_mk>>> e check_mk.socket está FAILED, a sequência comprovada é desabilitar/parar somente check_mk.socket, limpar o estado failed, garantir xinetd habilitado e reiniciar xinetd.
@@ -39,6 +38,29 @@ procedures:
       - Não misturar sites, IPs internos ou sessões de clientes diferentes.
       - Se a porta 6556 não responder localmente ou a partir do MONITORING_HOST, manter o incidente aberto.
       - Não reiniciar o servidor, não controlar containers e não acessar banco de dados do cliente.
+
+  - id: linux-systemd-socket-summary
+    title: Systemd Socket Summary - serviço Linux
+    priority: 120
+    match:
+      service:
+        - '^Systemd Socket Summary$'
+        - 'Systemd.*Socket.*Summary'
+      output:
+        - 'socket failed'
+        - 'Failed: [1-9]'
+      host: []
+    target_strategy: internal_ssh
+    objective: Identificar qual socket systemd realmente está em falha, validar a unit e sua dependência antes de propor ou executar qualquer recuperação. Não aplicar o procedimento do agente Checkmk quando o socket em falha for outro, como rpcbind.socket.
+    knowledge:
+      - Extrair do output o nome real do socket em falha e confirmar com systemctl --failed --type=socket e systemctl status da unit correspondente.
+      - Correlacionar o socket com o serviço associado e com o impacto antes de qualquer alteração.
+      - Se o socket não for check_mk.socket, nunca aplicar a sequência xinetd/porta 6556 do agente Checkmk.
+      - Após qualquer correção autorizada, revalidar a unit e aguardar o Checkmk confirmar o sensor em OK.
+    constraints:
+      - Não reiniciar o servidor automaticamente.
+      - Não executar stop/start de banco de dados ou serviços sensíveis sem prescrição explícita.
+      - Não aplicar ações de check_mk.socket a rpcbind.socket ou a qualquer outra unit.
 
   - id: checkmk-runtime
     title: Runtime e serviços do Checkmk
