@@ -29,6 +29,7 @@ from app.services.redaction import redact_text
 
 _THREAD: threading.Thread | None = None
 _THREAD_LOCK = threading.Lock()
+_BATCH_HANDOFF_MAX_AGE_SECONDS = 180.0
 
 
 def _redis(settings: Settings) -> Redis:
@@ -254,6 +255,66 @@ def _ensure_manual_job(
     return {**result, "queued": True, "job": queued, "manual_forced": True}
 
 
+def _parse_snapshot_time(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _batch_handoff_snapshot(run: dict[str, Any], *, settings: Settings) -> dict[str, Any] | None:
+    """Reutiliza a fotografia que o clique do lote acabou de validar.
+
+    Sem este handoff o endpoint fazia uma fotografia global e, logo depois, o
+    runner repetia a mesma varredura de centenas de sites antes de criar a fila.
+    """
+
+    scope = dict(run.get("scope") or {})
+    if str(scope.get("batch_source") or "") != "problem_batch":
+        return None
+    completed_at = _parse_snapshot_time(scope.get("batch_snapshot_completed_at"))
+    if completed_at is None:
+        return None
+    age = (datetime.now(timezone.utc) - completed_at).total_seconds()
+    if age < 0 or age > _BATCH_HANDOFF_MAX_AGE_SECONDS:
+        return None
+
+    # Import tardio evita acoplamento no bootstrap e mantém este runner como
+    # consumidor do estado persistido pelo coletor.
+    from app.services.noc_problem_batch import _persisted_active_problems
+
+    problems = [
+        dict(item)
+        for item in _persisted_active_problems()
+        if isinstance(item, dict) and scope_matches_problem(item, scope)
+    ]
+    hosts = {(str(item.get("site_id") or ""), str(item.get("host") or "")) for item in problems}
+    return {
+        "status": "completed",
+        "source": "batch_handoff",
+        "completed_at": completed_at.isoformat(),
+        "problems": problems,
+        "recoveries": [],
+        "site_errors": [],
+        "sites_ok": 0,
+        "sites_failed": 0,
+        "hosts_seen": len({item for item in hosts if any(item)}),
+    }
+
+
+def _snapshot_for_selected_run(run: dict[str, Any], *, settings: Settings) -> dict[str, Any]:
+    handoff = _batch_handoff_snapshot(run, settings=settings)
+    if handoff is not None:
+        return handoff
+    return collect_checkmk_operational_snapshot(settings=settings)
+
+
 def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, Any] | None:
     settings = settings or get_settings()
     run = next_selected_run(settings=settings)
@@ -265,7 +326,7 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
         return {"status": "busy", "run_id": run.get("id")}
 
     try:
-        snapshot = collect_checkmk_operational_snapshot(settings=settings)
+        snapshot = _snapshot_for_selected_run(run, settings=settings)
         if snapshot.get("status") == "busy":
             requeue_selected_run(run, settings=settings)
             return {"status": "busy", "run_id": run.get("id")}
@@ -331,6 +392,7 @@ def process_selected_run_once(*, settings: Settings | None = None) -> dict[str, 
             "status": "completed",
             "mode": "manual_selected",
             "intent": "correct_and_validate",
+            "snapshot_source": snapshot.get("source") or "live",
             "manual_options": {
                 "skill_id": scope.get("skill_id"),
                 "playbook_id": scope.get("playbook_id"),
