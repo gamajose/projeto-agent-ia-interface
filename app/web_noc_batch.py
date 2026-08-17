@@ -5,11 +5,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.services.noc_problem_batch import (
-    current_problem_groups,
-    problem_group_detail,
-    request_procedure_batch,
-)
+from app.services.noc_problem_batch import current_problem_groups, problem_group_detail
+from app.services.noc_problem_batch_dispatch import request_procedure_batch
 from app.web import _operator_name, _require_access, _require_mutation
 
 
