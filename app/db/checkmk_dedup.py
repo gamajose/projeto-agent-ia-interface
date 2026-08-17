@@ -35,9 +35,6 @@ def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _ins
     if not checkmk_new:
         return
 
-    # O lock dura somente até o fim da transação e é compartilhado por todos os
-    # processos conectados ao mesmo PostgreSQL. Sessões SQLite usadas em testes
-    # continuam recebendo apenas a deduplicação local, sem SQL específico do PG.
     get_bind = getattr(session, "get_bind", None)
     bind = get_bind() if callable(get_bind) else None
     dialect = str(getattr(getattr(bind, "dialect", None), "name", "") or "")
@@ -47,7 +44,7 @@ def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _ins
     problems: dict[str, CheckmkProblemORM] = {}
     hosts: dict[tuple[str, str], CheckmkHostORM] = {}
 
-    problem_fields = (
+    observation_fields = (
         "client_alias",
         "kind",
         "host_name",
@@ -60,12 +57,14 @@ def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _ins
         "skill_id",
         "skill_title",
         "route_strategy",
-        "automation_status",
-        "incident_id",
-        "job_id",
         "metadata_payload",
         "last_seen_at",
         "resolved_at",
+    )
+    same_session_problem_fields = observation_fields + (
+        "automation_status",
+        "incident_id",
+        "job_id",
     )
     host_fields = (
         "client_alias",
@@ -88,7 +87,7 @@ def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _ins
             if previous is None:
                 problems[key] = obj
                 continue
-            _copy_fields(previous, obj, problem_fields)
+            _copy_fields(previous, obj, same_session_problem_fields)
             previous.occurrence_count = max(int(previous.occurrence_count or 1), int(obj.occurrence_count or 1))
             session.expunge(obj)
             continue
@@ -105,12 +104,14 @@ def _deduplicate_checkmk_new_rows(session: Session, _flush_context: object, _ins
             session.expunge(obj)
 
     # Depois do advisory lock, uma fotografia concorrente já pode ter commitado.
-    # Com autoflush=False estas consultas não tentam gravar os objetos pendentes.
+    # Atualizamos somente campos observacionais: estado da automação, incident_id
+    # e job_id pertencem ao fluxo NOC e não podem voltar para "detected" por causa
+    # de uma segunda fotografia concorrente.
     for key, obj in list(problems.items()):
         existing = session.scalar(select(CheckmkProblemORM).where(CheckmkProblemORM.problem_key == key))
         if existing is None or existing is obj:
             continue
-        _copy_fields(existing, obj, problem_fields)
+        _copy_fields(existing, obj, observation_fields)
         existing.occurrence_count = int(existing.occurrence_count or 0) + max(1, int(obj.occurrence_count or 1))
         session.expunge(obj)
         problems[key] = existing
