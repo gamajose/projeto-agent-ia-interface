@@ -3,7 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.services.noc_problem_batch import current_problem_groups, request_procedure_batch
+from app.services.noc_problem_batch import (
+    current_problem_groups,
+    problem_group_detail,
+    request_procedure_batch,
+)
 from app.web import _operator_name, _require_access, _require_mutation
 
 
@@ -25,6 +29,22 @@ def noc_problem_groups(request: Request) -> dict:
         raise HTTPException(
             status_code=503,
             detail=f"não foi possível agrupar os problemas atuais: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+@router.get("/ui/api/noc/problem-groups/{procedure_id}/detail")
+def noc_problem_group_detail(procedure_id: str, request: Request) -> dict:
+    """Lista empresa/site, host e alertas atuais do procedure escolhido."""
+
+    _require_access(request)
+    try:
+        return problem_group_detail(procedure_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"não foi possível abrir os hosts do problema: {type(exc).__name__}: {exc}",
         ) from exc
 
 

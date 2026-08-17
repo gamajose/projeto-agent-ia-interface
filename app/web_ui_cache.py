@@ -156,6 +156,7 @@ def _inject_noc_extension_assets(content: str) -> str:
         ("noc-selected-progress-v1465.css", "noc-selected-progress-v1465"),
         ("noc-manual-modal-v1468.css", "noc-manual-modal-v1468"),
         ("noc-problem-batch-v1470.css", "noc-problem-batch-v1470"),
+        ("noc-detail-modals-v1474.css", "noc-detail-modals-v1474"),
     ):
         content = _inject_style(content, asset, marker=marker)
 
@@ -179,6 +180,7 @@ def _inject_noc_extension_assets(content: str) -> str:
         ("noc-selected-progress-v1465.js", "noc-selected-progress-v1465"),
         ("noc-manual-modal-v1468.js", "noc-manual-modal-v1468"),
         ("noc-problem-batch-v1470.js", "noc-problem-batch-v1470"),
+        ("noc-detail-modals-v1474.js", "noc-detail-modals-v1474"),
     ):
         content = _inject_script(content, asset, marker=marker, defer=True)
     return content
