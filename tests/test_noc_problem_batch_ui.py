@@ -35,10 +35,27 @@ def test_problem_batch_dom_wiring_is_bounded_without_global_observer() -> None:
     assert "title && title.textContent !== 'Skill única'" in script
     assert "help && help.textContent !== MASTER_SKILL_HELP" in script
     assert "MutationObserver" not in script
-    assert "setInterval(" not in script
     assert "retryCount < 20" in script
     assert "window.setTimeout(tick, 250)" in script
     assert "beforeunload" in script
+
+
+def test_problem_batch_uses_internal_confirmation_and_live_queue() -> None:
+    script = (PROJECT_ROOT / "app" / "ui" / "noc-problem-batch-v1470.js").read_text(encoding="utf-8")
+
+    assert "window.confirm" not in script
+    assert "noc-problem-batch-confirm-modal" in script
+    assert "Enfileirar correção" in script
+    assert "noc-problem-batch-progress" in script
+    assert "Aguardando worker" in script
+    assert "Validando Checkmk" in script
+    assert "Não corrigido" in script
+    assert "/ui/api/noc/autonomy/runs/" in script
+    assert "sessionStorage" in script
+    assert "Em andamento…" in script
+    assert "batch?.reused" in script
+    assert "sites: Array.isArray(group.sites) ? group.sites : []" in script
+    assert "?refresh=1" in script
 
 
 def test_problem_batch_detail_lists_company_host_ip_and_alerts() -> None:
@@ -79,3 +96,5 @@ def test_problem_batch_router_is_registered() -> None:
     assert '"/ui/api/noc/problem-groups"' in router
     assert '"/ui/api/noc/problem-groups/{procedure_id}/detail"' in router
     assert '"/ui/api/noc/problem-groups/{procedure_id}/run"' in router
+    assert "refresh: bool = False" in router
+    assert "type(exc).__name__" not in router

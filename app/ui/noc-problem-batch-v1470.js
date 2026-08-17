@@ -1,8 +1,16 @@
 (() => {
+  const STORAGE_KEY = 'agent-ia:noc:problem-batch-run';
+  const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
   const state = {
     groups: [],
     loading: false,
     runningProcedure: '',
+    activeRunId: '',
+    activeProcedure: '',
+    activeTitle: '',
+    activeTerminal: false,
+    queueTimer: null,
+    lastRun: null,
   };
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -91,15 +99,59 @@
         <div>
           <span>SKILL ÚNICA</span>
           <strong>NOC Master Skill</strong>
-          <small>Escolha o tipo do problema. A aplicação atualiza a fotografia do Checkmk antes de enfileirar o lote.</small>
+          <small>A lista abre usando a última fotografia concluída. “Atualizar problemas” força uma nova ronda completa do Checkmk.</small>
         </div>
         <button type="button" class="ghost-button" id="noc-problem-batch-refresh">Atualizar problemas</button>
       </section>
       <div id="noc-problem-batch-summary" class="noc-problem-batch-summary"></div>
       <div id="noc-problem-batch-message" class="noc-problem-batch-message"></div>
+      <section id="noc-problem-batch-progress" class="noc-problem-batch-progress" hidden></section>
       <section id="noc-problem-batch-groups" class="noc-problem-batch-groups"></section>`;
     $('#noc-problem-batch-refresh', modal)?.addEventListener('click', () => void loadGroups(true));
+    renderQueueProgress(state.lastRun);
     return modal;
+  }
+
+  function ensureConfirmModal() {
+    const ui = window.AgentCompactUI;
+    if (!ui) return null;
+    const modal = ui.modal('noc-problem-batch-confirm-modal', 'Confirmar correção em lote', 'Revise o procedimento antes de colocar os hosts na fila.');
+    modal.classList.add('noc-problem-batch-confirm-modal');
+    return modal;
+  }
+
+  function askBatchConfirmation(group) {
+    const ui = window.AgentCompactUI;
+    const modal = ensureConfirmModal();
+    const body = modal ? $('.compact-modal-body', modal) : null;
+    if (!ui || !modal || !body) return Promise.resolve(false);
+    const hostCount = Number(group.host_count || 0);
+    const problemCount = Number(group.problem_count || 0);
+    body.innerHTML = `
+      <div class="noc-batch-confirm-copy">
+        <span>PROCEDIMENTO</span>
+        <strong>${esc(group.title || group.procedure_id || 'Correção em lote')}</strong>
+        <p>Serão preparados <b>${hostCount}</b> host(s), referentes a <b>${problemCount}</b> alerta(s) da última fotografia concluída.</p>
+        <small>A aplicação evita criar um segundo lote do mesmo procedimento enquanto o primeiro ainda estiver em andamento. Cada host continua sendo validado durante a execução e só aparece como resolvido após confirmação do Checkmk.</small>
+      </div>
+      <div class="noc-batch-confirm-actions">
+        <button type="button" class="secondary-button" data-batch-cancel>Cancelar</button>
+        <button type="button" class="primary-button" data-batch-confirm>Enfileirar correção</button>
+      </div>`;
+    ui.open(modal);
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (accepted) => {
+        if (done) return;
+        done = true;
+        ui.close(modal);
+        resolve(Boolean(accepted));
+      };
+      $('[data-batch-cancel]', modal)?.addEventListener('click', () => finish(false), { once: true });
+      $('[data-batch-confirm]', modal)?.addEventListener('click', () => finish(true), { once: true });
+      $('.compact-modal-close', modal)?.addEventListener('click', () => finish(false), { once: true });
+      $('.compact-modal-backdrop', modal)?.addEventListener('click', () => finish(false), { once: true });
+    });
   }
 
   async function openBatch() {
@@ -107,6 +159,7 @@
     const modal = ensureModal();
     if (!ui || !modal) return;
     ui.open(modal);
+    restoreTrackedRun();
     await loadGroups(false);
   }
 
@@ -116,6 +169,156 @@
     if (!target) return;
     target.textContent = String(message || '');
     target.classList.toggle('error', Boolean(error));
+  }
+
+  function statusLabel(job) {
+    const status = String(job?.status || '').toLowerCase();
+    const resolution = String(job?.resolution_status || job?.incident_status || '').toLowerCase();
+    if (resolution === 'resolved') return 'Resolvido';
+    if (resolution === 'watching' || resolution === 'validating') return 'Validando Checkmk';
+    if (resolution === 'correcting') return 'Corrigindo';
+    if (resolution === 'needs_attention' || resolution === 'unverified' || status === 'failed') return 'Não corrigido';
+    if (status === 'queued') return 'Aguardando worker';
+    if (status === 'running' || status === 'cancelling') return 'IA trabalhando';
+    if (status === 'completed') return 'Concluído';
+    if (status === 'cancelled') return 'Cancelado';
+    return status || 'Preparando';
+  }
+
+  function statusClass(job) {
+    const label = statusLabel(job);
+    if (label === 'Resolvido' || label === 'Concluído') return 'ok';
+    if (label === 'Não corrigido' || label === 'Cancelado') return 'error';
+    if (label === 'Corrigindo' || label === 'Validando Checkmk' || label === 'IA trabalhando') return 'running';
+    return 'queued';
+  }
+
+  function progressBar(percent) {
+    const value = Math.max(0, Math.min(100, Number(percent || 0)));
+    return `<div class="noc-batch-progress-bar" aria-label="${value}% concluído"><i style="width:${value}%"></i></div>`;
+  }
+
+  function renderQueueProgress(run) {
+    const modal = ensureModal();
+    const root = modal ? $('#noc-problem-batch-progress', modal) : null;
+    if (!root) return;
+    if (!run || !run.id) {
+      root.hidden = true;
+      root.innerHTML = '';
+      return;
+    }
+    root.hidden = false;
+    const jobs = Array.isArray(run.jobs) ? run.jobs : [];
+    const progress = run.progress || {};
+    const total = Number(progress.total || jobs.length || 0);
+    const completed = Number(progress.completed || 0);
+    const failed = Number(progress.failed || 0);
+    const cancelled = Number(progress.cancelled || 0);
+    const finished = completed + failed + cancelled;
+    const runStatus = String(run.status || 'queued');
+    const batch = run.batch || {};
+    const title = batch.title || state.activeTitle || state.activeProcedure || 'Correção em lote';
+    const runLabel = TERMINAL.has(runStatus)
+      ? (failed ? 'Finalizado com pendências' : runStatus === 'cancelled' ? 'Cancelado' : 'Processamento concluído')
+      : runStatus === 'running' ? 'Processando fila' : 'Preparando fila';
+
+    let body = '';
+    if (!jobs.length) {
+      const position = Number(run.queue_position || 0);
+      body = `<div class="noc-batch-queue-wait"><strong>${position > 0 ? `Posição ${position} na fila de lotes` : 'Preparando os jobs do lote'}</strong><span>Assim que os jobs forem criados, cada host aparecerá aqui com etapa, percentual e resultado.</span></div>`;
+    } else {
+      body = `<div class="noc-batch-job-list">${jobs.map((job, index) => {
+        const queuePosition = Number(job.queue_position || 0);
+        const detail = job.error || job.detail || 'Aguardando atualização da execução.';
+        return `<article class="noc-batch-job ${statusClass(job)}">
+          <b class="noc-batch-job-number">${index + 1}</b>
+          <div class="noc-batch-job-copy">
+            <div><strong>${esc(job.client_alias || job.site_id || 'Cliente')}</strong><span>${esc(job.host || 'Host')} · ${esc(job.host_address || 'sem IP')}</span></div>
+            <small>${esc(job.service || 'Sensor')}</small>
+            <p>${esc(detail)}</p>
+            ${progressBar(job.percent)}
+          </div>
+          <div class="noc-batch-job-state"><em>${esc(statusLabel(job))}</em><span>${queuePosition && String(job.status) === 'queued' ? `fila ${queuePosition}` : `${Number(job.percent || 0)}%`}</span></div>
+        </article>`;
+      }).join('')}</div>`;
+    }
+
+    const processingErrors = Array.isArray(run.result?.processing_errors) ? run.result.processing_errors : [];
+    root.innerHTML = `
+      <div class="noc-batch-progress-head">
+        <div><span>EXECUÇÃO EM LOTE</span><strong>${esc(title)}</strong><small>run ${esc(String(run.id).slice(0, 8))}</small></div>
+        <div class="noc-batch-progress-state"><em class="${TERMINAL.has(runStatus) && failed ? 'error' : TERMINAL.has(runStatus) ? 'ok' : 'running'}">${esc(runLabel)}</em><b>${finished}/${total || jobs.length || 0}</b></div>
+      </div>
+      ${progressBar(progress.percent || 0)}
+      <div class="noc-batch-progress-counts">
+        <span><b>${Number(progress.queued || 0)}</b> aguardando</span>
+        <span><b>${Number(progress.running || 0)}</b> executando/validando</span>
+        <span><b>${completed}</b> resolvidos/concluídos</span>
+        <span><b>${failed}</b> não corrigidos</span>
+      </div>
+      ${processingErrors.length ? `<div class="noc-batch-processing-errors"><strong>${processingErrors.length} item(ns) não puderam entrar na fila</strong><small>${esc(processingErrors.slice(0, 3).join(' | '))}</small></div>` : ''}
+      ${body}`;
+  }
+
+  function saveTrackedRun() {
+    if (!state.activeRunId) {
+      sessionStorage.removeItem(STORAGE_KEY);
+      return;
+    }
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+      runId: state.activeRunId,
+      procedureId: state.activeProcedure,
+      title: state.activeTitle,
+    }));
+  }
+
+  function restoreTrackedRun() {
+    if (state.activeRunId) return;
+    try {
+      const raw = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || '{}');
+      state.activeRunId = String(raw.runId || '');
+      state.activeProcedure = String(raw.procedureId || '');
+      state.activeTitle = String(raw.title || '');
+    } catch {
+      sessionStorage.removeItem(STORAGE_KEY);
+    }
+    if (state.activeRunId) startQueuePolling();
+  }
+
+  async function pollQueue() {
+    if (!state.activeRunId) return;
+    try {
+      const run = await request(`/ui/api/noc/autonomy/runs/${encodeURIComponent(state.activeRunId)}`);
+      state.lastRun = run;
+      const runStatus = String(run.status || 'queued');
+      state.activeTerminal = TERMINAL.has(runStatus);
+      renderQueueProgress(run);
+      render();
+      if (state.activeTerminal && state.queueTimer) {
+        window.clearInterval(state.queueTimer);
+        state.queueTimer = null;
+      }
+    } catch (error) {
+      setMessage(`Não foi possível atualizar a fila: ${error.message}`, true);
+    }
+  }
+
+  function startQueuePolling() {
+    if (!state.activeRunId) return;
+    if (state.queueTimer) window.clearInterval(state.queueTimer);
+    void pollQueue();
+    state.queueTimer = window.setInterval(() => void pollQueue(), 1000);
+  }
+
+  function trackRun(run, group) {
+    state.activeRunId = String(run?.id || '');
+    state.activeProcedure = String(group?.procedure_id || run?.batch?.procedure_id || '');
+    state.activeTitle = String(group?.title || run?.batch?.title || state.activeProcedure);
+    state.activeTerminal = false;
+    state.lastRun = run;
+    saveTrackedRun();
+    renderQueueProgress(run);
+    startQueuePolling();
   }
 
   function render() {
@@ -143,7 +346,8 @@
 
     target.innerHTML = state.groups.map((item) => {
       const procedureId = String(item.procedure_id || '');
-      const running = state.runningProcedure === procedureId;
+      const submitting = state.runningProcedure === procedureId;
+      const active = !state.activeTerminal && state.activeRunId && state.activeProcedure === procedureId;
       const samples = Array.isArray(item.sample) ? item.sample : [];
       const sampleText = samples.slice(0, 3).map((sample) => `${sample.host || '-'} · ${sample.service || '-'}`).join(' | ');
       return `<article class="noc-problem-batch-card" data-procedure="${esc(procedureId)}">
@@ -158,8 +362,8 @@
           <div><b>${Number(item.host_count || 0)}</b><span>hosts</span></div>
           <div><b>${Number(item.site_count || 0)}</b><span>clientes/sites</span></div>
         </div>
-        <button type="button" class="primary-button noc-problem-batch-run" data-procedure="${esc(procedureId)}" ${running ? 'disabled' : ''}>
-          ${running ? 'Enfileirando…' : `Arrumar todos (${Number(item.host_count || 0)})`}
+        <button type="button" class="primary-button noc-problem-batch-run" data-procedure="${esc(procedureId)}" ${submitting || active ? 'disabled' : ''}>
+          ${submitting ? 'Enfileirando…' : active ? 'Em andamento…' : `Arrumar todos (${Number(item.host_count || 0)})`}
         </button>
       </article>`;
     }).join('');
@@ -170,18 +374,22 @@
   }
 
   async function loadGroups(force = false) {
-    if (state.loading && !force) return;
+    if (state.loading) return;
     state.loading = true;
-    setMessage('');
+    setMessage(force ? 'Atualizando todos os sites do Checkmk. Esta é a operação mais demorada da tela…' : '');
     render();
     try {
-      const data = await request('/ui/api/noc/problem-groups');
+      const data = await request(`/ui/api/noc/problem-groups${force ? '?refresh=1' : ''}`);
       state.groups = Array.isArray(data.groups) ? data.groups : [];
       if (String(data.status || '') !== 'completed') {
         setMessage(data.error || 'A fotografia do Checkmk não pôde ser concluída.', true);
+      } else if (data.warning) {
+        setMessage(data.warning, false);
+      } else if (force) {
+        setMessage('Fotografia do Checkmk atualizada.', false);
       }
     } catch (error) {
-      state.groups = [];
+      if (!state.groups.length) state.groups = [];
       setMessage(error.message, true);
     } finally {
       state.loading = false;
@@ -192,29 +400,28 @@
   async function runProcedure(procedureId) {
     const group = state.groups.find((item) => String(item.procedure_id || '') === procedureId);
     if (!group || state.runningProcedure) return;
-    const hostCount = Number(group.host_count || 0);
-    const problemCount = Number(group.problem_count || 0);
-    const accepted = window.confirm(
-      `Executar “${group.title || procedureId}” em todos os ${hostCount} host(s) que ainda apresentarem este problema?\n\n` +
-      'A lista será atualizada novamente no Checkmk antes da execução. Alertas que já desapareceram não serão incluídos.',
-    );
+    const accepted = await askBatchConfirmation(group);
     if (!accepted) return;
 
     state.runningProcedure = procedureId;
-    setMessage(`Atualizando o Checkmk e preparando ${problemCount} alerta(s) para o lote…`);
+    setMessage('Preparando o lote a partir da fotografia operacional mais recente…');
     render();
     try {
       const run = await request(`/ui/api/noc/problem-groups/${encodeURIComponent(procedureId)}/run`, {
         method: 'POST',
-        body: { sites: [] },
+        body: { sites: Array.isArray(group.sites) ? group.sites : [] },
       });
       if (run?.id) {
+        trackRun(run, group);
         window.AgentNocSelectedProgress?.start?.(run.id);
-        setMessage(`Lote iniciado: ${run.batch?.problem_count || problemCount} problema(s) em ${run.batch?.host_count || hostCount} host(s). Acompanhe o progresso na tela do NOC.`);
+        if (run.batch?.reused) {
+          setMessage('Já existia uma execução deste procedimento em andamento. Retomando o acompanhamento da mesma fila.');
+        } else {
+          setMessage(`Lote aceito. A fila abaixo mostra o andamento dos ${run.batch?.host_count || group.host_count || 0} host(s).`);
+        }
       } else {
         setMessage('O lote foi aceito, mas o identificador da execução não foi retornado.', true);
       }
-      await loadGroups(true);
     } catch (error) {
       setMessage(error.message, true);
     } finally {
@@ -252,12 +459,21 @@
     retryTimer = window.setTimeout(tick, 0);
   }
 
-  document.addEventListener('DOMContentLoaded', scheduleWiring);
+  document.addEventListener('DOMContentLoaded', () => {
+    scheduleWiring();
+    restoreTrackedRun();
+  });
   document.addEventListener('click', (event) => {
     if (event.target.closest('#compact-agent-button, #noc-manual-button')) {
       window.setTimeout(scheduleWiring, 40);
     }
   });
-  window.addEventListener('beforeunload', stopRetry);
-  if (document.readyState !== 'loading') scheduleWiring();
+  window.addEventListener('beforeunload', () => {
+    stopRetry();
+    if (state.queueTimer) window.clearInterval(state.queueTimer);
+  });
+  if (document.readyState !== 'loading') {
+    scheduleWiring();
+    restoreTrackedRun();
+  }
 })();

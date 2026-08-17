@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import time
 from collections import defaultdict
 from typing import Any
 
+from redis import Redis
 from sqlalchemy import select
 
 from app.core.settings import Settings, get_settings
@@ -13,8 +15,12 @@ from app.services.checkmk_operational import (
     checkmk_operational_overview,
     collect_checkmk_operational_snapshot,
 )
-from app.services.noc_autonomy_control import request_selected_run
+from app.services.noc_autonomy_control import get_selected_run, request_selected_run
 from app.services.noc_skills import load_noc_skills, select_noc_skill
+
+
+_RUN_TTL_SECONDS = 7200
+_TERMINAL_RUN_STATES = {"completed", "failed", "cancelled"}
 
 
 def _problem_key(item: dict[str, Any]) -> str:
@@ -45,13 +51,24 @@ def _event(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _persisted_active_problems() -> list[dict[str, Any]]:
-    """Lê a última fotografia concluída persistida no PostgreSQL.
+def _redis(settings: Settings) -> Redis:
+    return Redis.from_url(settings.redis_url, decode_responses=True)
 
-    O coletor do Checkmk usa um lock não bloqueante. Quando outra ronda já está
-    em andamento, a UI pode continuar exibindo esta fotografia sem iniciar uma
-    segunda coleta concorrente nem transformar ``busy`` em erro operacional.
-    """
+
+def _prefix(settings: Settings) -> str:
+    return str(getattr(settings, "noc_incident_prefix", "agent-ia:noc") or "agent-ia:noc").rstrip(":")
+
+
+def _run_key(settings: Settings, run_id: str) -> str:
+    return f"{_prefix(settings)}:autonomy:run:{run_id}"
+
+
+def _active_batch_key(settings: Settings, procedure_id: str) -> str:
+    return f"{_prefix(settings)}:batch:active:{procedure_id}"
+
+
+def _persisted_active_problems() -> list[dict[str, Any]]:
+    """Lê a última fotografia concluída persistida no PostgreSQL."""
 
     ensure_database_schema()
     with SessionLocal() as session:
@@ -86,18 +103,44 @@ def _persisted_active_problems() -> list[dict[str, Any]]:
         ]
 
 
+def _operation_meta() -> dict[str, Any]:
+    overview = checkmk_operational_overview(problem_limit=1, site_limit=1)
+    operation = dict(overview.get("state") or {})
+    return {
+        "status": "completed",
+        "source": "persisted",
+        "busy": bool(operation.get("running")),
+        "completed_at": operation.get("last_completed_at"),
+        "sites_ok": int(operation.get("sites_ok") or 0),
+        "sites_failed": int(operation.get("sites_failed") or 0),
+        "hosts_seen": int(operation.get("hosts_seen") or 0),
+    }
+
+
 def _problems_for_batch(
     *,
     settings: Settings,
     wait_for_busy: bool,
+    refresh: bool,
     busy_timeout_seconds: float = 12.0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Obtém problemas atuais sem tratar uma coleta concorrente como falha.
+    """Obtém a fotografia usada pelo lote.
 
-    GETs podem usar imediatamente a última fotografia persistida se outra ronda
-    estiver executando. Para uma correção em lote, esperamos a ronda concorrente
-    terminar e só então usamos o estado que ela acabou de persistir.
+    Abrir o modal usa a fotografia persistida e é instantâneo. Uma atualização
+    explícita ou o clique em Arrumar todos ainda executa uma fotografia nova.
+    Se outra ronda já estiver em andamento, o GET usa a última fotografia e a
+    execução aguarda a ronda concorrente concluir por alguns segundos.
     """
+
+    if not refresh:
+        problems = _persisted_active_problems()
+        meta = _operation_meta()
+        if problems or meta.get("completed_at"):
+            if meta.get("busy"):
+                meta["source"] = "persisted_while_busy"
+                meta["warning"] = "coleta do Checkmk em andamento; exibindo a última fotografia concluída"
+            return problems, meta
+        refresh = True
 
     snapshot = collect_checkmk_operational_snapshot(settings=settings)
     status = str(snapshot.get("status") or "failed")
@@ -130,38 +173,32 @@ def _problems_for_batch(
     if wait_for_busy:
         deadline = time.monotonic() + max(0.5, float(busy_timeout_seconds))
         while time.monotonic() < deadline:
-            overview = checkmk_operational_overview(problem_limit=1, site_limit=1)
-            operation = dict(overview.get("state") or {})
-            if not bool(operation.get("running")):
+            meta = _operation_meta()
+            if not bool(meta.get("busy")):
                 problems = _persisted_active_problems()
-                return problems, {
-                    "status": "completed",
-                    "source": "persisted_after_busy",
-                    "busy": False,
-                    "warning": "uma ronda do Checkmk já estava em andamento; o lote usou a fotografia recém-concluída",
-                    "completed_at": operation.get("last_completed_at"),
-                    "sites_ok": int(operation.get("sites_ok") or 0),
-                    "sites_failed": int(operation.get("sites_failed") or 0),
-                    "hosts_seen": int(operation.get("hosts_seen") or 0),
-                }
+                meta.update(
+                    {
+                        "source": "persisted_after_busy",
+                        "busy": False,
+                        "warning": "uma ronda do Checkmk já estava em andamento; o lote usou a fotografia recém-concluída",
+                    }
+                )
+                return problems, meta
             time.sleep(0.25)
         raise RuntimeError(
-            "o Checkmk continua ocupado com outra ronda; aguarde alguns segundos e tente novamente"
+            "o Checkmk continua ocupado com outra ronda; aguarde a coleta atual terminar e tente novamente"
         )
 
     problems = _persisted_active_problems()
-    overview = checkmk_operational_overview(problem_limit=1, site_limit=1)
-    operation = dict(overview.get("state") or {})
-    return problems, {
-        "status": "completed",
-        "source": "persisted_while_busy",
-        "busy": True,
-        "warning": "coleta do Checkmk em andamento; exibindo a última fotografia concluída",
-        "completed_at": operation.get("last_completed_at"),
-        "sites_ok": int(operation.get("sites_ok") or 0),
-        "sites_failed": int(operation.get("sites_failed") or 0),
-        "hosts_seen": int(operation.get("hosts_seen") or 0),
-    }
+    meta = _operation_meta()
+    meta.update(
+        {
+            "source": "persisted_while_busy",
+            "busy": True,
+            "warning": "coleta do Checkmk em andamento; exibindo a última fotografia concluída",
+        }
+    )
+    return problems, meta
 
 
 def group_problems_by_procedure(problems: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -196,7 +233,9 @@ def group_problems_by_procedure(problems: list[dict[str, Any]]) -> list[dict[str
         items = members[procedure_id]
         sites = sorted({_site_id(item) for item in items if _site_id(item)})
         hosts = sorted({_host(item) for item in items if _host(item)})
-        services = sorted({str(item.get("service") or "").strip() for item in items if str(item.get("service") or "").strip()})
+        services = sorted(
+            {str(item.get("service") or "").strip() for item in items if str(item.get("service") or "").strip()}
+        )
         result.append(
             {
                 **base,
@@ -226,11 +265,11 @@ def group_problems_by_procedure(problems: list[dict[str, Any]]) -> list[dict[str
     return sorted(result, key=lambda item: (-int(item.get("problem_count") or 0), str(item.get("title") or "")))
 
 
-def current_problem_groups(*, settings: Settings | None = None) -> dict[str, Any]:
-    """Tira uma fotografia nova ou usa a última concluída quando o coletor está ocupado."""
+def current_problem_groups(*, refresh: bool = False, settings: Settings | None = None) -> dict[str, Any]:
+    """Lista grupos sem nova ronda por padrão; refresh=True força uma fotografia."""
 
     settings = settings or get_settings()
-    problems, meta = _problems_for_batch(settings=settings, wait_for_busy=False)
+    problems, meta = _problems_for_batch(settings=settings, wait_for_busy=False, refresh=bool(refresh))
     if str(meta.get("status") or "") != "completed":
         return {
             "status": str(meta.get("status") or "failed"),
@@ -257,16 +296,12 @@ def current_problem_groups(*, settings: Settings | None = None) -> dict[str, Any
 
 
 def problem_group_detail(procedure_id: str, *, settings: Settings | None = None) -> dict[str, Any]:
-    """Lista empresa/site, host e alertas que pertencem a um procedure.
-
-    O detalhe é deliberadamente lido da última fotografia persistida para não
-    disparar uma segunda ronda apenas porque o operador abriu o modal.
-    """
+    """Lista empresa/site, host e alertas do procedure a partir do último snapshot persistido."""
 
     settings = settings or get_settings()
     normalized = str(procedure_id or "").strip()
     known = {skill.id: skill for skill in load_noc_skills()}
-    if normalized not in known:
+    if normalized not in known and normalized != "generic-checkmk-alert":
         raise ValueError(f"procedure inexistente na NOC Master Skill: {normalized}")
 
     matched: list[dict[str, Any]] = []
@@ -310,21 +345,66 @@ def problem_group_detail(procedure_id: str, *, settings: Settings | None = None)
             str(item.get("host") or "").casefold(),
         ),
     )
-    overview = checkmk_operational_overview(problem_limit=1, site_limit=1)
-    operation = dict(overview.get("state") or {})
-    skill = known[normalized]
+    operation = _operation_meta()
+    skill = known.get(normalized)
     return {
         "status": "completed",
         "master_skill_id": "noc-master",
         "procedure_id": normalized,
-        "title": skill.title,
+        "title": skill.title if skill else "Investigação genérica de alerta Checkmk",
         "problem_count": len(matched),
         "host_count": len(members),
         "site_count": len({_site_id(item) for item in matched if _site_id(item)}),
-        "last_completed_at": operation.get("last_completed_at"),
-        "snapshot_running": bool(operation.get("running")),
+        "last_completed_at": operation.get("completed_at"),
+        "snapshot_running": bool(operation.get("busy")),
         "members": members,
     }
+
+
+def _active_batch_run(procedure_id: str, *, settings: Settings) -> dict[str, Any] | None:
+    client = _redis(settings)
+    key = _active_batch_key(settings, procedure_id)
+    run_id = str(client.get(key) or "").strip()
+    if not run_id:
+        return None
+    run = get_selected_run(run_id, settings=settings)
+    if not run or str(run.get("status") or "") in _TERMINAL_RUN_STATES:
+        client.delete(key)
+        return None
+    return run
+
+
+def _save_batch_context(
+    run: dict[str, Any],
+    *,
+    procedure_id: str,
+    batch: dict[str, Any],
+    snapshot_completed_at: Any,
+    settings: Settings,
+) -> dict[str, Any]:
+    payload = dict(run)
+    scope = dict(payload.get("scope") or {})
+    scope.update(
+        {
+            "batch_source": "problem_batch",
+            "batch_procedure_id": procedure_id,
+            "batch_snapshot_completed_at": snapshot_completed_at,
+        }
+    )
+    payload["scope"] = scope
+    payload["batch"] = dict(batch)
+    client = _redis(settings)
+    client.setex(
+        _run_key(settings, str(payload.get("id") or "")),
+        _RUN_TTL_SECONDS,
+        json.dumps(payload, ensure_ascii=False, default=str),
+    )
+    client.setex(
+        _active_batch_key(settings, procedure_id),
+        _RUN_TTL_SECONDS,
+        str(payload.get("id") or ""),
+    )
+    return payload
 
 
 def request_procedure_batch(
@@ -334,11 +414,12 @@ def request_procedure_batch(
     operator: str | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Enfileira todos os alertas atuais que ainda pertencem ao procedure pedido.
+    """Atualiza a fotografia uma vez e enfileira o procedure escolhido.
 
-    A seleção é recalculada no instante do clique. Se uma ronda do Checkmk já
-    estiver em andamento, esperamos ela terminar e usamos a fotografia que ela
-    acabou de persistir, em vez de falhar com ``busy``.
+    A mesma execução é reaproveitada enquanto ainda estiver queued/running, o que
+    impede dois cliques de criarem correções concorrentes para o mesmo procedure.
+    O runner recebe o timestamp da fotografia recém-concluída para não repetir uma
+    segunda coleta global imediatamente depois.
     """
 
     settings = settings or get_settings()
@@ -347,7 +428,13 @@ def request_procedure_batch(
     if normalized not in known:
         raise ValueError(f"procedure inexistente na NOC Master Skill: {normalized}")
 
-    problems, meta = _problems_for_batch(settings=settings, wait_for_busy=True)
+    active = _active_batch_run(normalized, settings=settings)
+    if active:
+        batch = dict(active.get("batch") or {})
+        batch["reused"] = True
+        return {**active, "batch": batch}
+
+    problems, meta = _problems_for_batch(settings=settings, wait_for_busy=True, refresh=True)
     if str(meta.get("status") or "") != "completed":
         raise RuntimeError(
             f"não foi possível obter uma fotografia atual do Checkmk: {meta.get('status') or 'failed'}"
@@ -369,7 +456,7 @@ def request_procedure_batch(
     if not matched:
         raise ValueError(f"nenhum problema ativo corresponde ao procedure {normalized}")
 
-    problem_keys = [_problem_key(item) for item in matched]
+    problem_keys = list(dict.fromkeys(_problem_key(item) for item in matched if _problem_key(item)))
     run = request_selected_run(
         sites=sorted(site_filter) if site_filter else None,
         problem_keys=problem_keys,
@@ -378,17 +465,22 @@ def request_procedure_batch(
         settings=settings,
     )
     skill = known[normalized]
-    return {
-        **run,
-        "batch": {
-            "master_skill_id": "noc-master",
-            "procedure_id": normalized,
-            "title": skill.title,
-            "problem_count": len(matched),
-            "host_count": len({_host(item) for item in matched if _host(item)}),
-            "site_count": len({_site_id(item) for item in matched if _site_id(item)}),
-            "problem_keys": problem_keys,
-            "snapshot_source": meta.get("source"),
-            "snapshot_completed_at": meta.get("completed_at"),
-        },
+    batch = {
+        "master_skill_id": "noc-master",
+        "procedure_id": normalized,
+        "title": skill.title,
+        "problem_count": len(problem_keys),
+        "host_count": len({_host(item) for item in matched if _host(item)}),
+        "site_count": len({_site_id(item) for item in matched if _site_id(item)}),
+        "problem_keys": problem_keys,
+        "snapshot_source": meta.get("source"),
+        "snapshot_completed_at": meta.get("completed_at"),
+        "reused": False,
     }
+    return _save_batch_context(
+        run,
+        procedure_id=normalized,
+        batch=batch,
+        snapshot_completed_at=meta.get("completed_at"),
+        settings=settings,
+    )

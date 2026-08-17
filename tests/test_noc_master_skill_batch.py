@@ -36,6 +36,7 @@ def test_master_skill_exposes_internal_procedures_without_competing_files() -> N
     assert master["id"] == "noc-master"
     assert master["procedure_count"] == len(procedures)
     assert "checkmk-systemd-socket-summary" in ids
+    assert "linux-systemd-socket-summary" in ids
     assert "linux-filesystem" in ids
     assert "linux-memory-pressure" in ids
     assert "network-link" in ids
@@ -96,13 +97,18 @@ def test_request_procedure_batch_refreshes_snapshot_and_queues_all_matching_prob
         ],
     }
     monkeypatch.setattr(noc_problem_batch, "collect_checkmk_operational_snapshot", lambda settings=None: snapshot)
+    monkeypatch.setattr(noc_problem_batch, "_active_batch_run", lambda *args, **kwargs: None)
     captured: dict = {}
 
     def fake_request_selected_run(**kwargs):
         captured.update(kwargs)
         return {"id": "run-1", "status": "queued", "scope": {}}
 
+    def fake_save(run, *, procedure_id, batch, snapshot_completed_at, settings):
+        return {**run, "batch": batch, "scope": {"batch_procedure_id": procedure_id}}
+
     monkeypatch.setattr(noc_problem_batch, "request_selected_run", fake_request_selected_run)
+    monkeypatch.setattr(noc_problem_batch, "_save_batch_context", fake_save)
 
     result = noc_problem_batch.request_procedure_batch(
         "checkmk-systemd-socket-summary",
