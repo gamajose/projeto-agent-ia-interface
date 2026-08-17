@@ -26,6 +26,16 @@ def test_problem_batch_ui_exposes_master_skill_and_all_hosts_action() -> None:
     assert "select.hidden = true" in script
 
 
+def test_problem_batch_dom_wiring_is_idempotent_and_stops_observing() -> None:
+    script = (PROJECT_ROOT / "app" / "ui" / "noc-problem-batch-v1470.js").read_text(encoding="utf-8")
+
+    assert "masterSkillNormalized" in script
+    assert "title && title.textContent !== 'Skill única'" in script
+    assert "help && help.textContent !== MASTER_SKILL_HELP" in script
+    assert "observer.disconnect()" in script
+    assert "if (buttonReady && skillReady) stopWiring()" in script
+
+
 def test_selected_progress_tracks_problem_batch_runs() -> None:
     script = (PROJECT_ROOT / "app" / "ui" / "noc-selected-progress-v1465.js").read_text(encoding="utf-8")
 
